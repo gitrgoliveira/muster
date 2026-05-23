@@ -455,6 +455,17 @@ func TestDispatch_InvalidAgent(t *testing.T) {
 	assert.Equal(t, services.CodeInvalidRequest, se.Code)
 }
 
+func TestDispatch_InvalidMode(t *testing.T) {
+	ms := newMockStore(&core.Bead{ID: "bd-0024", Column: core.ColScheduled})
+	svc := services.NewBeadService(ms, noopPublish)
+	_, err := svc.Dispatch(context.Background(), "bd-0024", services.DispatchInput{
+		Agent: core.AgentClaude,
+		Mode:  core.Mode("unknown"),
+	})
+	se := svcError(t, err)
+	assert.Equal(t, services.CodeInvalidRequest, se.Code)
+}
+
 func TestAddComment_MissingActor(t *testing.T) {
 	ms := newMockStore(&core.Bead{ID: "bd-0023", Column: core.ColRunning, History: []core.HistoryEvent{}})
 	svc := services.NewBeadService(ms, noopPublish)

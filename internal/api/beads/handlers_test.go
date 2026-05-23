@@ -440,6 +440,43 @@ func TestDispatch_400_InvalidState_FromBacklog(t *testing.T) {
 	assert.Equal(t, "INVALID_STATE", errorCode(t, resp))
 }
 
+func TestDispatch_400_InvalidState_FromRunning(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+
+	// bd-a1f2 is in running (not scheduled).
+	resp := doPost(t, srv, "/beads/bd-a1f2/dispatch", map[string]interface{}{
+		"agent": "claude",
+		"mode":  "build",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_STATE", errorCode(t, resp))
+}
+
+func TestDispatch_400_InvalidAgent(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/bd-7c0d/dispatch", map[string]interface{}{
+		"agent": "unknown",
+		"mode":  "build",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+func TestDispatch_400_InvalidMode(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/bd-7c0d/dispatch", map[string]interface{}{
+		"agent": "claude",
+		"mode":  "unknown",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
 func TestDispatch_404(t *testing.T) {
 	srv, _ := newTestServer(t)
 	defer srv.Close()
@@ -487,6 +524,52 @@ func TestComment_400_MissingActor(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+func TestComment_400_MissingNote(t *testing.T) {
+	srv, _, _ := newTestServerCapture(t)
+
+	resp := doPost(t, srv, "/beads/bd-a1f2/comments", map[string]interface{}{
+		"actor": "tester",
+		"note":  "",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+func TestComment_IncrementsCount(t *testing.T) {
+	srv, ms, _ := newTestServerCapture(t)
+
+	initial, err := ms.Get(context.Background(), "bd-a1f2")
+	require.NoError(t, err)
+	initialCount := initial.Comments
+
+	resp := doPost(t, srv, "/beads/bd-a1f2/comments", map[string]interface{}{
+		"actor": "tester",
+		"note":  "LGTM",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var b core.Bead
+	decodeBody(t, resp, &b)
+	assert.Equal(t, initialCount+1, b.Comments)
+}
+
+func TestComment_EmitsCommentAddedEvent(t *testing.T) {
+	srv, _, captured := newTestServerCapture(t)
+
+	resp := doPost(t, srv, "/beads/bd-a1f2/comments", map[string]interface{}{
+		"actor": "tester",
+		"note":  "event check",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	resp.Body.Close()
+
+	assert.Equal(t, ws.EventCommentAdded, captured.Type)
+	assert.Equal(t, "bd-a1f2", captured.ID)
+	require.NotNil(t, captured.Event)
+	assert.Equal(t, core.EvComment, captured.Event.Kind)
+	assert.Equal(t, "tester", captured.Event.Actor)
 }
 
 func TestComment_404(t *testing.T) {

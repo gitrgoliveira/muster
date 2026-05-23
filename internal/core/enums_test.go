@@ -118,6 +118,22 @@ func TestLogKind_Valid(t *testing.T) {
 	}
 }
 
+func TestEventKind_Valid(t *testing.T) {
+	valid := []EventKind{
+		EvOpened, EvScheduled, EvClaimed, EvStarted, EvPaused, EvSplit,
+		EvReview, EvComment, EvApproved, EvClosed, EvReopened, EvRequeued,
+		EvBlocked, EvUnblocked, EvFailed, EvDiscovered,
+	}
+	for _, v := range valid {
+		if !v.Valid() {
+			t.Errorf("EventKind(%q).Valid() = false, want true", v)
+		}
+	}
+	if EventKind("unknown").Valid() {
+		t.Error(`EventKind("unknown").Valid() = true, want false`)
+	}
+}
+
 func TestFileStatus_Valid(t *testing.T) {
 	valid := []FileStatus{FileAdded, FileModified, FileDeleted}
 	for _, v := range valid {

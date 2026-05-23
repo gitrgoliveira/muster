@@ -134,6 +134,16 @@ const (
 	EvDiscovered EventKind = "discovered"
 )
 
+func (k EventKind) Valid() bool {
+	switch k {
+	case EvOpened, EvScheduled, EvClaimed, EvStarted, EvPaused, EvSplit,
+		EvReview, EvComment, EvApproved, EvClosed, EvReopened, EvRequeued,
+		EvBlocked, EvUnblocked, EvFailed, EvDiscovered:
+		return true
+	}
+	return false
+}
+
 type NowPlayingKind string
 
 const (

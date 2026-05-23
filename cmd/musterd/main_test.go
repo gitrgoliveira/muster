@@ -112,6 +112,88 @@ func TestServe_BootsThenShutdown(t *testing.T) {
 	}
 }
 
+// TestServe_ParseAddr_IPv6 verifies the server starts and serves on an IPv6
+// loopback address. Skipped if [::1] is not available on the host.
+func TestServe_ParseAddr_IPv6(t *testing.T) {
+	// Check IPv6 availability before starting the binary.
+	ln6, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skip("IPv6 loopback not available on this system:", err)
+	}
+	port := ln6.Addr().(*net.TCPAddr).Port
+	ln6.Close()
+
+	addr := fmt.Sprintf("[::1]:%d", port)
+	cmd := exec.Command(testBinPath, "serve", "--addr", addr)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	require.NoError(t, cmd.Start(), "start server on IPv6")
+
+	url := fmt.Sprintf("http://[::1]:%d/api/v1/healthz", port)
+	var lastErr error
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url) //nolint:noctx
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				lastErr = nil
+				break
+			}
+			lastErr = fmt.Errorf("unexpected status %d", resp.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.NoError(t, lastErr, "server should respond on [::1] within 10s")
+
+	require.NoError(t, cmd.Process.Signal(os.Interrupt))
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			exitErr, ok := err.(*exec.ExitError)
+			if ok {
+				code := exitErr.ExitCode()
+				assert.True(t, code == 0 || code == 130, "expected 0 or 130, got %d", code)
+			}
+		}
+	case <-time.After(15 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("server did not exit within 15s")
+	}
+}
+
+// TestServer_PortInUse_Exits1 verifies the binary exits with code 1 when
+// the requested port is already in use.
+func TestServer_PortInUse_Exits1(t *testing.T) {
+	// Hold the port so the binary cannot bind.
+	holder, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "open holder listener")
+	defer holder.Close()
+	port := holder.Addr().(*net.TCPAddr).Port
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	cmd := exec.Command(testBinPath, "serve", "--addr", addr)
+	// Give the binary up to 5s to notice the bind failure and exit.
+	done := make(chan error, 1)
+	require.NoError(t, cmd.Start())
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "binary should exit non-zero when port is in use")
+		exitErr, ok := err.(*exec.ExitError)
+		require.True(t, ok, "error should be an ExitError")
+		assert.Equal(t, 1, exitErr.ExitCode())
+	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("binary did not exit within 5s after port-in-use failure")
+	}
+}
+
 // freePort returns a free TCP port on localhost.
 func freePort(t *testing.T) int {
 	t.Helper()
