@@ -33,7 +33,7 @@ func dialWS(t *testing.T, srv *httptest.Server) (*websocket.Conn, context.Cancel
 	conn, _, err := websocket.Dial(ctx, "ws://"+srv.Listener.Addr().String(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		conn.Close(websocket.StatusNormalClosure, "")
+		_ = conn.Close(websocket.StatusNormalClosure, "")
 		cancel()
 	})
 	return conn, cancel
@@ -73,7 +73,7 @@ func TestHub_RegisterUnregister(t *testing.T) {
 
 	// Disconnect and verify the hub unregisters the client (broadcast no longer
 	// reaches anyone — subsequent Broadcast should not block/panic).
-	conn.Close(websocket.StatusNormalClosure, "")
+	_ = conn.Close(websocket.StatusNormalClosure, "")
 
 	// Allow the hub time to process unregistration.
 	time.Sleep(50 * time.Millisecond)

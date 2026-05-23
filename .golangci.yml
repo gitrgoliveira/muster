@@ -1,19 +1,29 @@
+version: "2"
+
 run:
   timeout: 3m
   go: "1.26"
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
-    - gofmt
-    - gosimple
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*net.TCPListener).Close
+        - (net.Listener).Close
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*os.Process).Kill
+        - github.com/coder/websocket.(*Conn).CloseNow
+        - github.com/coder/websocket.(*Conn).Close
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters: [errcheck]
+formatters:
+  enable:
+    - gofmt

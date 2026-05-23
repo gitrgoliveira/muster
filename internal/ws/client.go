@@ -56,7 +56,7 @@ func (c *Client) writePump(ctx context.Context) {
 		case f, ok := <-c.send:
 			if !ok {
 				// Hub closed the channel.
-				c.conn.Close(websocket.StatusNormalClosure, "")
+				_ = c.conn.Close(websocket.StatusNormalClosure, "")
 				return
 			}
 			data, err := json.Marshal(f)

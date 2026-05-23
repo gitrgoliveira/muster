@@ -64,7 +64,7 @@ func dialWS(t *testing.T, srv *httptest.Server) *websocket.Conn {
 	if resp != nil && resp.Body != nil {
 		resp.Body.Close()
 	}
-	t.Cleanup(func() { conn.CloseNow() })
+	t.Cleanup(func() { conn.CloseNow() }) //nolint:errcheck
 	return conn
 }
 
@@ -91,7 +91,7 @@ func TestStream_UpgradesToWS(t *testing.T) {
 	// Drain hello so the hub doesn't block on a slow client.
 	_ = readFrame(t, conn, 1*time.Second)
 	// Close cleanly.
-	conn.Close(websocket.StatusNormalClosure, "done")
+	_ = conn.Close(websocket.StatusNormalClosure, "done")
 }
 
 // TestStream_SendsHelloWithinOneSecond verifies the hello frame is received on connect.
@@ -225,7 +225,7 @@ func TestStream_DisconnectUnregistersClient(t *testing.T) {
 	_ = readFrame(t, conn, 1*time.Second)
 
 	// Close the WS connection (client side).
-	conn.Close(websocket.StatusNormalClosure, "done")
+	_ = conn.Close(websocket.StatusNormalClosure, "done")
 
 	// Give the hub time to unregister the client.
 	time.Sleep(100 * time.Millisecond)

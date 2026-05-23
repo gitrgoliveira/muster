@@ -27,7 +27,7 @@ func BodyLimit(next http.Handler) http.Handler {
 		// Read up to maxBytes+1 so we can detect when the limit is exceeded.
 		lr := &io.LimitedReader{R: r.Body, N: maxBytes + 1}
 		body, err := io.ReadAll(lr)
-		r.Body.Close()
+		_ = r.Body.Close()
 
 		if err != nil {
 			render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "request body exceeds 1 MiB limit")

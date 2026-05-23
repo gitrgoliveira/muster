@@ -45,13 +45,13 @@ func TestStore_ConcurrentReadsWrites(t *testing.T) {
 			for range iterations {
 				switch rng.Intn(3) {
 				case 0:
-					ms.List(ctx, "")
+					_, _ = ms.List(ctx, "")
 				case 1:
-					ms.Patch(ctx, "bd-cc01", store.PatchBeadInput{
+					_, _ = ms.Patch(ctx, "bd-cc01", store.PatchBeadInput{
 						Title: ptr("updated " + string(rune('A'+n))),
 					})
 				case 2:
-					ms.Move(ctx, "bd-cc01", string(core.ColBacklog), "")
+					_, _ = ms.Move(ctx, "bd-cc01", string(core.ColBacklog), "")
 				}
 			}
 		}(i)

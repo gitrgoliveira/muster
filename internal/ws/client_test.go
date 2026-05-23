@@ -64,7 +64,7 @@ func TestClient_WritePumpExitsOnContextCancel(t *testing.T) {
 	readFrame(t, helloCtx, conn)
 
 	// Close the connection explicitly; this cancels the server-side context.
-	conn.Close(websocket.StatusNormalClosure, "going away")
+	_ = conn.Close(websocket.StatusNormalClosure, "going away")
 	cancel()
 
 	// If we reach here without hanging, the write pump exited cleanly.
