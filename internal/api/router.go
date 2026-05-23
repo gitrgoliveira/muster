@@ -1,0 +1,107 @@
+package api
+
+import (
+	"io/fs"
+	"net/http"
+	"strings"
+
+	"github.com/gitrgoliveira/muster/internal/api/beads"
+	"github.com/gitrgoliveira/muster/internal/api/health"
+	"github.com/gitrgoliveira/muster/internal/api/middleware"
+	"github.com/gitrgoliveira/muster/internal/api/render"
+	"github.com/gitrgoliveira/muster/internal/api/stream"
+	"github.com/gitrgoliveira/muster/internal/core"
+	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/store"
+	"github.com/gitrgoliveira/muster/internal/ws"
+	"github.com/go-chi/chi/v5"
+)
+
+// NewRouter constructs the application's HTTP handler.
+//
+// uiFS should be an fs.FS whose "ui/" sub-directory holds the SPA files.
+// NewRouter calls fs.Sub(uiFS, "ui") internally; if that fails it uses uiFS
+// directly (allowing callers that already pass a sub-rooted FS).
+func NewRouter(
+	svc *services.BeadService,
+	ms store.Store,
+	hub *ws.Hub,
+	uiFS fs.FS,
+	seedDolt core.DoltStatus,
+	beadsVersion string,
+) http.Handler {
+	r := chi.NewRouter()
+
+	// Global middleware.
+	r.Use(middleware.RequestID)
+
+	// Custom 404 / 405 JSON responses for API routes only (see wrapper below).
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		render.WriteError(w, req, http.StatusNotFound, render.CodeNotFound, "not found")
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
+		render.WriteError(w, req, http.StatusMethodNotAllowed, render.CodeMethodNotAllowed, "method not allowed")
+	})
+
+	// Health endpoints.
+	r.Get("/api/v1/healthz", health.HealthzHandler)
+	r.Get("/api/v1/orchestrator/status", health.OrchestratorStatusHandler(beadsVersion, seedDolt))
+
+	// WebSocket stream endpoint.
+	r.Get("/api/v1/stream", stream.StreamHandler(hub))
+
+	// Bead endpoints (write methods get body-limit middleware).
+	h := beads.NewHandlers(svc, ms)
+	r.Get("/api/v1/beads", h.List)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads", h.Create)
+	r.Get("/api/v1/beads/{id}", h.Get)
+	r.With(middleware.BodyLimit).Patch("/api/v1/beads/{id}", h.Patch)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/move", h.Move)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/dispatch", h.Dispatch)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/comments", h.Comment)
+
+	// Build the SPA file server.
+	subFS, err := fs.Sub(uiFS, "ui")
+	if err != nil {
+		subFS = uiFS
+	}
+	spa := spaHandler(subFS)
+
+	// Outer handler: route /api/ through chi (which owns 404/405 for those
+	// paths), serve everything else via the SPA handler.
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasPrefix(req.URL.Path, "/api/") {
+			r.ServeHTTP(w, req)
+			return
+		}
+		spa.ServeHTTP(w, req)
+	})
+}
+
+// spaHandler serves static files from fsys. Any path that does not resolve to
+// an existing file falls back to index.html so that SPA client-side routing works.
+func spaHandler(fsys fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(fsys))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Resolve the path relative to the FS root.
+		path := r.URL.Path
+		if path == "/" || path == "" {
+			path = "index.html"
+		} else if strings.HasPrefix(path, "/") {
+			path = path[1:]
+		}
+
+		f, err := fsys.Open(path)
+		if err != nil {
+			// Unknown path — SPA fallback: serve index.html.
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			fileServer.ServeHTTP(w, r2)
+			return
+		}
+		f.Close()
+
+		fileServer.ServeHTTP(w, r)
+	})
+}

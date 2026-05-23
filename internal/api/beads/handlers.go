@@ -1,0 +1,268 @@
+package beads
+
+import (
+	"encoding/json"
+	"net/http"
+	"regexp"
+	"strings"
+
+	"github.com/gitrgoliveira/muster/internal/api/render"
+	"github.com/gitrgoliveira/muster/internal/core"
+	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/store"
+	"github.com/go-chi/chi/v5"
+)
+
+var idPattern = regexp.MustCompile(`^bd-[0-9a-f]{4}$`)
+
+// Handlers groups all bead-related HTTP handlers.
+type Handlers struct {
+	svc   *services.BeadService
+	store store.Store
+}
+
+// NewHandlers constructs a Handlers with the given service and store.
+func NewHandlers(svc *services.BeadService, st store.Store) *Handlers {
+	return &Handlers{svc: svc, store: st}
+}
+
+// mapServiceError translates a ServiceError into an HTTP response. Returns true
+// if an error was written, false if err is nil.
+func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if err == nil {
+		return false
+	}
+	se, ok := err.(*services.ServiceError)
+	if !ok {
+		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, err.Error())
+		return true
+	}
+	switch se.Code {
+	case services.CodeNotFound:
+		render.WriteError(w, r, http.StatusNotFound, render.CodeBeadNotFound, se.Message)
+	case services.CodeInvalidRequest:
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, se.Message)
+	case services.CodeInvalidState:
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidState, se.Message)
+	case services.CodeInternal:
+		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
+	default:
+		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
+	}
+	return true
+}
+
+// validateID checks the bead ID format. Returns false and writes 400 if invalid.
+func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
+	if !idPattern.MatchString(id) {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "invalid bead ID format")
+		return false
+	}
+	return true
+}
+
+// decodeJSON decodes the request body with DisallowUnknownFields. On error,
+// it writes the appropriate error response and returns false.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		msg := err.Error()
+		// Produce a cleaner message for unknown field errors.
+		if strings.Contains(msg, "unknown field") {
+			// Extract the field name from the error message.
+			// json decoder reports: `json: unknown field "fieldname"`
+			const prefix = `json: unknown field "`
+			if idx := strings.Index(msg, prefix); idx >= 0 {
+				rest := msg[idx+len(prefix):]
+				if end := strings.Index(rest, `"`); end >= 0 {
+					field := rest[:end]
+					msg = "unknown field: " + field
+				}
+			}
+		}
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, msg)
+		return false
+	}
+	return true
+}
+
+// List handles GET /beads.
+func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
+	column := r.URL.Query().Get("column")
+	if column != "" && !core.Column(column).Valid() {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "invalid column: "+column)
+		return
+	}
+
+	beads, err := h.store.List(r.Context(), column)
+	if err != nil {
+		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, err.Error())
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, ListResponse{
+		Items:      beads,
+		NextCursor: nil,
+		Total:      len(beads),
+	})
+}
+
+// Create handles POST /beads.
+func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
+	var req CreateRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	// Apply priority default.
+	priority := core.Priority(2)
+	if req.Priority != nil {
+		priority = *req.Priority
+	}
+
+	input := services.CreateBeadInput{
+		Title:        req.Title,
+		Desc:         req.Desc,
+		Type:         req.Type,
+		Column:       req.Column,
+		Priority:     priority,
+		Labels:       req.Labels,
+		VCS:          req.VCS,
+		TokensBudget: req.TokensBudget,
+	}
+
+	bead, err := h.svc.Create(r.Context(), input)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	w.Header().Set("Location", "/api/v1/beads/"+bead.ID)
+	render.WriteJSON(w, http.StatusCreated, bead)
+}
+
+// Get handles GET /beads/{id}.
+func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	bead, err := h.store.Get(r.Context(), id)
+	if err != nil {
+		if err == store.ErrNotFound {
+			render.WriteError(w, r, http.StatusNotFound, render.CodeBeadNotFound, "bead not found")
+			return
+		}
+		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, err.Error())
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, bead)
+}
+
+// Patch handles PATCH /beads/{id}.
+func (h *Handlers) Patch(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req PatchRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	input := services.PatchBeadInput{
+		Title:        req.Title,
+		Desc:         req.Desc,
+		Type:         req.Type,
+		Column:       req.Column,
+		Priority:     req.Priority,
+		Labels:       req.Labels,
+		Ready:        req.Ready,
+		TokensBudget: req.TokensBudget,
+	}
+
+	bead, err := h.svc.Patch(r.Context(), id, input)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, bead)
+}
+
+// Move handles POST /beads/{id}/move.
+func (h *Handlers) Move(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req MoveRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	input := services.MoveInput{
+		ToColumn: req.ToColumn,
+		BeforeID: req.BeforeID,
+	}
+
+	bead, err := h.svc.Move(r.Context(), id, input)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, bead)
+}
+
+// Dispatch handles POST /beads/{id}/dispatch.
+func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req DispatchRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	input := services.DispatchInput{
+		Agent: req.Agent,
+		Mode:  req.Mode,
+	}
+
+	bead, err := h.svc.Dispatch(r.Context(), id, input)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, bead)
+}
+
+// Comment handles POST /beads/{id}/comments.
+func (h *Handlers) Comment(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req CommentRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	input := services.CommentInput{
+		Actor: req.Actor,
+		Note:  req.Note,
+	}
+
+	bead, err := h.svc.AddComment(r.Context(), id, input)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusCreated, bead)
+}
