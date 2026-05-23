@@ -2,6 +2,7 @@ package beads_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,10 +21,17 @@ import (
 
 func newTestServer(t *testing.T) (*httptest.Server, *store.MemStore) {
 	t.Helper()
+	srv, ms, _ := newTestServerCapture(t)
+	return srv, ms
+}
+
+// newTestServerCapture is like newTestServer but also returns a pointer to the
+// last published WS frame so event-emission tests can inspect it.
+func newTestServerCapture(t *testing.T) (*httptest.Server, *store.MemStore, *ws.Frame) {
+	t.Helper()
 	ms := store.NewMemStore(store.SeedBeads())
 	var captured ws.Frame
 	pub := services.Publisher(func(f ws.Frame) { captured = f })
-	_ = captured
 	svc := services.NewBeadService(ms, pub)
 	h := beads.NewHandlers(svc, ms)
 	r := chi.NewRouter()
@@ -34,7 +42,9 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.MemStore) {
 	r.Post("/beads/{id}/move", h.Move)
 	r.Post("/beads/{id}/dispatch", h.Dispatch)
 	r.Post("/beads/{id}/comments", h.Comment)
-	return httptest.NewServer(r), ms
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv, ms, &captured
 }
 
 // helpers
@@ -310,6 +320,95 @@ func TestMove_400_UnknownColumn(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+func TestMove_200_WithBeforeID_Reorders(t *testing.T) {
+	srv, ms, _ := newTestServerCapture(t)
+
+	// Move bd-a1f2 (running) to backlog, inserting it before bd-4f12 (backlog).
+	// Seed order of backlog beads: bd-b210, bd-4f12, bd-2d55, bd-7e21.
+	resp := doPost(t, srv, "/beads/bd-a1f2/move", map[string]interface{}{
+		"toColumn": "backlog",
+		"beforeID": "bd-4f12",
+	})
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var b core.Bead
+	decodeBody(t, resp, &b)
+	assert.Equal(t, core.ColBacklog, b.Column)
+
+	// bd-a1f2 must appear before bd-4f12 in the global order.
+	all, err := ms.List(context.Background(), "")
+	require.NoError(t, err)
+	var a1f2Idx, f12Idx int
+	for i, bead := range all {
+		if bead.ID == "bd-a1f2" {
+			a1f2Idx = i
+		}
+		if bead.ID == "bd-4f12" {
+			f12Idx = i
+		}
+	}
+	assert.Less(t, a1f2Idx, f12Idx, "bd-a1f2 should appear before bd-4f12 after move with beforeID")
+}
+
+func TestMove_400_UnknownBeforeID(t *testing.T) {
+	srv, _, _ := newTestServerCapture(t)
+
+	resp := doPost(t, srv, "/beads/bd-a1f2/move", map[string]interface{}{
+		"toColumn": "backlog",
+		"beforeID": "bd-ffff",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+func TestMove_400_BeforeIDDifferentColumn(t *testing.T) {
+	srv, _, _ := newTestServerCapture(t)
+
+	// bd-3e80 is in review; moving bd-a1f2 to backlog with a beforeID from review is invalid.
+	resp := doPost(t, srv, "/beads/bd-a1f2/move", map[string]interface{}{
+		"toColumn": "backlog",
+		"beforeID": "bd-3e80",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+func TestMove_400_BeforeIDEqualsMovedBead(t *testing.T) {
+	srv, _, _ := newTestServerCapture(t)
+
+	resp := doPost(t, srv, "/beads/bd-a1f2/move", map[string]interface{}{
+		"toColumn": "running",
+		"beforeID": "bd-a1f2",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+func TestMove_404(t *testing.T) {
+	srv, _, _ := newTestServerCapture(t)
+
+	resp := doPost(t, srv, "/beads/bd-0000/move", map[string]interface{}{
+		"toColumn": "backlog",
+	})
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, "BEAD_NOT_FOUND", errorCode(t, resp))
+}
+
+func TestMove_EmitsBeadMovedEvent(t *testing.T) {
+	srv, _, captured := newTestServerCapture(t)
+
+	resp := doPost(t, srv, "/beads/bd-a1f2/move", map[string]interface{}{
+		"toColumn": "review",
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	resp.Body.Close()
+
+	assert.Equal(t, ws.EventBeadMoved, captured.Type)
+	assert.Equal(t, "bd-a1f2", captured.ID)
+	assert.Equal(t, core.ColRunning, captured.FromColumn)
+	assert.Equal(t, core.ColReview, captured.ToColumn)
 }
 
 // ── T031 Dispatch ──────────────────────────────────────────────────────────

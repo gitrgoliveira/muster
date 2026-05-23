@@ -34,6 +34,7 @@ func NewRouter(
 
 	// Global middleware.
 	r.Use(middleware.RequestID)
+	r.Use(middleware.Recovery)
 
 	// Custom 404 / 405 JSON responses for API routes only (see wrapper below).
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {

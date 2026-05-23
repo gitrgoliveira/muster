@@ -154,6 +154,67 @@ func TestStream_ReceivesBeadCreatedOnPostBeads(t *testing.T) {
 	assert.Equal(t, "bead.created", frame["type"], "should receive bead.created event")
 }
 
+// TestStream_ReceivesBeadMovedOnPostMove verifies bead.moved is broadcast on POST /beads/{id}/move.
+func TestStream_ReceivesBeadMovedOnPostMove(t *testing.T) {
+	srv, _ := newTestServer(t)
+	conn := dialWS(t, srv)
+
+	_ = readFrame(t, conn, 1*time.Second)
+
+	body := bytes.NewBufferString(`{"toColumn":"review"}`)
+	resp, err := srv.Client().Post(srv.URL+"/beads/bd-a1f2/move", "application/json", body)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	frame := readFrame(t, conn, 500*time.Millisecond)
+	assert.Equal(t, "bead.moved", frame["type"])
+	assert.Equal(t, "bd-a1f2", frame["id"])
+	assert.Equal(t, "running", frame["fromColumn"])
+	assert.Equal(t, "review", frame["toColumn"])
+}
+
+// TestStream_ReceivesBeadUpdatedOnPatch verifies bead.updated is broadcast on PATCH /beads/{id}.
+func TestStream_ReceivesBeadUpdatedOnPatch(t *testing.T) {
+	srv, _ := newTestServer(t)
+	conn := dialWS(t, srv)
+
+	_ = readFrame(t, conn, 1*time.Second)
+
+	body := bytes.NewBufferString(`{"title":"patched title"}`)
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/beads/bd-a1f2", body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	frame := readFrame(t, conn, 500*time.Millisecond)
+	assert.Equal(t, "bead.updated", frame["type"])
+	bead, ok := frame["bead"].(map[string]interface{})
+	require.True(t, ok, "frame should contain a bead field")
+	assert.Equal(t, "bd-a1f2", bead["id"])
+}
+
+// TestStream_ReceivesCommentAddedOnPostComment verifies comment.added is broadcast on POST /beads/{id}/comments.
+func TestStream_ReceivesCommentAddedOnPostComment(t *testing.T) {
+	srv, _ := newTestServer(t)
+	conn := dialWS(t, srv)
+
+	_ = readFrame(t, conn, 1*time.Second)
+
+	body := bytes.NewBufferString(`{"actor":"tester","note":"LGTM"}`)
+	resp, err := srv.Client().Post(srv.URL+"/beads/bd-a1f2/comments", "application/json", body)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	frame := readFrame(t, conn, 500*time.Millisecond)
+	assert.Equal(t, "comment.added", frame["type"])
+	assert.Equal(t, "bd-a1f2", frame["id"])
+}
+
 // TestStream_DisconnectUnregistersClient verifies a closed connection is cleaned up
 // so that subsequent broadcasts do not block.
 func TestStream_DisconnectUnregistersClient(t *testing.T) {
