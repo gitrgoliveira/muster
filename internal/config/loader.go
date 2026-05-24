@@ -48,10 +48,6 @@ func LoadBackendConfig(dir string) (BackendConfig, error) {
 		return BackendConfig{}, err
 	}
 
-	if m.SchemaVersion < 1 || m.SchemaVersion > 2 {
-		return BackendConfig{}, fmt.Errorf("beads schema v%d not supported by muster (need 1..2)", m.SchemaVersion)
-	}
-
 	cfg := BackendConfig{
 		BeadsDir:      dir,
 		DoltDatabase:  m.DoltDatabase,

@@ -48,6 +48,11 @@ func NewCLI(bdBin, beadsDir string) (*CLI, error) {
 			return nil, ErrCLIMissing
 		}
 		bdBin = resolved
+	} else {
+		// Validate that an explicitly supplied path is executable.
+		if _, err := exec.LookPath(bdBin); err != nil {
+			return nil, ErrCLIMissing
+		}
 	}
 	return &CLI{
 		Path:     bdBin,

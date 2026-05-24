@@ -41,5 +41,9 @@ func LoadMetadata(dir string) (*Metadata, error) {
 		m.SchemaVersion = 1
 	}
 
+	if m.SchemaVersion < 1 || m.SchemaVersion > 2 {
+		return nil, fmt.Errorf("beads schema v%d not supported by muster (need 1..2)", m.SchemaVersion)
+	}
+
 	return &m, nil
 }

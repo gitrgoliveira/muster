@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,6 +147,7 @@ func (b *Backend) reload() error {
 }
 
 // parse reads and parses the JSONL file.
+// Lines longer than maxLineSize are silently skipped; unparseable lines are skipped too.
 func (b *Backend) parse() ([]store.Issue, error) {
 	f, err := os.Open(b.path)
 	if err != nil {
@@ -153,24 +155,41 @@ func (b *Backend) parse() ([]store.Issue, error) {
 	}
 	defer f.Close()
 
+	reader := bufio.NewReaderSize(f, maxLineSize)
 	var issues []store.Issue
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64<<10), maxLineSize)
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for {
+		// ReadLine returns (line, isPrefix, err).
+		// isPrefix==true means the internal buffer was full before a newline —
+		// the line is longer than maxLineSize; we drain and skip it.
+		chunk, isPrefix, rerr := reader.ReadLine()
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, fmt.Errorf("scan issues.jsonl: %w", rerr)
+		}
+
+		if isPrefix {
+			// Drain the rest of the oversized line.
+			for isPrefix && rerr == nil {
+				_, isPrefix, rerr = reader.ReadLine()
+			}
+			if rerr != nil && rerr != io.EOF {
+				return nil, fmt.Errorf("scan issues.jsonl: %w", rerr)
+			}
+			continue
+		}
+
+		line := strings.TrimSpace(string(chunk))
 		if line == "" {
 			continue
 		}
 		var iss store.Issue
 		if err := json.Unmarshal([]byte(line), &iss); err != nil {
-			// Skip unparseable lines (e.g., partial writes).
 			continue
 		}
 		issues = append(issues, iss)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan issues.jsonl: %w", err)
 	}
 	return issues, nil
 }
