@@ -8,20 +8,29 @@ import (
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/store"
+	"github.com/gitrgoliveira/muster/internal/store/bdshell"
 )
 
 // CLIRunner abstracts bd CLI write operations.
 type CLIRunner interface {
-	RunJSON(ctx context.Context, dst interface{}, args ...string) error
+	Create(ctx context.Context, in bdshell.CreateInput) (store.Issue, error)
+	Update(ctx context.Context, id string, p bdshell.UpdatePatch) (store.Issue, error)
+	Close(ctx context.Context, id string) error
+	Dispatch(ctx context.Context, id string) (store.Issue, error)
+	AppendNote(ctx context.Context, id, text string) (store.Issue, error)
+	RunJSON(ctx context.Context, dst any, args ...string) error
 	RunVoid(ctx context.Context, args ...string) error
 }
 
 const (
-	CodeInvalidRequest = "INVALID_REQUEST"
-	CodeInvalidState   = "INVALID_STATE"
-	CodeNotFound       = "BEAD_NOT_FOUND"
-	CodeInternal       = "INTERNAL"
-	CodeCLIMissing     = "BD_CLI_MISSING"
+	CodeInvalidRequest  = "INVALID_REQUEST"
+	CodeInvalidState    = "INVALID_STATE"
+	CodeNotFound        = "BEAD_NOT_FOUND"
+	CodeInternal        = "INTERNAL"
+	CodeCLIMissing      = "BD_CLI_MISSING"
+	CodeCLIValidation   = "BD_CLI_VALIDATION"
+	CodeCLIUnavailable  = "BD_CLI_UNAVAILABLE"
+	CodeCLITimeout      = "BD_CLI_TIMEOUT"
 )
 
 // ServiceError wraps a validation or state error with a code understood by
@@ -101,6 +110,38 @@ func (svc *BeadService) requireCLI() error {
 	return nil
 }
 
+// wrapCLIError maps *bdshell.CLIError exit codes to service error codes.
+func wrapCLIError(err error) *ServiceError {
+	var ce *bdshell.CLIError
+	if errors.As(err, &ce) {
+		switch ce.ExitCode {
+		case 1:
+			return &ServiceError{Code: CodeCLIValidation, Message: ce.Stderr}
+		case 2:
+			return &ServiceError{Code: CodeNotFound, Message: ce.Stderr}
+		case 3:
+			return &ServiceError{Code: CodeCLIUnavailable, Message: ce.Stderr}
+		default:
+			return &ServiceError{Code: CodeInternal, Message: ce.Stderr}
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &ServiceError{Code: CodeCLITimeout, Message: "bd CLI timed out"}
+	}
+	return &ServiceError{Code: CodeInternal, Message: err.Error()}
+}
+
+// validateField rejects fields containing a NUL byte or exceeding 64 KB.
+func validateField(name, value string) error {
+	if strings.ContainsRune(value, '\x00') {
+		return &ServiceError{Code: CodeInvalidRequest, Message: name + " contains invalid NUL byte"}
+	}
+	if len(value) > 64*1024 {
+		return &ServiceError{Code: CodeInvalidRequest, Message: name + " exceeds 64 KB limit"}
+	}
+	return nil
+}
+
 // ListBeads returns all beads, optionally filtered by column.
 func (svc *BeadService) ListBeads(ctx context.Context, column string) ([]core.Bead, error) {
 	f := store.Filter{TruncateDesc: 2048}
@@ -136,6 +177,12 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 	if len([]rune(title)) > 255 {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "title exceeds 255 chars"}
 	}
+	if err := validateField("title", title); err != nil {
+		return nil, err
+	}
+	if err := validateField("desc", input.Desc); err != nil {
+		return nil, err
+	}
 	if input.Type != "" && !input.Type.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid type"}
 	}
@@ -145,8 +192,18 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 	if err := svc.requireCLI(); err != nil {
 		return nil, err
 	}
-	// TODO T067: implement via bdshell CLI
-	return nil, &ServiceError{Code: CodeInternal, Message: "bd CLI integration not yet implemented"}
+
+	iss, err := svc.cli.Create(ctx, bdshell.CreateInput{
+		Title:       title,
+		Description: input.Desc,
+		Type:        string(input.Type),
+		Priority:    int(input.Priority),
+	})
+	if err != nil {
+		return nil, wrapCLIError(err)
+	}
+	b := IssueToBead(&iss, svc.repo)
+	return &b, nil
 }
 
 // Patch validates and applies a partial update via the CLI.
@@ -167,12 +224,44 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 		if t == "" {
 			return nil, &ServiceError{Code: CodeInvalidRequest, Message: "title is required"}
 		}
+		if err := validateField("title", t); err != nil {
+			return nil, err
+		}
+	}
+	if input.Desc != nil {
+		if err := validateField("desc", *input.Desc); err != nil {
+			return nil, err
+		}
 	}
 	if err := svc.requireCLI(); err != nil {
 		return nil, err
 	}
-	// TODO T066: implement via bdshell CLI
-	return nil, &ServiceError{Code: CodeInternal, Message: "bd CLI integration not yet implemented"}
+
+	patch := bdshell.UpdatePatch{}
+	if input.Title != nil {
+		t := strings.TrimSpace(*input.Title)
+		patch.Title = &t
+	}
+	if input.Desc != nil {
+		patch.Description = input.Desc
+	}
+	if input.Column != nil {
+		statuses := columnToStatuses(string(*input.Column))
+		if len(statuses) > 0 {
+			patch.Status = &statuses[0]
+		}
+	}
+	if input.Priority != nil {
+		p := int(*input.Priority)
+		patch.Priority = &p
+	}
+
+	iss, err := svc.cli.Update(ctx, id, patch)
+	if err != nil {
+		return nil, wrapCLIError(err)
+	}
+	b := IssueToBead(&iss, svc.repo)
+	return &b, nil
 }
 
 // Move places a bead in a target column via the CLI.
@@ -183,8 +272,39 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 	if err := svc.requireCLI(); err != nil {
 		return nil, err
 	}
-	// TODO T068: implement via bdshell CLI
-	return nil, &ServiceError{Code: CodeInternal, Message: "bd CLI integration not yet implemented"}
+
+	var iss store.Issue
+	var err error
+
+	switch input.ToColumn {
+	case core.ColDone:
+		if cerr := svc.cli.Close(ctx, id); cerr != nil {
+			return nil, wrapCLIError(cerr)
+		}
+		// Re-read the issue after close.
+		issue, rerr := svc.backend.Get(ctx, id)
+		if rerr != nil {
+			return nil, &ServiceError{Code: CodeInternal, Message: rerr.Error()}
+		}
+		iss = *issue
+	case core.ColRunning:
+		iss, err = svc.cli.Update(ctx, id, bdshell.UpdatePatch{Claim: true})
+		if err != nil {
+			return nil, wrapCLIError(err)
+		}
+	default:
+		statuses := columnToStatuses(string(input.ToColumn))
+		if len(statuses) == 0 {
+			return nil, &ServiceError{Code: CodeInvalidRequest, Message: "unknown column"}
+		}
+		iss, err = svc.cli.Update(ctx, id, bdshell.UpdatePatch{Status: &statuses[0]})
+		if err != nil {
+			return nil, wrapCLIError(err)
+		}
+	}
+
+	b := IssueToBead(&iss, svc.repo)
+	return &b, nil
 }
 
 // Dispatch transitions a bead to running via the CLI.
@@ -198,8 +318,13 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 	if err := svc.requireCLI(); err != nil {
 		return nil, err
 	}
-	// TODO T069: implement via bdshell CLI
-	return nil, &ServiceError{Code: CodeInternal, Message: "bd CLI integration not yet implemented"}
+
+	iss, err := svc.cli.Dispatch(ctx, id)
+	if err != nil {
+		return nil, wrapCLIError(err)
+	}
+	b := IssueToBead(&iss, svc.repo)
+	return &b, nil
 }
 
 // AddComment appends a comment via the CLI.
@@ -212,9 +337,22 @@ func (svc *BeadService) AddComment(ctx context.Context, id string, input Comment
 	if note == "" {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "note is required"}
 	}
+	if err := validateField("actor", actor); err != nil {
+		return nil, err
+	}
+	if err := validateField("note", note); err != nil {
+		return nil, err
+	}
 	if err := svc.requireCLI(); err != nil {
 		return nil, err
 	}
-	// TODO T070: implement via bdshell CLI
-	return nil, &ServiceError{Code: CodeInternal, Message: "bd CLI integration not yet implemented"}
+
+	// Prepend actor to note text since bd v1.0 has no --actor flag.
+	fullNote := actor + ": " + note
+	iss, err := svc.cli.AppendNote(ctx, id, fullNote)
+	if err != nil {
+		return nil, wrapCLIError(err)
+	}
+	b := IssueToBead(&iss, svc.repo)
+	return &b, nil
 }
