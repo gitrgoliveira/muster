@@ -17,6 +17,8 @@ import (
 	"github.com/gitrgoliveira/muster/internal/config"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
+	"github.com/gitrgoliveira/muster/internal/store/bdshell"
+	"github.com/gitrgoliveira/muster/internal/store/dolt"
 	"github.com/gitrgoliveira/muster/internal/store/jsonl"
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
@@ -65,6 +67,17 @@ func main() {
 	hub := ws.NewHub(beadsVersion)
 	go hub.Run()
 
+	// Resolve bd CLI binary (optional).
+	var cli *bdshell.CLI
+	if cfg.BdBin != "" {
+		var cliErr error
+		cli, cliErr = bdshell.NewCLI(cfg.BdBin, beadsDir)
+		if cliErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: bd CLI not available: %v\n", cliErr)
+			cli = nil
+		}
+	}
+
 	// Construct the read backend.
 	var backend store.Backend
 	switch cfg.Mode {
@@ -75,12 +88,34 @@ func main() {
 			os.Exit(1)
 		}
 		backend = b
+	case "remote":
+		// Start the dolt server (idempotent).
+		if cli != nil {
+			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := cli.DoltStart(startCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: bd dolt start: %v\n", err)
+			}
+			startCancel()
+		}
+		dsn := buildDoltDSN(cfg)
+		initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		b, berr := dolt.NewDolt(initCtx, dsn)
+		initCancel()
+		if berr != nil {
+			fmt.Fprintf(os.Stderr, "cannot connect to dolt server: %v\n", berr)
+			os.Exit(1)
+		}
+		backend = b
 	default:
-		// Fall back to in-memory seed for modes not yet wired (e.g. "remote").
+		// Fallback — should not happen in practice after config validation.
 		backend = store.NewMemoryBackend(store.SeedIssues())
 	}
 
-	svc := services.NewBeadService(backend, nil, hub.Broadcast)
+	var svcCLI services.CLIRunner
+	if cli != nil {
+		svcCLI = cli
+	}
+	svc := services.NewBeadService(backend, svcCLI, hub.Broadcast)
 
 	// Print startup banner.
 	bdCLIDisplay := cfg.BdBin
@@ -160,4 +195,27 @@ func main() {
 	}
 
 	backend.Close() //nolint:errcheck
+}
+
+// buildDoltDSN constructs a MySQL DSN for Dolt from BackendConfig.
+func buildDoltDSN(cfg config.BackendConfig) string {
+	host := cfg.DoltHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := cfg.DoltPort
+	if port == 0 {
+		port = 3306
+	}
+	user := cfg.DoltUser
+	if user == "" {
+		user = "root"
+	}
+	password := cfg.DoltPassword
+	if password != "" {
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
+			user, password, host, port, cfg.DoltDatabase)
+	}
+	return fmt.Sprintf("%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
+		user, host, port, cfg.DoltDatabase)
 }
