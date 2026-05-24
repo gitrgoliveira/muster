@@ -118,14 +118,18 @@ func main() {
 	svc := services.NewBeadService(backend, svcCLI, hub.Broadcast)
 
 	// Print startup banner.
-	bdCLIDisplay := cfg.BdBin
-	if bdCLIDisplay == "" {
-		bdCLIDisplay = "(missing)"
+	bdCLIDisplay := "(missing — write endpoints disabled)"
+	if cli != nil {
+		bdCLIDisplay = cli.Path
 	}
-	fmt.Printf(
-		"muster listening on http://%s\n  beadsDir=%s doltDatabase=%s doltMode=%s readSource=%s bdCLI=%s schemaVersion=%d\n",
-		*addr, cfg.BeadsDir, cfg.DoltDatabase, cfg.Mode, cfg.ReadSource, bdCLIDisplay, cfg.SchemaVersion,
-	)
+	fmt.Printf("muster listening on http://%s\n", *addr)
+	fmt.Printf("  build         = dev\n")
+	fmt.Printf("  schemaVersion = %d\n", cfg.SchemaVersion)
+	fmt.Printf("  beadsDir      = %s\n", cfg.BeadsDir)
+	fmt.Printf("  doltDatabase  = %s\n", cfg.DoltDatabase)
+	fmt.Printf("  doltMode      = %s\n", cfg.Mode)
+	fmt.Printf("  readSource    = %s\n", cfg.ReadSource)
+	fmt.Printf("  bdCLI         = %s\n", bdCLIDisplay)
 
 	// Start file watcher for embedded mode.
 	watcherOut := make(chan store.WatcherEvent, 32)

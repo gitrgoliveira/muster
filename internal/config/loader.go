@@ -61,7 +61,7 @@ func LoadBackendConfig(dir string) (BackendConfig, error) {
 	switch m.DoltMode {
 	case "embedded", "":
 		cfg.Mode = "embedded"
-		cfg.ReadSource = "jsonl"
+		cfg.ReadSource = "issues.jsonl"
 	case "remote":
 		cfg.Mode = "remote"
 		cfg.ReadSource = "dolt"

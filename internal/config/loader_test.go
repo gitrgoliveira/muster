@@ -89,8 +89,8 @@ func TestLoadBackendConfig(t *testing.T) {
 		if cfg.Mode != "embedded" {
 			t.Errorf("mode want embedded got %q", cfg.Mode)
 		}
-		if cfg.ReadSource != "jsonl" {
-			t.Errorf("readSource want jsonl got %q", cfg.ReadSource)
+		if cfg.ReadSource != "issues.jsonl" {
+			t.Errorf("readSource want issues.jsonl got %q", cfg.ReadSource)
 		}
 		if cfg.BeadsDir != dir {
 			t.Errorf("beadsDir want %q got %q", dir, cfg.BeadsDir)

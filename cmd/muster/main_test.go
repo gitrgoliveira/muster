@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,4 +274,127 @@ func freePort(t *testing.T) int {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 	return port
+}
+
+// makeTempBeadsDirWithIssues creates a temporary beads dir with fixture issues.jsonl.
+func makeTempBeadsDirWithIssues(t *testing.T, issues []map[string]any) string {
+	t.Helper()
+	dir := t.TempDir()
+	meta := map[string]any{
+		"schema_version": 1,
+		"dolt_mode":      "embedded",
+		"project_id":     "test-project",
+	}
+	b, err := json.Marshal(meta)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "metadata.json"), b, 0o600))
+
+	var sb strings.Builder
+	for _, iss := range issues {
+		line, err := json.Marshal(iss)
+		require.NoError(t, err)
+		sb.Write(line)
+		sb.WriteByte('\n')
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte(sb.String()), 0o600))
+	return dir
+}
+
+// startServer starts the muster binary and blocks until it responds to GET /api/v1/healthz.
+// Returns a cleanup function that signals SIGINT and waits for the process to exit.
+func startServer(t *testing.T, addr, beadsDir string) func() {
+	t.Helper()
+	cmd := exec.Command(testBinPath, "serve", "--addr", addr, "--beads-dir", beadsDir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	require.NoError(t, cmd.Start(), "start server")
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + addr + "/api/v1/healthz") //nolint:noctx
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return func() {
+		if cmd.Process != nil {
+			cmd.Process.Signal(os.Interrupt) //nolint:errcheck
+		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			cmd.Process.Kill() //nolint:errcheck
+		}
+	}
+}
+
+// TestServe_ListBeads_ReturnsFixtureIssues verifies that GET /api/v1/beads returns
+// the issues from the fixture issues.jsonl (T047).
+func TestServe_ListBeads_ReturnsFixtureIssues(t *testing.T) {
+	issues := []map[string]any{
+		{"id": "mp-001", "title": "First", "status": "open"},
+		{"id": "mp-002", "title": "Second", "status": "in_progress"},
+		{"id": "mp-003", "title": "Third", "status": "closed"},
+	}
+	beadsDir := makeTempBeadsDirWithIssues(t, issues)
+
+	port := freePort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	stop := startServer(t, addr, beadsDir)
+	defer stop()
+
+	// GET /api/v1/beads — no column filter returns all issues.
+	resp, err := http.Get("http://" + addr + "/api/v1/beads") //nolint:noctx
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, 3, body.Total, "total should match fixture count")
+
+	ids := make(map[string]bool, len(body.Items))
+	for _, item := range body.Items {
+		ids[item.ID] = true
+	}
+	for _, iss := range issues {
+		assert.True(t, ids[iss["id"].(string)], "expected id %s in response", iss["id"])
+	}
+}
+
+// TestServe_GetBead_ReturnsSpecificIssue verifies GET /api/v1/beads/{id} (T047).
+func TestServe_GetBead_ReturnsSpecificIssue(t *testing.T) {
+	issues := []map[string]any{
+		{"id": "mp-001", "title": "First", "status": "open"},
+		{"id": "mp-002", "title": "Second", "status": "in_progress"},
+	}
+	beadsDir := makeTempBeadsDirWithIssues(t, issues)
+
+	port := freePort(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	stop := startServer(t, addr, beadsDir)
+	defer stop()
+
+	resp, err := http.Get("http://" + addr + "/api/v1/beads/mp-002") //nolint:noctx
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "mp-002", body.ID)
 }
