@@ -38,7 +38,7 @@ func TestDolt_ListAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewDolt: %v", err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 
 	issues, err := b.List(ctx, store.Filter{})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestDolt_ListByStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 
 	issues, err := b.List(ctx, store.Filter{Status: []string{"open"}})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestDolt_GetMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 
 	_, err = b.Get(ctx, "nonexistent-zzz-999")
 	if err != store.ErrNotFound {
@@ -104,7 +104,7 @@ func TestDolt_Ping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 
 	if err := b.Ping(ctx); err != nil {
 		t.Errorf("Ping: %v", err)

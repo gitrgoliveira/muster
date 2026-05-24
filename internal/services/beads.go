@@ -23,14 +23,14 @@ type CLIRunner interface {
 }
 
 const (
-	CodeInvalidRequest  = "INVALID_REQUEST"
-	CodeInvalidState    = "INVALID_STATE"
-	CodeNotFound        = "BEAD_NOT_FOUND"
-	CodeInternal        = "INTERNAL"
-	CodeCLIMissing      = "BD_CLI_MISSING"
-	CodeCLIValidation   = "BD_CLI_VALIDATION"
-	CodeCLIUnavailable  = "BD_CLI_UNAVAILABLE"
-	CodeCLITimeout      = "BD_CLI_TIMEOUT"
+	CodeInvalidRequest = "INVALID_REQUEST"
+	CodeInvalidState   = "INVALID_STATE"
+	CodeNotFound       = "BEAD_NOT_FOUND"
+	CodeInternal       = "INTERNAL"
+	CodeCLIMissing     = "BD_CLI_MISSING"
+	CodeCLIValidation  = "BD_CLI_VALIDATION"
+	CodeCLIUnavailable = "BD_CLI_UNAVAILABLE"
+	CodeCLITimeout     = "BD_CLI_TIMEOUT"
 )
 
 // ServiceError wraps a validation or state error with a code understood by

@@ -102,6 +102,22 @@ func TestServe_BadMetadata_Exits1(t *testing.T) {
 	assert.Contains(t, string(out), "metadata")
 }
 
+// TestServe_UnsupportedSchema_Exits1 verifies exit 1 when schema_version is unsupported.
+func TestServe_UnsupportedSchema_Exits1(t *testing.T) {
+	dir := t.TempDir()
+	meta := map[string]any{"schema_version": 99}
+	b, _ := json.Marshal(meta)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "metadata.json"), b, 0o600))
+
+	cmd := exec.Command(testBinPath, "serve", "--addr", "127.0.0.1:0", "--beads-dir", dir)
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "binary should exit non-zero for unsupported schema")
+	exitErr, ok := err.(*exec.ExitError)
+	require.True(t, ok)
+	assert.Equal(t, 1, exitErr.ExitCode())
+	assert.Contains(t, string(out), "schema")
+}
+
 // TestServe_BootsThenShutdown starts the server on a random free port, waits for
 // it to respond to GET /, then sends SIGINT and expects a clean exit (code 0).
 func TestServe_BootsThenShutdown(t *testing.T) {

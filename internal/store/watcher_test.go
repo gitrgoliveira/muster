@@ -64,7 +64,7 @@ func TestWatcher_InitialSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 
 	out := make(chan store.WatcherEvent, 10)
 	w := store.NewWatcher(backend, path, out)
@@ -98,7 +98,7 @@ func TestWatcher_DetectsChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 
 	out := make(chan store.WatcherEvent, 10)
 	w := store.NewWatcher(backend, path, out)
@@ -140,7 +140,7 @@ func TestWatcher_IdenticalContentNoEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 
 	out := make(chan store.WatcherEvent, 10)
 	w := store.NewWatcher(backend, path, out)
@@ -175,7 +175,7 @@ func TestWatcher_DetectsNewIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 
 	out := make(chan store.WatcherEvent, 10)
 	w := store.NewWatcher(backend, path, out)
@@ -211,7 +211,7 @@ func TestWatcher_DetectsDeletedIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 
 	out := make(chan store.WatcherEvent, 10)
 	w := store.NewWatcher(backend, path, out)
@@ -246,7 +246,7 @@ func TestWatcher_WatcherEventFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 
 	out := make(chan store.WatcherEvent, 10)
 	w := store.NewWatcher(backend, path, out)

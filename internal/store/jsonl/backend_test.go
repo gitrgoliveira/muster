@@ -76,7 +76,7 @@ func newBackend(t *testing.T) (store.Backend, string) {
 	if err != nil {
 		t.Fatalf("NewJSONL: %v", err)
 	}
-	t.Cleanup(func() { b.Close() })
+	t.Cleanup(func() { b.Close() }) //nolint:errcheck
 	return b, path
 }
 
@@ -209,7 +209,7 @@ func TestJSONL_UnparseableLineSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 	issues, err := backend.List(context.Background(), store.Filter{})
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestJSONL_OversizeLineSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	defer backend.Close() //nolint:errcheck
 	issues, err := backend.List(context.Background(), store.Filter{})
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +352,7 @@ func TestJSONL_EmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 	issues, err := b.List(context.Background(), store.Filter{})
 	if err != nil {
 		t.Fatal(err)

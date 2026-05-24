@@ -56,11 +56,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 	if err != nil || fsw.Add(w.path) != nil {
 		// Fall back to pure polling if fsnotify is unavailable.
 		if fsw != nil {
-			fsw.Close()
+			_ = fsw.Close()
 		}
 		return w.runPolling(ctx)
 	}
-	defer fsw.Close()
+	defer fsw.Close() //nolint:errcheck
 
 	var debounceTimer *time.Timer
 	var timerCh <-chan time.Time

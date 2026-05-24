@@ -9,15 +9,15 @@ import (
 
 // BackendConfig carries resolved backend settings.
 type BackendConfig struct {
-	Mode         string // "embedded" or "remote"
-	BeadsDir     string
-	DoltDatabase string
-	DoltHost     string
-	DoltPort     int
-	DoltUser     string
-	DoltPassword string
-	BdBin        string
-	ReadSource   string
+	Mode          string // "embedded" or "remote"
+	BeadsDir      string
+	DoltDatabase  string
+	DoltHost      string
+	DoltPort      int
+	DoltUser      string
+	DoltPassword  string
+	BdBin         string
+	ReadSource    string
 	SchemaVersion int
 }
 

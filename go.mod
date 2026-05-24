@@ -9,7 +9,10 @@ require (
 	github.com/go-chi/chi/v5 v5.2.1
 )
 
-require filippo.io/edwards25519 v1.1.0 // indirect
+require (
+	filippo.io/edwards25519 v1.1.0 // indirect
+	golang.org/x/sys v0.4.0 // indirect
+)
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect

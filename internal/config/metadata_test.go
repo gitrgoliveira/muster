@@ -86,6 +86,11 @@ func TestLoadMetadata(t *testing.T) {
 			},
 		},
 		{
+			name:    "schema_version 3 error",
+			content: `{"schema_version":3}`,
+			wantErr: "beads schema v3 not supported by muster (need 1..2)",
+		},
+		{
 			name:    "schema_version 99 error",
 			content: `{"schema_version":99}`,
 			wantErr: "beads schema v99 not supported by muster (need 1..2)",

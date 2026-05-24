@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	_ "github.com/go-sql-driver/mysql" // mysql driver
 	"github.com/gitrgoliveira/muster/internal/store"
+	_ "github.com/go-sql-driver/mysql" // mysql driver
 )
 
 // Backend reads issues from a Dolt SQL server via the MySQL wire protocol.
@@ -24,7 +24,7 @@ func NewDolt(ctx context.Context, dsn string) (*Backend, error) {
 		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
 	}
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
 	}
 	return &Backend{db: db}, nil
@@ -37,7 +37,7 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 	if err != nil {
 		return nil, fmt.Errorf("dolt query: %w", err)
 	}
-	defer rows.Close()
+	defer rows.Close() //nolint:errcheck
 
 	var issues []store.Issue
 	for rows.Next() {
