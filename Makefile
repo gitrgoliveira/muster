@@ -1,5 +1,5 @@
-BINARY := bin/musterd
-PKG    := ./cmd/musterd/
+BINARY := bin/muster
+PKG    := ./cmd/muster/
 
 .PHONY: build test run ui-copy cover cover-check lint clean
 
@@ -13,8 +13,8 @@ run:
 	go run $(PKG) serve --addr 127.0.0.1:7766
 
 ui-copy:
-	cp -r prototype/. cmd/musterd/ui/
-	cp prototype/Muster.html cmd/musterd/ui/index.html
+	cp -r prototype/. cmd/muster/ui/
+	cp prototype/Muster.html cmd/muster/ui/index.html
 
 cover:
 	go test -coverprofile=cover.out ./...
