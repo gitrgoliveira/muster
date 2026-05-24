@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
-	"github.com/gitrgoliveira/muster/internal/core"
 )
 
 // HealthzHandler handles GET /api/v1/healthz.
@@ -15,8 +14,8 @@ func HealthzHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // OrchestratorStatusHandler returns an http.HandlerFunc closure that captures
-// beadsVersion and seedDolt from the constructor (NOT hardcoded in the handler).
-func OrchestratorStatusHandler(beadsVersion string, seedDolt core.DoltStatus) http.HandlerFunc {
+// beadsVersion from the constructor.
+func OrchestratorStatusHandler(beadsVersion string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		resp := OrchestratorStatusResponse{
 			Build:         "dev",
@@ -24,7 +23,6 @@ func OrchestratorStatusHandler(beadsVersion string, seedDolt core.DoltStatus) ht
 			BeadsVersion:  beadsVersion,
 			Online:        true,
 			ServerTime:    time.Now().UTC().Format(time.RFC3339),
-			Dolt:          seedDolt,
 		}
 		render.WriteJSON(w, http.StatusOK, resp)
 	}

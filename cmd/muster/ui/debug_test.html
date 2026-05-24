@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<pre id="out" style="font-size:13px;white-space:pre-wrap;padding:16px"></pre>
+<script>
+const files = ['data.jsx','tweaks-panel.jsx','kanban.jsx','drawer.jsx',
+               'lifecycle.jsx','orchestrator.jsx','composer.jsx','add-provider.jsx','app.jsx'];
+const out = document.getElementById('out');
+(async () => {
+  for (const f of files) {
+    try {
+      const src = await fetch(f).then(r => r.text());
+      Babel.transform(src, { presets: ['react'] });
+      out.textContent += '✓ ' + f + '\n';
+    } catch(e) {
+      out.textContent += '✗ ' + f + ': ' + e.message + '\n';
+    }
+  }
+  out.textContent += '\nDone.';
+})();
+</script>
+</body>
+</html>

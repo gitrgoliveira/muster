@@ -1,6 +1,67 @@
 package store
 
-import "github.com/gitrgoliveira/muster/internal/core"
+import (
+	"time"
+
+	"github.com/gitrgoliveira/muster/internal/core"
+)
+
+// SeedIssues returns 4 prototype issues for use in tests and development.
+// IDs use the mp-* prefix to match realistic beads issue IDs.
+func SeedIssues() []Issue {
+	now := time.Now().UTC()
+	started := now.Add(-2 * time.Hour)
+	closed := now.Add(-1 * time.Hour)
+	return []Issue{
+		{
+			ID:          "mp-aaa",
+			Title:       "Implement feature alpha",
+			Description: "First issue in the backlog, open status.",
+			Status:      "open",
+			Priority:    2,
+			IssueType:   "feature",
+			Owner:       "alice",
+			CreatedAt:   now.Add(-24 * time.Hour),
+			UpdatedAt:   now,
+		},
+		{
+			ID:          "mp-bbb",
+			Title:       "Fix bug beta",
+			Description: "In-progress bug fix.",
+			Status:      "in_progress",
+			Priority:    1,
+			IssueType:   "bug",
+			Assignee:    "claude",
+			Owner:       "bob",
+			CreatedAt:   now.Add(-12 * time.Hour),
+			UpdatedAt:   now,
+			StartedAt:   &started,
+		},
+		{
+			ID:          "mp-ccc",
+			Title:       "Closed chore gamma",
+			Description: "Completed maintenance task.",
+			Status:      "closed",
+			Priority:    3,
+			IssueType:   "chore",
+			Owner:       "alice",
+			CreatedAt:   now.Add(-48 * time.Hour),
+			UpdatedAt:   now,
+			ClosedAt:    &closed,
+		},
+		{
+			ID:          "mp-ddd",
+			Title:       "Backlog task delta",
+			Description: "Another open issue.",
+			Status:      "open",
+			Priority:    0,
+			IssueType:   "task",
+			Owner:       "carol",
+			CreatedAt:   now.Add(-6 * time.Hour),
+			UpdatedAt:   now,
+		},
+	}
+}
 
 // SeedBeads returns the 14 prototype beads transcribed from prototype/data.jsx.
 func SeedBeads() []core.Bead {

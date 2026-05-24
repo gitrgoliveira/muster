@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-// Error codes — exhaustively enumerated for M0.
+// Error codes.
 const (
 	CodeBeadNotFound     = "BEAD_NOT_FOUND"
 	CodeNotFound         = "NOT_FOUND"
@@ -14,6 +14,7 @@ const (
 	CodeInvalidState     = "INVALID_STATE"
 	CodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
 	CodeInternal         = "INTERNAL"
+	CodeCLIMissing       = "BD_CLI_MISSING"
 )
 
 // ErrorResponse is the top-level JSON envelope returned for all error responses.

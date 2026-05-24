@@ -27,15 +27,14 @@ func newRouterTestServer(t *testing.T) *httptest.Server {
 		"ui/index.html": &fstest.MapFile{Data: []byte("<!DOCTYPE html><body>test</body>")},
 	}
 
-	ms := store.NewMemStore(store.SeedBeads())
+	backend := store.NewMemoryBackend(store.SeedIssues())
 	pub := services.Publisher(func(f ws.Frame) {})
-	svc := services.NewBeadService(ms, pub)
+	svc := services.NewBeadService(backend, nil, pub)
 
 	hub := ws.NewHub("0.9.1")
 	go hub.Run()
 
-	seedDolt := store.SeedDolt()
-	handler := api.NewRouter(svc, ms, hub, uiFS, seedDolt, "0.9.1")
+	handler := api.NewRouter(svc, hub, uiFS, "0.9.1")
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
