@@ -12,4 +12,10 @@ type OrchestratorStatusResponse struct {
 	BeadsVersion  string `json:"beadsVersion"`
 	Online        bool   `json:"online"`
 	ServerTime    string `json:"serverTime"`
+	BeadsDir      string `json:"beadsDir,omitempty"`
+	DoltDatabase  string `json:"doltDatabase,omitempty"`
+	DoltMode      string `json:"doltMode,omitempty"`
+	ReadSource    string `json:"readSource,omitempty"`
+	BdCLI         string `json:"bdCLI,omitempty"`
+	ProjectID     string `json:"projectID,omitempty"`
 }

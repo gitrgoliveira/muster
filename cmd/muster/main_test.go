@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -32,6 +34,23 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// makeTempBeadsDir creates a temporary beads directory with a valid embedded config
+// and an empty issues.jsonl file, returning the directory path.
+func makeTempBeadsDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	meta := map[string]any{
+		"schema_version": 1,
+		"dolt_mode":      "embedded",
+		"project_id":     "test-project",
+	}
+	b, err := json.Marshal(meta)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "metadata.json"), b, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte{}, 0o600))
+	return dir
+}
+
 // TestNoSubcommand_PrintsUsageExits1 verifies that running with no args exits 1.
 func TestNoSubcommand_PrintsUsageExits1(t *testing.T) {
 	cmd := exec.Command(testBinPath)
@@ -52,14 +71,47 @@ func TestServe_ParseAddr_InvalidFormat_Exits1(t *testing.T) {
 	assert.Equal(t, 1, exitErr.ExitCode())
 }
 
+// TestServe_MissingBeadsDir_Exits1 verifies exit 1 when no beads directory can be found.
+func TestServe_MissingBeadsDir_Exits1(t *testing.T) {
+	// Run in a temp dir with no .beads/ subdirectory.
+	// Clear BEADS_DIR so the subprocess cannot inherit it from the test environment.
+	emptyDir := t.TempDir()
+	cmd := exec.Command(testBinPath, "serve", "--addr", "127.0.0.1:0")
+	cmd.Dir = emptyDir
+	// Minimal env: PATH only, no BEADS_DIR.
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "binary should exit non-zero when no beads dir found")
+	exitErr, ok := err.(*exec.ExitError)
+	require.True(t, ok, "error should be an ExitError")
+	assert.Equal(t, 1, exitErr.ExitCode())
+	assert.Contains(t, string(out), "beads", "error message should mention beads")
+}
+
+// TestServe_BadMetadata_Exits1 verifies exit 1 with bad metadata.json.
+func TestServe_BadMetadata_Exits1(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "metadata.json"), []byte("{not json}"), 0o600))
+
+	cmd := exec.Command(testBinPath, "serve", "--addr", "127.0.0.1:0", "--beads-dir", dir)
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "binary should exit non-zero for bad metadata")
+	exitErr, ok := err.(*exec.ExitError)
+	require.True(t, ok)
+	assert.Equal(t, 1, exitErr.ExitCode())
+	assert.Contains(t, string(out), "metadata")
+}
+
 // TestServe_BootsThenShutdown starts the server on a random free port, waits for
 // it to respond to GET /, then sends SIGINT and expects a clean exit (code 0).
 func TestServe_BootsThenShutdown(t *testing.T) {
+	beadsDir := makeTempBeadsDir(t)
+
 	// Pick a free port.
 	port := freePort(t)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	cmd := exec.Command(testBinPath, "serve", "--addr", addr)
+	cmd := exec.Command(testBinPath, "serve", "--addr", addr, "--beads-dir", beadsDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	require.NoError(t, cmd.Start(), "start server")
@@ -123,8 +175,10 @@ func TestServe_ParseAddr_IPv6(t *testing.T) {
 	port := ln6.Addr().(*net.TCPAddr).Port
 	ln6.Close()
 
+	beadsDir := makeTempBeadsDir(t)
+
 	addr := fmt.Sprintf("[::1]:%d", port)
-	cmd := exec.Command(testBinPath, "serve", "--addr", addr)
+	cmd := exec.Command(testBinPath, "serve", "--addr", addr, "--beads-dir", beadsDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	require.NoError(t, cmd.Start(), "start server on IPv6")
@@ -175,8 +229,9 @@ func TestServer_PortInUse_Exits1(t *testing.T) {
 	defer holder.Close()
 	port := holder.Addr().(*net.TCPAddr).Port
 
+	beadsDir := makeTempBeadsDir(t)
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	cmd := exec.Command(testBinPath, "serve", "--addr", addr)
+	cmd := exec.Command(testBinPath, "serve", "--addr", addr, "--beads-dir", beadsDir)
 	// Give the binary up to 5s to notice the bind failure and exit.
 	done := make(chan error, 1)
 	require.NoError(t, cmd.Start())

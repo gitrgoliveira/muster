@@ -24,13 +24,14 @@ func NewRouter(
 	svc *services.BeadService,
 	hub *ws.Hub,
 	uiFS fs.FS,
-	beadsVersion string,
+	statusCfg health.StatusConfig,
 ) http.Handler {
 	r := chi.NewRouter()
 
 	// Global middleware.
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recovery)
+	r.Use(beadsHeadersMiddleware(statusCfg.BeadsDir, statusCfg.DoltDatabase))
 
 	// Custom 404 / 405 JSON responses for API routes only.
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
@@ -42,7 +43,7 @@ func NewRouter(
 
 	// Health endpoints.
 	r.Get("/api/v1/healthz", health.HealthzHandler)
-	r.Get("/api/v1/orchestrator/status", health.OrchestratorStatusHandler(beadsVersion))
+	r.Get("/api/v1/orchestrator/status", health.OrchestratorStatusHandler(statusCfg))
 
 	// WebSocket stream endpoint.
 	r.Get("/api/v1/stream", stream.StreamHandler(hub))
@@ -72,6 +73,21 @@ func NewRouter(
 		}
 		spa.ServeHTTP(w, req)
 	})
+}
+
+// beadsHeadersMiddleware adds X-Beads-Dir and X-Beads-Database headers to all responses.
+func beadsHeadersMiddleware(beadsDir, doltDatabase string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if beadsDir != "" {
+				w.Header().Set("X-Beads-Dir", beadsDir)
+			}
+			if doltDatabase != "" {
+				w.Header().Set("X-Beads-Database", doltDatabase)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // spaHandler serves static files from fsys. Any path that does not resolve to

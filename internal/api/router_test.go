@@ -10,6 +10,7 @@ import (
 	"testing/fstest"
 
 	api "github.com/gitrgoliveira/muster/internal/api"
+	"github.com/gitrgoliveira/muster/internal/api/health"
 	"github.com/gitrgoliveira/muster/internal/api/middleware"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
@@ -34,7 +35,7 @@ func newRouterTestServer(t *testing.T) *httptest.Server {
 	hub := ws.NewHub("0.9.1")
 	go hub.Run()
 
-	handler := api.NewRouter(svc, hub, uiFS, "0.9.1")
+	handler := api.NewRouter(svc, hub, uiFS, health.StatusConfig{BeadsVersion: "0.9.1", SchemaVersion: 1})
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
