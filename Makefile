@@ -10,7 +10,7 @@ test:
 	go test -race ./...
 
 run:
-	go run $(PKG) serve --addr 127.0.0.1:7766
+	go run $(PKG) serve --addr 127.0.0.1:7766 --beads-dir $${BEADS_DIR:-.beads}
 
 ui-copy:
 	cp -r prototype/. cmd/muster/ui/
