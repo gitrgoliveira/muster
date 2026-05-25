@@ -186,6 +186,18 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 	if err := validateField("desc", input.Desc); err != nil {
 		return nil, err
 	}
+	if len(input.Labels) > 0 {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "labels not supported by bd CLI"}
+	}
+	if input.Column != "" {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "column not supported on create (beads default to backlog)"}
+	}
+	if input.VCS != "" {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "vcs not supported by bd CLI"}
+	}
+	if input.TokensBudget != 0 {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "tokensBudget not supported by bd CLI"}
+	}
 	if input.Type != "" && !input.Type.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid type"}
 	}
