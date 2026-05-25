@@ -92,7 +92,12 @@ func (w *Watcher) Run(ctx context.Context) error {
 				}
 				source = "fsnotify"
 				if debounceTimer != nil {
-					debounceTimer.Stop()
+					if !debounceTimer.Stop() {
+						select {
+						case <-debounceTimer.C:
+						default:
+						}
+					}
 				}
 				debounceTimer = time.NewTimer(w.debounce)
 				timerCh = debounceTimer.C
@@ -145,6 +150,7 @@ func (w *Watcher) refreshSnapshot(ctx context.Context) error {
 func (w *Watcher) emitDiff(ctx context.Context, source string) {
 	issues, err := w.backend.List(ctx, Filter{})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "watcher: %s diff failed: %v\n", source, err)
 		return
 	}
 

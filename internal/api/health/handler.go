@@ -38,7 +38,9 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		online := true
 		if cfg.Pinger != nil {
-			online = cfg.Pinger.Ping(r.Context()) == nil
+			pingCtx, pingCancel := context.WithTimeout(r.Context(), 2*time.Second)
+			online = cfg.Pinger.Ping(pingCtx) == nil
+			pingCancel()
 		}
 
 		schemaVersion := cfg.SchemaVersion

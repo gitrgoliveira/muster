@@ -53,12 +53,11 @@ from `metadata.json` (which is git-tracked).
 
 | Condition | Exit code | Message |
 |---|---|---|
-| File missing | 1 | `invalid beads-dir: metadata.json not found at <path>` |
-| File unparseable | 1 | `invalid beads-dir: cannot read metadata.json: <err>` |
-| Unsupported `database` or `backend` | 1 | `invalid beads-dir: unsupported <field> "<value>"` |
-| Unknown `dolt_mode` | 1 | `invalid beads-dir: dolt_mode must be "embedded" or "remote"` |
-| `dolt_database` empty | 1 | `invalid beads-dir: dolt_database is empty` |
-| `schema_version` outside `[1,2]` | 1 | `beads schema v<N> not supported by muster (need 1..2)` |
+| File missing | 1 | `error: cannot read metadata.json: <err>` |
+| File unparseable | 1 | `error: cannot parse metadata.json: <err>` |
+| Unsupported `database` | 1 | `error: unsupported database "<value>" (only "dolt" is supported)` |
+| Unknown `dolt_mode` | 1 | `error: invalid dolt_mode "<value>" (want embedded or remote)` |
+| `schema_version` outside `[1,2]` | 1 | `error: beads schema v<N> not supported by muster (need 1..2)` |
 
 ---
 
@@ -76,11 +75,10 @@ None directly.
 
 | Condition | Exit code | Message |
 |---|---|---|
-| `dolt_host` empty in metadata.json | 1 | `invalid beads-dir: dolt_host required for dolt_mode=remote` |
-| `dolt_port` zero/negative | 1 | `invalid beads-dir: dolt_port required for dolt_mode=remote` |
-| `dolt_user` empty | 1 | `invalid beads-dir: dolt_user required for dolt_mode=remote` |
-| `bd dolt start` fails | 1 | `cannot start dolt server: <bd stderr>` |
-| MySQL connection fails after start (5 s timeout) | 1 | `cannot connect to dolt server: <err>` |
+| `dolt_host` empty in metadata.json | 1 | `error: dolt_host is required in remote mode` |
+| `dolt_database` empty in metadata.json | 1 | `error: dolt_database is required in remote mode` |
+| `bd dolt start` fails | — | Warning logged; continues to attempt SQL connection |
+| MySQL connection fails (10 s timeout) | 1 | `cannot connect to dolt server: <err>` |
 
 ---
 

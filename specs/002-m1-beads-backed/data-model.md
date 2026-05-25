@@ -153,32 +153,18 @@ A reverse map drives `POST /move`. Unknown statuses (custom states) default to `
 
 ---
 
-## `internal/store/watcher`
+## `internal/store` (watcher)
 
 ### `WatcherEvent`
 
 ```go
 type WatcherEvent struct {
-    // Source describes what triggered the event.
-    Source EventSource
-
-    // ChangedIDs is the set of issue IDs that differ from the last snapshot.
-    // Populated only after the watcher re-reads from Backend.
+    Source     string   // "fsnotify" or "poll"
     ChangedIDs []string
-
-    // CreatedIDs and DeletedIDs are subsets of ChangedIDs for create/delete bead events.
     CreatedIDs []string
     DeletedIDs []string
-
-    At time.Time
+    At         time.Time
 }
-
-type EventSource int
-
-const (
-    SourceFSEvent EventSource = iota
-    SourcePoll
-)
 ```
 
 ### Watcher state
@@ -214,7 +200,7 @@ type Watcher struct {
 type CLI struct {
     Path     string         // resolved path to the `bd` binary
     BeadsDir string         // value of BEADS_DIR for the subprocess env
-    Timeout  time.Duration  // 5 * time.Second
+    Timeout  time.Duration  // 30 * time.Second
 }
 
 // Result is the typed output of one `bd` invocation.
