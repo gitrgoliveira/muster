@@ -42,7 +42,7 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 	var issues []store.Issue
 	for rows.Next() {
 		var iss store.Issue
-		if err := scanIssue(rows, &iss); err != nil {
+		if err := scanIntoIssue(rows, &iss); err != nil {
 			return nil, err
 		}
 		if f.TruncateDesc > 0 && len(iss.Description) > f.TruncateDesc {
@@ -60,7 +60,7 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 func (b *Backend) Get(ctx context.Context, id string) (*store.Issue, error) {
 	row := b.db.QueryRowContext(ctx, getSQL, id)
 	var iss store.Issue
-	if err := scanIssueRow(row, &iss); err != nil {
+	if err := scanIntoIssue(row, &iss); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, store.ErrNotFound
 		}
@@ -110,18 +110,12 @@ func buildListQuery(f store.Filter) (string, []any) {
 	return q, args
 }
 
-func scanIssue(rows *sql.Rows, iss *store.Issue) error {
-	return rows.Scan(
-		&iss.ID, &iss.Title, &iss.Description, &iss.Status,
-		&iss.Priority, &iss.IssueType, &iss.Assignee, &iss.Owner,
-		&iss.CreatedAt, &iss.UpdatedAt, &iss.StartedAt, &iss.ClosedAt,
-		&iss.CloseReason, &iss.DependencyCount, &iss.DependentCount, &iss.CommentCount,
-		&iss.Notes,
-	)
+type scanner interface {
+	Scan(dest ...any) error
 }
 
-func scanIssueRow(row *sql.Row, iss *store.Issue) error {
-	return row.Scan(
+func scanIntoIssue(s scanner, iss *store.Issue) error {
+	return s.Scan(
 		&iss.ID, &iss.Title, &iss.Description, &iss.Status,
 		&iss.Priority, &iss.IssueType, &iss.Assignee, &iss.Owner,
 		&iss.CreatedAt, &iss.UpdatedAt, &iss.StartedAt, &iss.ClosedAt,

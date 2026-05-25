@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/store"
@@ -18,8 +19,6 @@ type CLIRunner interface {
 	Close(ctx context.Context, id string) error
 	Dispatch(ctx context.Context, id string) (store.Issue, error)
 	AppendNote(ctx context.Context, id, text string) (store.Issue, error)
-	RunJSON(ctx context.Context, dst any, args ...string) error
-	RunVoid(ctx context.Context, args ...string) error
 }
 
 const (
@@ -178,7 +177,7 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 	if title == "" {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "title is required"}
 	}
-	if len([]rune(title)) > 255 {
+	if utf8.RuneCountInString(title) > 255 {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "title exceeds 255 chars"}
 	}
 	if err := validateField("title", title); err != nil {
@@ -231,6 +230,7 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 		if err := validateField("title", t); err != nil {
 			return nil, err
 		}
+		input.Title = &t
 	}
 	if input.Desc != nil {
 		if err := validateField("desc", *input.Desc); err != nil {
@@ -243,8 +243,7 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 
 	patch := bdshell.UpdatePatch{}
 	if input.Title != nil {
-		t := strings.TrimSpace(*input.Title)
-		patch.Title = &t
+		patch.Title = input.Title
 	}
 	if input.Desc != nil {
 		patch.Description = input.Desc

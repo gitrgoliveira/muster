@@ -39,17 +39,7 @@ func TestMain(m *testing.M) {
 // and an empty issues.jsonl file, returning the directory path.
 func makeTempBeadsDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	meta := map[string]any{
-		"schema_version": 1,
-		"dolt_mode":      "embedded",
-		"project_id":     "test-project",
-	}
-	b, err := json.Marshal(meta)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "metadata.json"), b, 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "issues.jsonl"), []byte{}, 0o600))
-	return dir
+	return makeTempBeadsDirWithIssues(t, nil)
 }
 
 // TestNoSubcommand_PrintsUsageExits1 verifies that running with no args exits 1.

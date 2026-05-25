@@ -117,10 +117,10 @@ func (c *CLI) RunVoid(ctx context.Context, args ...string) error {
 
 func buildEnv(beadsDir string) []string {
 	env := []string{"BEADS_DIR=" + beadsDir}
-	if p := envGet("PATH"); p != "" {
+	if p := os.Getenv("PATH"); p != "" {
 		env = append(env, "PATH="+p)
 	}
-	if home := envGet("HOME"); home != "" {
+	if home := os.Getenv("HOME"); home != "" {
 		env = append(env, "HOME="+home)
 	}
 	return env
@@ -152,13 +152,4 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
-}
-
-func envGet(key string) string {
-	for _, pair := range os.Environ() {
-		if k, v, ok := strings.Cut(pair, "="); ok && k == key {
-			return v
-		}
-	}
-	return ""
 }

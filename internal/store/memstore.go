@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"strings"
 	"sync"
 )
 
@@ -27,7 +26,7 @@ func (m *MemoryBackend) List(_ context.Context, f Filter) ([]Issue, error) {
 
 	result := make([]Issue, 0, len(m.issues))
 	for _, iss := range m.issues {
-		if !matchesFilter(iss, f) {
+		if !MatchesFilter(iss, f) {
 			continue
 		}
 		if f.TruncateDesc > 0 && len(iss.Description) > f.TruncateDesc {
@@ -60,31 +59,3 @@ func (m *MemoryBackend) Ping(_ context.Context) error { return nil }
 
 // Close is a no-op for the in-memory backend.
 func (m *MemoryBackend) Close() error { return nil }
-
-func matchesFilter(iss Issue, f Filter) bool {
-	if len(f.Status) > 0 {
-		found := false
-		for _, s := range f.Status {
-			if strings.EqualFold(iss.Status, s) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	if len(f.IDs) > 0 {
-		found := false
-		for _, id := range f.IDs {
-			if iss.ID == id {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}

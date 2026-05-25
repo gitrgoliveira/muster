@@ -57,7 +57,7 @@ func (b *Backend) List(_ context.Context, f store.Filter) ([]store.Issue, error)
 
 	result := make([]store.Issue, 0)
 	for _, iss := range b.cache {
-		if !matchesFilter(iss, f) {
+		if !store.MatchesFilter(iss, f) {
 			continue
 		}
 		if f.TruncateDesc > 0 && len(iss.Description) > f.TruncateDesc {
@@ -192,32 +192,4 @@ func (b *Backend) parse() ([]store.Issue, error) {
 		issues = append(issues, iss)
 	}
 	return issues, nil
-}
-
-func matchesFilter(iss store.Issue, f store.Filter) bool {
-	if len(f.Status) > 0 {
-		found := false
-		for _, s := range f.Status {
-			if strings.EqualFold(iss.Status, s) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	if len(f.IDs) > 0 {
-		found := false
-		for _, id := range f.IDs {
-			if iss.ID == id {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
 }
