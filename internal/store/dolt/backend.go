@@ -35,7 +35,7 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 	q, args := buildListQuery(f)
 	rows, err := b.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		return nil, fmt.Errorf("dolt query: %w", err)
+		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
 	}
 	defer rows.Close() //nolint:errcheck
 
@@ -58,13 +58,16 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 
 // Get returns the issue with the given ID, or store.ErrNotFound.
 func (b *Backend) Get(ctx context.Context, id string) (*store.Issue, error) {
+	if id == "" {
+		return nil, store.ErrNotFound
+	}
 	row := b.db.QueryRowContext(ctx, getSQL, id)
 	var iss store.Issue
 	if err := scanIntoIssue(row, &iss); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, store.ErrNotFound
 		}
-		return nil, fmt.Errorf("dolt get: %w", err)
+		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
 	}
 	return &iss, nil
 }
