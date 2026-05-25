@@ -57,11 +57,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 
 	fsw, err := fsnotify.NewWatcher()
-	if err != nil || fsw.Add(w.path) != nil {
-		// Fall back to pure polling if fsnotify is unavailable.
-		if fsw != nil {
-			_ = fsw.Close()
-		}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watcher: fsnotify unavailable: %v; falling back to polling\n", err)
+		return w.runPolling(ctx)
+	}
+	if addErr := fsw.Add(w.path); addErr != nil {
+		fmt.Fprintf(os.Stderr, "watcher: cannot watch %s: %v; falling back to polling\n", w.path, addErr)
+		_ = fsw.Close()
 		return w.runPolling(ctx)
 	}
 	defer fsw.Close() //nolint:errcheck
