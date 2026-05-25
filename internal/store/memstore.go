@@ -42,6 +42,9 @@ func (m *MemoryBackend) List(_ context.Context, f Filter) ([]Issue, error) {
 
 // Get returns the issue with the given ID, or ErrNotFound.
 func (m *MemoryBackend) Get(_ context.Context, id string) (*Issue, error) {
+	if id == "" {
+		return nil, ErrNotFound
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
