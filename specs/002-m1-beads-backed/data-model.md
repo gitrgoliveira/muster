@@ -32,7 +32,7 @@ const (
 **Validation**:
 - `BeadsDir` must be an absolute path that exists and contains a readable `metadata.json`.
 - `Mode == ModeEmbedded` ⇒ `<BeadsDir>/issues.jsonl` must exist and be readable.
-- `Mode == ModeRemote` ⇒ `DoltHost`/`DoltPort`/`DoltUser` non-empty (from `metadata.json`); `DoltPassword` read from `BEADS_DOLT_PASSWORD` env var (may be empty); `bd dolt start` must succeed.
+- \`Mode == ModeRemote\` ⇒ \`DoltHost\` and \`DoltDatabase\` required; \`DoltPort\` defaults to 3306, \`DoltUser\` defaults to \"root\" (from `metadata.json`); `DoltPassword` read from `BEADS_DOLT_PASSWORD` env var (may be empty); `bd dolt start` must succeed.
 - `SchemaVersion`, when present, must be in `[MinSchema, MaxSchema]`.
 
 ### `Metadata` (raw shape of `metadata.json`)
@@ -44,7 +44,7 @@ type Metadata struct {
     DoltMode      string `json:"dolt_mode"`      // "embedded" | "remote"
     DoltDatabase  string `json:"dolt_database"`  // schema name
     DoltHost      string `json:"dolt_host,omitempty"` // server mode: "127.0.0.1" default
-    DoltPort      int    `json:"dolt_port,omitempty"` // server mode: 3307 default
+    DoltPort      int    `json:"dolt_port,omitempty"` // server mode: 3306 default
     DoltUser      string `json:"dolt_user,omitempty"` // server mode: "root" default
     ProjectID     string `json:"project_id"`     // UUID
     SchemaVersion int    `json:"schema_version,omitempty"`

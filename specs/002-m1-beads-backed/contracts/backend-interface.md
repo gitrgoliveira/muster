@@ -84,7 +84,7 @@ Implementations MUST wrap underlying errors with `fmt.Errorf("backend: %w", err)
 
 - Constructor: `NewJSONL(path string) (Backend, error)`
 - Reads and parses `<path>/issues.jsonl` — one JSON object per line
-- `List` re-reads the file on each call (the file is small, ≤5000 issues)
+- `List` uses an in-memory cache refreshed when mtime changes (the file is small, ≤5000 issues)
 - `Close()` is a no-op (no resources to release)
 - No Dolt dependency — pure Go JSON parsing
 

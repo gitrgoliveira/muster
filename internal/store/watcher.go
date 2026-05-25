@@ -98,8 +98,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 				timerCh = debounceTimer.C
 			}
 
-		case <-fsw.Errors:
-			// Ignore watch errors; polling fallback covers us.
+		case werr := <-fsw.Errors:
+			if werr != nil {
+				fmt.Fprintf(os.Stderr, "watcher: fsnotify error: %v\n", werr)
+			}
 
 		case <-timerCh:
 			timerCh = nil

@@ -112,7 +112,7 @@ func main() {
 	if cli != nil {
 		svcCLI = cli
 	}
-	svc := services.NewBeadService(backend, svcCLI, hub.Broadcast)
+	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase)
 
 	// Print startup banner.
 	bdCLIDisplay := "(missing — write endpoints disabled)"

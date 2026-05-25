@@ -54,21 +54,29 @@ type BackendConfig struct {
 // ResolveBeadsDir resolves the beads directory from flag, env, or cwd fallback.
 // Priority: flag > env (BEADS_DIR) > "./.beads/" in cwd.
 func ResolveBeadsDir(flagVal, envVal string) (string, error) {
-	if flagVal != "" {
-		return filepath.Clean(flagVal), nil
+	var raw string
+	switch {
+	case flagVal != "":
+		raw = flagVal
+	case envVal != "":
+		raw = envVal
+	default:
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine cwd: %w", err)
+		}
+		candidate := filepath.Join(cwd, ".beads")
+		if _, err := os.Stat(candidate); err == nil {
+			raw = candidate
+		} else {
+			return "", fmt.Errorf("no beads directory found; set --beads-dir or BEADS_DIR")
+		}
 	}
-	if envVal != "" {
-		return filepath.Clean(envVal), nil
-	}
-	cwd, err := os.Getwd()
+	abs, err := filepath.Abs(raw)
 	if err != nil {
-		return "", fmt.Errorf("cannot determine cwd: %w", err)
+		return "", fmt.Errorf("cannot resolve absolute path for %q: %w", raw, err)
 	}
-	candidate := filepath.Join(cwd, ".beads")
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate, nil
-	}
-	return "", fmt.Errorf("no beads directory found; set --beads-dir or BEADS_DIR")
+	return abs, nil
 }
 
 // LoadBackendConfig loads and validates configuration from the beads directory.

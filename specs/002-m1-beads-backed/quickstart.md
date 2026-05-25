@@ -70,7 +70,7 @@ bd update muster-xyz --priority=0
 Within ~2 seconds, the websocat terminal should print:
 
 ```json
-{"type":"bead.updated","id":"muster-xyz","bead":{...}}
+{"type":"bead.updated","id":"muster-xyz"}
 ```
 
 ## 5. Verify write-back via API
@@ -92,7 +92,7 @@ bd show muster-xyz | grep -i title
 To serve a different beads database, restart `muster` with a different `--beads-dir`:
 
 ```bash
-./muster serve --beads-dir ~/repos/beads-central/.beads
+bin/muster serve --beads-dir ~/repos/beads-central/.beads
 # Now serves the mp-* issues from the main project.
 ```
 

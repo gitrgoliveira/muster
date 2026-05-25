@@ -33,7 +33,7 @@ Every `bd` invocation runs with:
 
 Working directory: muster's own cwd (the value of `BEADS_DIR` is authoritative for `bd`).
 
-Timeout: **5 s** per invocation; enforced via `exec.CommandContext` with a derived context.
+Timeout: **30 s** per invocation; enforced via `exec.CommandContext` with a derived context.
 On timeout, muster sends SIGTERM, waits 1 s, then SIGKILL.
 
 ---

@@ -15,7 +15,7 @@ muster reads **two** config files from `<beads-dir>`. Both are written by the `b
     "dolt_mode":      "embedded" | "remote",
     "dolt_database":  "<schema_name>",
     "dolt_host":      "127.0.0.1",
-    "dolt_port":      3307,
+    "dolt_port":      3306,
     "dolt_user":      "root",
     "project_id":     "<uuid>",
     "schema_version": 1
@@ -29,7 +29,7 @@ muster reads **two** config files from `<beads-dir>`. Both are written by the `b
 | `dolt_mode` | enum | yes | `"embedded"` or `"remote"`. Other values cause exit-1. |
 | `dolt_database` | string | yes | The Dolt schema name. For embedded, the subdirectory under `embeddeddolt/`. |
 | `dolt_host` | string | server mode only | Host of the Dolt SQL server. Default `127.0.0.1`. |
-| `dolt_port` | int | server mode only | Port of the Dolt SQL server. Default `3307`. |
+| `dolt_port` | int | server mode only | Port of the Dolt SQL server. Default `3306`. |
 | `dolt_user` | string | server mode only | MySQL user. Default `root`. |
 | `project_id` | UUID | yes | Echoed in `GET /api/v1/orchestrator/status`. Not used for routing in M1. |
 | `schema_version` | int | no | When absent, defaults to 1. |
