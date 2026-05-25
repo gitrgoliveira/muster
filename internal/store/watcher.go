@@ -85,12 +85,15 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 		case ev, ok := <-fsw.Events:
 			if !ok {
-				return nil
+				fmt.Fprintf(os.Stderr, "watcher: fsnotify channel closed; falling back to polling\n")
+				_ = fsw.Close()
+				return w.runPolling(ctx)
 			}
 			if ev.Has(fsnotify.Write) || ev.Has(fsnotify.Create) || ev.Has(fsnotify.Rename) {
-				// Re-add after rename (atomic write).
 				if ev.Has(fsnotify.Rename) {
-					fsw.Add(w.path) //nolint:errcheck
+					if addErr := fsw.Add(w.path); addErr != nil {
+						fmt.Fprintf(os.Stderr, "watcher: re-add after rename failed: %v\n", addErr)
+					}
 				}
 				source = "fsnotify"
 				if debounceTimer != nil {

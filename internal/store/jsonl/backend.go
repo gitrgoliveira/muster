@@ -116,7 +116,14 @@ func (b *Backend) refreshIfStale() error {
 }
 
 // reload parses the JSONL file and updates the cache.
+// Stat is captured before parse so mtime matches the content read.
 func (b *Backend) reload() error {
+	info, err := os.Stat(b.path)
+	if err != nil {
+		return fmt.Errorf("stat issues.jsonl: %w", err)
+	}
+	mtime := info.ModTime()
+
 	var issues []store.Issue
 	var lastErr error
 
@@ -134,14 +141,9 @@ func (b *Backend) reload() error {
 		return lastErr
 	}
 
-	info, err := os.Stat(b.path)
-	if err != nil {
-		return fmt.Errorf("stat issues.jsonl: %w", err)
-	}
-
 	b.mu.Lock()
 	b.cache = issues
-	b.mtime = info.ModTime()
+	b.mtime = mtime
 	b.mu.Unlock()
 	return nil
 }
