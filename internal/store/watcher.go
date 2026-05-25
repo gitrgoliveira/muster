@@ -179,16 +179,18 @@ func (w *Watcher) emitDiff(ctx context.Context, source string) {
 		return
 	}
 
-	w.snapshot = current
-	select {
-	case w.out <- WatcherEvent{
+	ev := WatcherEvent{
 		Source:     source,
 		ChangedIDs: changed,
 		CreatedIDs: created,
 		DeletedIDs: deleted,
 		At:         time.Now(),
-	}:
+	}
+	select {
+	case w.out <- ev:
+		w.snapshot = current
 	default:
+		w.snapshot = current
 		fmt.Fprintf(os.Stderr, "watcher: event channel full, dropping diff (%d changed, %d created, %d deleted)\n",
 			len(changed), len(created), len(deleted))
 	}

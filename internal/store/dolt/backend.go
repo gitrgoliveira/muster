@@ -39,7 +39,7 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 	}
 	defer rows.Close() //nolint:errcheck
 
-	var issues []store.Issue
+	issues := make([]store.Issue, 0)
 	for rows.Next() {
 		var iss store.Issue
 		if err := scanIntoIssue(rows, &iss); err != nil {
