@@ -131,10 +131,14 @@ func wrapCLIError(err error) *ServiceError {
 	return &ServiceError{Code: CodeInternal, Message: err.Error()}
 }
 
-// validateField rejects fields containing a NUL byte or exceeding 64 KB.
+// validateField rejects fields containing control characters (NUL, CR, LF) or exceeding 64 KB.
+// LF/CR are rejected because bd may parse multi-line input unexpectedly.
 func validateField(name, value string) error {
 	if strings.ContainsRune(value, '\x00') {
 		return &ServiceError{Code: CodeInvalidRequest, Message: name + " contains invalid NUL byte"}
+	}
+	if strings.ContainsAny(value, "\n\r") {
+		return &ServiceError{Code: CodeInvalidRequest, Message: name + " contains newline"}
 	}
 	if len(value) > 64*1024 {
 		return &ServiceError{Code: CodeInvalidRequest, Message: name + " exceeds 64 KB limit"}

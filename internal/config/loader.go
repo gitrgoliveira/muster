@@ -33,6 +33,7 @@ func BuildDoltDSN(cfg BackendConfig) string {
 type BackendConfig struct {
 	Mode          string // "embedded" or "remote"
 	BeadsDir      string
+	ProjectID     string
 	DoltDatabase  string
 	DoltHost      string
 	DoltPort      int
@@ -72,6 +73,7 @@ func LoadBackendConfig(dir string) (BackendConfig, error) {
 
 	cfg := BackendConfig{
 		BeadsDir:      dir,
+		ProjectID:     m.ProjectID,
 		DoltDatabase:  m.DoltDatabase,
 		DoltHost:      m.DoltHost,
 		DoltPort:      m.DoltPort,

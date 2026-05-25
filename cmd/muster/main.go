@@ -107,8 +107,8 @@ func main() {
 		}
 		backend = b
 	default:
-		// Fallback — should not happen in practice after config validation.
-		backend = store.NewMemoryBackend(store.SeedIssues())
+		fmt.Fprintf(os.Stderr, "unsupported dolt_mode %q\n", cfg.Mode)
+		os.Exit(1)
 	}
 
 	var svcCLI services.CLIRunner
@@ -139,7 +139,11 @@ func main() {
 	if cfg.Mode == "embedded" {
 		jsonlPath := filepath.Join(beadsDir, "issues.jsonl")
 		w := store.NewWatcher(backend, jsonlPath, watcherOut)
-		go w.Run(ctx) //nolint:errcheck
+		go func() {
+			if err := w.Run(ctx); err != nil && err != context.Canceled {
+				fmt.Fprintf(os.Stderr, "watcher: %v\n", err)
+			}
+		}()
 
 		// Fan watcher events into the WS hub.
 		go func() {
@@ -165,6 +169,7 @@ func main() {
 	statusCfg := health.StatusConfig{
 		BeadsVersion:  beadsVersion,
 		BeadsDir:      cfg.BeadsDir,
+		ProjectID:     cfg.ProjectID,
 		DoltDatabase:  cfg.DoltDatabase,
 		DoltMode:      cfg.Mode,
 		ReadSource:    cfg.ReadSource,
