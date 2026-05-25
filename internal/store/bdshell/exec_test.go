@@ -3,6 +3,7 @@ package bdshell_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -265,29 +266,7 @@ func TestCLI_DashValueArgForm(t *testing.T) {
 
 // isCLIError checks if err wraps a *bdshell.CLIError and populates out.
 func isCLIError(err error, out **bdshell.CLIError) bool {
-	if err == nil {
-		return false
-	}
-	// Try direct type assertion first.
-	if e, ok := err.(*bdshell.CLIError); ok {
-		*out = e
-		return true
-	}
-	// Try errors.As equivalent via JSON round-trip hack detection.
-	// Actually use errors.As pattern via interface check.
-	type unwrapper interface{ Unwrap() error }
-	for err != nil {
-		if e, ok := err.(*bdshell.CLIError); ok {
-			*out = e
-			return true
-		}
-		if u, ok := err.(unwrapper); ok {
-			err = u.Unwrap()
-		} else {
-			break
-		}
-	}
-	return false
+	return errors.As(err, out)
 }
 
 // ensure json is imported (used in RunJSON test)

@@ -127,7 +127,7 @@ func wrapCLIError(err error) *ServiceError {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &ServiceError{Code: CodeCLITimeout, Message: "bd CLI timed out"}
 	}
-	return &ServiceError{Code: CodeInternal, Message: err.Error()}
+	return &ServiceError{Code: CodeInternal, Message: "bd CLI failed"}
 }
 
 // validateField rejects fields containing control characters (NUL, CR, LF) or exceeding 64 KB.
@@ -153,7 +153,7 @@ func (svc *BeadService) ListBeads(ctx context.Context, column string) ([]core.Be
 	}
 	issues, err := svc.backend.List(ctx, f)
 	if err != nil {
-		return nil, &ServiceError{Code: CodeInternal, Message: err.Error()}
+		return nil, &ServiceError{Code: CodeInternal, Message: "failed to list beads"}
 	}
 	return IssueToBeads(issues, svc.repo), nil
 }
@@ -165,7 +165,7 @@ func (svc *BeadService) GetBead(ctx context.Context, id string) (*core.Bead, err
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, &ServiceError{Code: CodeNotFound, Message: "bead not found"}
 		}
-		return nil, &ServiceError{Code: CodeInternal, Message: err.Error()}
+		return nil, &ServiceError{Code: CodeInternal, Message: "failed to get bead"}
 	}
 	b := IssueToBead(issue, svc.repo)
 	return &b, nil
@@ -313,7 +313,7 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 		// Re-read the issue after close.
 		issue, rerr := svc.backend.Get(ctx, id)
 		if rerr != nil {
-			return nil, &ServiceError{Code: CodeInternal, Message: rerr.Error()}
+			return nil, &ServiceError{Code: CodeInternal, Message: "failed to re-read bead after close"}
 		}
 		iss = *issue
 	case core.ColRunning:

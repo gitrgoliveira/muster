@@ -34,7 +34,7 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 	}
 	se, ok := err.(*services.ServiceError)
 	if !ok {
-		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, err.Error())
+		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, "internal server error")
 		return true
 	}
 	switch se.Code {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/store/dolt"
@@ -22,7 +23,8 @@ func doltDSN(t *testing.T) string {
 
 func TestNewDolt_UnreachableDSN(t *testing.T) {
 	// This test does NOT require DOLT_TEST_DSN; it verifies connection failure is wrapped.
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	_, err := dolt.NewDolt(ctx, "root:@tcp(127.0.0.1:13307)/testdb")
 	if err == nil {
 		t.Fatal("want error for unreachable DSN")
