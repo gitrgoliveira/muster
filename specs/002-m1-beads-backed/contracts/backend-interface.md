@@ -51,8 +51,7 @@ var (
 )
 ```
 
-Implementations MUST wrap underlying errors with `fmt.Errorf("backend: %w", err)` so callers can
-`errors.Is(err, store.ErrStoreUnavailable)`.
+Implementations MUST wrap connection/availability errors with `fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)` so callers can use `errors.Is(err, store.ErrStoreUnavailable)`. Other errors use `fmt.Errorf("context: %w", err)` to preserve the underlying error.
 
 ---
 

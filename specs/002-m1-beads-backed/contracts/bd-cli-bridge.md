@@ -126,7 +126,7 @@ if the UI needs attribution (e.g., `<actor>: <text>`).
 | 1 | validation error in args | 422 | `UNPROCESSABLE_ENTITY` |
 | 2 | issue not found | 404 | `BEAD_NOT_FOUND` |
 | 3 | database lock / unavailable | 503 | `STORE_UNAVAILABLE` |
-| 124 / SIGTERM by muster | timeout | 504 | `GATEWAY_TIMEOUT` |
+| context deadline (SIGKILL by exec.CommandContext) | timeout | 504 | `GATEWAY_TIMEOUT` |
 | other non-zero | unknown failure | 500 | `INTERNAL` |
 
 The `bd` stderr text is passed through into `error.message` (after truncating to 512 bytes and
@@ -136,10 +136,9 @@ stripping ANSI color codes).
 
 ## When `bd` is not installed
 
-Detected at startup by `exec.LookPath("bd")`. On miss:
+Detected at startup by `exec.LookPath("bd")` (called unconditionally; `--bd-bin`/`BD_BIN` overrides). On miss:
 
-- Log: `bd CLI not found in $PATH — write endpoints will return 501 NOT_IMPLEMENTED`
-- All write endpoints return `501 NOT_IMPLEMENTED` with `{"error":{"code":"BD_CLI_MISSING","message":"bd CLI is required for write operations"}}`
+- Log: `warning: bd CLI not available: bd CLI not found`
+- Startup banner shows: `bdCLI = (missing — write endpoints disabled)`
+- All write endpoints return `501 NOT_IMPLEMENTED` with `{"error":{"code":"BD_CLI_MISSING","message":"bd CLI not available"}}`
 - Read endpoints continue to work.
-
-`--bd-bin <path>` (or `BD_BIN=<path>`) overrides the lookup.

@@ -122,6 +122,9 @@ func (b *Backend) reload() error {
 	if err != nil {
 		return fmt.Errorf("stat issues.jsonl: %w", err)
 	}
+	if info.Size() > maxFileSize {
+		return fmt.Errorf("issues.jsonl exceeds 64 MB limit (%d bytes)", info.Size())
+	}
 	mtime := info.ModTime()
 
 	var issues []store.Issue
