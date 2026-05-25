@@ -7,6 +7,28 @@ import (
 	"path/filepath"
 )
 
+// BuildDoltDSN constructs a MySQL DSN for Dolt from BackendConfig.
+func BuildDoltDSN(cfg BackendConfig) string {
+	host := cfg.DoltHost
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := cfg.DoltPort
+	if port == 0 {
+		port = 3306
+	}
+	user := cfg.DoltUser
+	if user == "" {
+		user = "root"
+	}
+	if cfg.DoltPassword != "" {
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
+			user, cfg.DoltPassword, host, port, cfg.DoltDatabase)
+	}
+	return fmt.Sprintf("%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
+		user, host, port, cfg.DoltDatabase)
+}
+
 // BackendConfig carries resolved backend settings.
 type BackendConfig struct {
 	Mode          string // "embedded" or "remote"

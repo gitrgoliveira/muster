@@ -97,7 +97,7 @@ func main() {
 			}
 			startCancel()
 		}
-		dsn := buildDoltDSN(cfg)
+		dsn := config.BuildDoltDSN(cfg)
 		initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		b, berr := dolt.NewDolt(initCtx, dsn)
 		initCancel()
@@ -199,27 +199,4 @@ func main() {
 	}
 
 	backend.Close() //nolint:errcheck
-}
-
-// buildDoltDSN constructs a MySQL DSN for Dolt from BackendConfig.
-func buildDoltDSN(cfg config.BackendConfig) string {
-	host := cfg.DoltHost
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	port := cfg.DoltPort
-	if port == 0 {
-		port = 3306
-	}
-	user := cfg.DoltUser
-	if user == "" {
-		user = "root"
-	}
-	password := cfg.DoltPassword
-	if password != "" {
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
-			user, password, host, port, cfg.DoltDatabase)
-	}
-	return fmt.Sprintf("%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
-		user, host, port, cfg.DoltDatabase)
 }

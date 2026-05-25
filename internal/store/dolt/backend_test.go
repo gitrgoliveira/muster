@@ -3,6 +3,7 @@ package dolt_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/store"
@@ -116,16 +117,5 @@ func isStoreUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	return containsString(err.Error(), store.ErrStoreUnavailable.Error())
-}
-
-func containsString(s, sub string) bool {
-	return len(sub) == 0 || (len(s) >= len(sub) && func() bool {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	}())
+	return strings.Contains(err.Error(), store.ErrStoreUnavailable.Error())
 }

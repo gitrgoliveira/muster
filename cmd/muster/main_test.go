@@ -365,12 +365,12 @@ func TestServe_ListBeads_ReturnsFixtureIssues(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, 3, body.Total, "total should match fixture count")
 
-	ids := make(map[string]bool, len(body.Items))
-	for _, item := range body.Items {
-		ids[item.ID] = true
-	}
+	wantIDs := make(map[string]bool, len(issues))
 	for _, iss := range issues {
-		assert.True(t, ids[iss["id"].(string)], "expected id %s in response", iss["id"])
+		wantIDs[iss["id"].(string)] = true
+	}
+	for _, item := range body.Items {
+		assert.True(t, wantIDs[item.ID], "unexpected id %s in response", item.ID)
 	}
 }
 

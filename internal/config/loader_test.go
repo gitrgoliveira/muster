@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/config"
@@ -106,7 +107,7 @@ func TestLoadBackendConfig(t *testing.T) {
 		if err == nil {
 			t.Fatal("want error for missing dolt_host")
 		}
-		if !containsStr(err.Error(), "dolt_host") {
+		if !strings.Contains(err.Error(), "dolt_host") {
 			t.Errorf("error %q does not mention dolt_host", err.Error())
 		}
 	})
@@ -117,7 +118,7 @@ func TestLoadBackendConfig(t *testing.T) {
 		if err == nil {
 			t.Fatal("want error for missing dolt_database")
 		}
-		if !containsStr(err.Error(), "dolt_database") {
+		if !strings.Contains(err.Error(), "dolt_database") {
 			t.Errorf("error %q does not mention dolt_database", err.Error())
 		}
 	})
@@ -163,7 +164,7 @@ func TestLoadBackendConfig(t *testing.T) {
 		if err == nil {
 			t.Fatal("want schema version error")
 		}
-		if !containsStr(err.Error(), "schema v99") {
+		if !strings.Contains(err.Error(), "schema v99") {
 			t.Errorf("error %q does not contain 'schema v99'", err.Error())
 		}
 	})
