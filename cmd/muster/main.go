@@ -67,15 +67,12 @@ func main() {
 	hub := ws.NewHub(beadsVersion)
 	go hub.Run()
 
-	// Resolve bd CLI binary (optional).
+	// Resolve bd CLI binary (optional — tries LookPath when flag/env is empty).
 	var cli *bdshell.CLI
-	if cfg.BdBin != "" {
-		var cliErr error
-		cli, cliErr = bdshell.NewCLI(cfg.BdBin, beadsDir)
-		if cliErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: bd CLI not available: %v\n", cliErr)
-			cli = nil
-		}
+	cli, cliErr := bdshell.NewCLI(cfg.BdBin, beadsDir)
+	if cliErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: bd CLI not available: %v\n", cliErr)
+		cli = nil
 	}
 
 	// Construct the read backend.
@@ -173,7 +170,7 @@ func main() {
 		DoltDatabase:  cfg.DoltDatabase,
 		DoltMode:      cfg.Mode,
 		ReadSource:    cfg.ReadSource,
-		BdCLI:         cfg.BdBin,
+		BdCLI:         bdCLIDisplay,
 		SchemaVersion: cfg.SchemaVersion,
 		Pinger:        backend,
 	}

@@ -52,7 +52,9 @@ func NewWatcher(backend Backend, path string, out chan<- WatcherEvent) *Watcher 
 // so the first real file change triggers a diff (not a flood of create events).
 func (w *Watcher) Run(ctx context.Context) error {
 	// Populate initial snapshot before watching.
-	w.refreshSnapshot(ctx)
+	if err := w.refreshSnapshot(ctx); err != nil {
+		return fmt.Errorf("initial snapshot: %w", err)
+	}
 
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil || fsw.Add(w.path) != nil {
@@ -124,16 +126,17 @@ func (w *Watcher) runPolling(ctx context.Context) error {
 }
 
 // refreshSnapshot loads the current issues into the snapshot without emitting events.
-func (w *Watcher) refreshSnapshot(ctx context.Context) {
+func (w *Watcher) refreshSnapshot(ctx context.Context) error {
 	issues, err := w.backend.List(ctx, Filter{})
 	if err != nil {
-		return
+		return err
 	}
 	m := make(map[string]Issue, len(issues))
 	for _, iss := range issues {
 		m[iss.ID] = iss
 	}
 	w.snapshot = m
+	return nil
 }
 
 // emitDiff lists current issues, diffs against snapshot, and emits an event if anything changed.

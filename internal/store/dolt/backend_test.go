@@ -2,8 +2,8 @@ package dolt_test
 
 import (
 	"context"
+	"errors"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/store"
@@ -114,8 +114,5 @@ func TestDolt_Ping(t *testing.T) {
 
 // isStoreUnavailable checks whether err wraps store.ErrStoreUnavailable.
 func isStoreUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), store.ErrStoreUnavailable.Error())
+	return errors.Is(err, store.ErrStoreUnavailable)
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // BuildDoltDSN constructs a MySQL DSN for Dolt from BackendConfig.
@@ -21,12 +23,17 @@ func BuildDoltDSN(cfg BackendConfig) string {
 	if user == "" {
 		user = "root"
 	}
-	if cfg.DoltPassword != "" {
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
-			user, cfg.DoltPassword, host, port, cfg.DoltDatabase)
+	mc := mysql.Config{
+		User:                 user,
+		Passwd:               cfg.DoltPassword,
+		Net:                  "tcp",
+		Addr:                 fmt.Sprintf("%s:%d", host, port),
+		DBName:               cfg.DoltDatabase,
+		ParseTime:            true,
+		Collation:            "utf8mb4_0900_ai_ci",
+		AllowNativePasswords: true,
 	}
-	return fmt.Sprintf("%s@tcp(%s:%d)/%s?parseTime=true&collation=utf8mb4_0900_ai_ci",
-		user, host, port, cfg.DoltDatabase)
+	return mc.FormatDSN()
 }
 
 // BackendConfig carries resolved backend settings.
