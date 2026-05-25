@@ -62,7 +62,7 @@ func main() {
 	}
 	cfg.BdBin = bdBin
 
-	beadsVersion := "0.9.1"
+	const beadsVersion = "0.9.1"
 
 	hub := ws.NewHub(beadsVersion)
 	go hub.Run()
