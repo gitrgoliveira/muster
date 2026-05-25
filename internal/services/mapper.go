@@ -83,7 +83,7 @@ func columnToStatuses(column string) []string {
 	case "done":
 		return []string{"closed", "cancelled"}
 	default: // "backlog" or any other
-		return []string{"open"}
+		return []string{"open", "scheduled"}
 	}
 }
 

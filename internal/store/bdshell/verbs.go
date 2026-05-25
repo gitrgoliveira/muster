@@ -12,7 +12,7 @@ type CreateInput struct {
 	Title       string
 	Description string
 	Type        string
-	Priority    int
+	Priority    *int
 }
 
 // UpdatePatch holds the optional fields to update on an existing issue.
@@ -21,6 +21,7 @@ type UpdatePatch struct {
 	Description *string
 	Status      *string
 	Priority    *int
+	Type        *string
 	AppendNotes *string
 	Claim       bool
 }
@@ -37,8 +38,8 @@ func (c *CLI) Create(ctx context.Context, in CreateInput) (store.Issue, error) {
 	if in.Type != "" {
 		args = append(args, "--type="+in.Type)
 	}
-	if in.Priority != 0 {
-		args = append(args, fmt.Sprintf("--priority=%d", in.Priority))
+	if in.Priority != nil {
+		args = append(args, fmt.Sprintf("--priority=%d", *in.Priority))
 	}
 	var iss store.Issue
 	if err := c.RunJSON(ctx, &iss, args...); err != nil {
@@ -64,6 +65,9 @@ func (c *CLI) Update(ctx context.Context, id string, p UpdatePatch) (store.Issue
 	}
 	if p.Priority != nil {
 		args = append(args, fmt.Sprintf("--priority=%d", *p.Priority))
+	}
+	if p.Type != nil {
+		args = append(args, "--type="+*p.Type)
 	}
 	if p.AppendNotes != nil {
 		args = append(args, "--append-notes="+*p.AppendNotes)

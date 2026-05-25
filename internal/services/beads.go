@@ -196,11 +196,12 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 		return nil, err
 	}
 
+	p := int(input.Priority)
 	iss, err := svc.cli.Create(ctx, bdshell.CreateInput{
 		Title:       title,
 		Description: input.Desc,
 		Type:        string(input.Type),
-		Priority:    int(input.Priority),
+		Priority:    &p,
 	})
 	if err != nil {
 		return nil, wrapCLIError(err)
@@ -215,6 +216,15 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 		input.Column == nil && input.Priority == nil && input.Labels == nil &&
 		input.Ready == nil && input.TokensBudget == nil {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "patch body must contain at least one field"}
+	}
+	if input.Labels != nil {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "labels patch not supported by bd CLI"}
+	}
+	if input.Ready != nil {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "ready patch not supported by bd CLI"}
+	}
+	if input.TokensBudget != nil {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "tokensBudget patch not supported by bd CLI"}
 	}
 	if input.Type != nil && !input.Type.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid type"}
@@ -247,6 +257,10 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 	}
 	if input.Desc != nil {
 		patch.Description = input.Desc
+	}
+	if input.Type != nil {
+		t := string(*input.Type)
+		patch.Type = &t
 	}
 	if input.Column != nil {
 		statuses := columnToStatuses(string(*input.Column))
