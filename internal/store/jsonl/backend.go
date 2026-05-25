@@ -127,7 +127,7 @@ func (b *Backend) reload() error {
 	}
 	mtime := info.ModTime()
 
-	var issues []store.Issue
+	issues := make([]store.Issue, 0)
 	var lastErr error
 
 	// Retry up to 3 times in case of a partial write during atomic rename.
@@ -161,7 +161,7 @@ func (b *Backend) parse() ([]store.Issue, error) {
 	defer f.Close()
 
 	reader := bufio.NewReaderSize(f, maxLineSize)
-	var issues []store.Issue
+	issues := make([]store.Issue, 0)
 
 	for {
 		// ReadLine returns (line, isPrefix, err).
