@@ -15,6 +15,9 @@ const (
 	CodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
 	CodeInternal         = "INTERNAL"
 	CodeCLIMissing       = "BD_CLI_MISSING"
+	CodeCLIValidation    = "BD_CLI_VALIDATION"
+	CodeStoreUnavailable = "STORE_UNAVAILABLE"
+	CodeGatewayTimeout   = "GATEWAY_TIMEOUT"
 )
 
 // ErrorResponse is the top-level JSON envelope returned for all error responses.

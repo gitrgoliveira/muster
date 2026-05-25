@@ -47,11 +47,11 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 	case services.CodeCLIMissing:
 		render.WriteError(w, r, http.StatusNotImplemented, render.CodeCLIMissing, se.Message)
 	case services.CodeCLIValidation:
-		render.WriteError(w, r, http.StatusUnprocessableEntity, render.CodeInvalidRequest, se.Message)
+		render.WriteError(w, r, http.StatusUnprocessableEntity, render.CodeCLIValidation, se.Message)
 	case services.CodeCLIUnavailable:
-		render.WriteError(w, r, http.StatusServiceUnavailable, render.CodeInternal, se.Message)
+		render.WriteError(w, r, http.StatusServiceUnavailable, render.CodeStoreUnavailable, se.Message)
 	case services.CodeCLITimeout:
-		render.WriteError(w, r, http.StatusGatewayTimeout, render.CodeInternal, se.Message)
+		render.WriteError(w, r, http.StatusGatewayTimeout, render.CodeGatewayTimeout, se.Message)
 	case services.CodeInternal:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	default:
