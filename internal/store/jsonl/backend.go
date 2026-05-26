@@ -113,7 +113,7 @@ func (b *Backend) refreshIfStale() error {
 		return fmt.Errorf("stat issues.jsonl: %w", err)
 	}
 	b.mu.RLock()
-	stale := info.ModTime().After(b.mtime)
+	stale := !info.ModTime().Equal(b.mtime)
 	b.mu.RUnlock()
 	if !stale {
 		return nil
