@@ -10,7 +10,7 @@ This document is the contract between the UI and the backend. The UI (`Muster.ht
 
 **Goals**
 
-- Run an orchestrator daemon (`musterd`) that the UI can talk to over HTTP+WS.
+- Run an orchestrator daemon (`muster`) that the UI can talk to over HTTP+WS.
 - Dispatch beads onto local CLI agents (Claude Code, Gemini CLI, OpenCode, Codex) and direct-API providers.
 - Stream live worktree changes, run logs, and step status to the UI.
 - Persist beads, sub-beads, dependencies, and run history via Beads (Dolt).
@@ -32,12 +32,12 @@ This document is the contract between the UI and the backend. The UI (`Muster.ht
 ```
                 ┌──────────────────────────────┐
                 │  UI  (Muster.html, served    │
-                │       statically by musterd) │
+                │       statically by muster) │
                 └──────────────┬───────────────┘
                                │ HTTP + WS
                                ▼
         ┌──────────────────────────────────────────┐
-        │              musterd  (Go)               │
+        │              muster  (Go)               │
         │                                          │
         │   api/    →   HTTP & WS handlers         │
         │   core/   →   bead model, step engine    │
@@ -66,14 +66,14 @@ This document is the contract between the UI and the backend. The UI (`Muster.ht
         Worktrees in .muster/wt/<bead-id>/
 ```
 
-A single Go binary, `musterd`. Defaults to `:7766`. Embeds the UI as static assets (`go:embed`) so the same binary serves the web UI and the API.
+A single Go binary, `muster`. Defaults to `:7766`. Embeds the UI as static assets (`go:embed`) so the same binary serves the web UI and the API.
 
 ---
 
 ## 2. Module layout
 
 ```
-cmd/musterd/         main.go, flag parsing, embedded assets
+cmd/muster/         main.go, flag parsing, embedded assets
 internal/api/       HTTP routes, JSON DTOs, WS hub
 internal/core/      Bead, Step, SubBead, Constitution, validation
 internal/disp/      Scheduler, capacity guard, requeue/split policy
@@ -519,7 +519,7 @@ Exceeding any of these returns `429 RATE_LIMITED` with `Retry-After: <seconds>`.
 ### 4.7 Authentication & CORS
 
 - v1 is single-user, single-machine. The daemon **refuses** non-localhost binds unless the operator explicitly passes `--allow-external`, and even then only when an API key is configured.
-- When `--allow-external` is set, every request must carry `Authorization: Bearer <token>` where the token matches the value in `[server] api_token` (or `MUSTERD_API_TOKEN`). The WS connection passes the same token as a `?token=` query param (browsers can't set headers on WS upgrades).
+- When `--allow-external` is set, every request must carry `Authorization: Bearer <token>` where the token matches the value in `[server] api_token` (or `muster_API_TOKEN`). The WS connection passes the same token as a `?token=` query param (browsers can't set headers on WS upgrades).
 - CORS: in localhost mode the server emits `Access-Control-Allow-Origin: http://localhost:*`. In `--allow-external` mode the allow-list is the `[server] cors_origins` array from config.
 - Future: real multi-user, real OIDC. Tracked in §15.
 
@@ -664,7 +664,7 @@ Direct-API providers don't have native modes; the adapter synthesises `plan/buil
 CLI adapters never `exec.Command` the agent binary directly. They go through `internal/tmux`, which is the canonical transport for any CLI agent. This buys us:
 
 - **Live attach.** The user can `tmux attach -t muster/<bead-id>/<step-idx>` (or click the UI's *Attach* button which prints the command) to watch the agent in real time, page through its TUI, scroll back, or intervene by typing.
-- **Survives musterd restart.** tmux runs under the user's session, not the daemon. If `musterd` crashes or is restarted, the agent keeps running; on reconnect, the dispatcher re-discovers active sessions via `tmux list-sessions -F '#{session_name}'` filtered to the `muster/` prefix and resumes streaming from `tmux pipe-pane`.
+- **Survives muster restart.** tmux runs under the user's session, not the daemon. If `muster` crashes or is restarted, the agent keeps running; on reconnect, the dispatcher re-discovers active sessions via `tmux list-sessions -F '#{session_name}'` filtered to the `muster/` prefix and resumes streaming from `tmux pipe-pane`.
 - **One source of truth for output.** Both the runlog and the live attach view read the same pane; no risk of the user seeing something the runlog doesn't have.
 - **TTY-aware agents work correctly.** Claude Code, Codex CLI etc. detect they're on a TTY (because tmux gives them one) and render their full TUI, ANSI colors, progress UI — instead of falling into a degraded non-TTY mode.
 
@@ -754,13 +754,13 @@ Sub-bead worktrees are independent; the parent's worktree is untouched while sub
 
 Each bead picks its own worktree backend via `Bead.VCS` (`jj` or `git`). At startup, `wt` probes both binaries and records which are available; the UI shows only the available ones in the ticket's VCS picker. If a bead's chosen backend isn't installed at dispatch time, the bead is moved back to `scheduled` with a `VCS_UNAVAILABLE` note rather than silently falling back.
 
-Default for new beads comes from `[orchestrator] default_vcs` in `config.toml` (`"jj"` out of the box, or `"git"` if jj isn't detected at `musterd init`).
+Default for new beads comes from `[orchestrator] default_vcs` in `config.toml` (`"jj"` out of the box, or `"git"` if jj isn't detected at `muster init`).
 
 - One worktree per running bead, named `wt-<bead-suffix>`.
 - **jj beads** — created via `jj clone --colocate` (or `jj workspace add` for an existing jj repo). On approval: `Finalize` runs `jj describe` → `jj push` if a remote is configured.
 - **git beads** — created via `git worktree add -b muster/<bead-id> .muster/wt/<bead-id>/`. On approval: `Finalize` runs `git commit -m "$(spec)"` (or amend) → `git push` if a remote is configured.
 - On bead rejection → keep worktree until manual cleanup.
-- Worktrees idle for > 7 days are GC'd with the daemon's `musterd gc` subcommand. GC removes the worktree using the correct backend (`jj workspace forget` vs `git worktree remove`).
+- Worktrees idle for > 7 days are GC'd with the daemon's `muster gc` subcommand. GC removes the worktree using the correct backend (`jj workspace forget` vs `git worktree remove`).
 - `Bead.VCS` is **immutable once a worktree exists**. The API rejects `PATCH /beads/{id}` requests that change `vcs` after the bead has been dispatched at least once; switching backends mid-bead would orphan the worktree.
 
 The `wt` package exposes a single interface so the dispatcher and diff endpoints don't branch on backend:
@@ -866,7 +866,7 @@ Stored as `"external:<repo>/<bead-id>"` strings in `Bead.ExternalDeps`. They do 
 [server]
 bind = "127.0.0.1:7766"
 allow_external = false           # bind on non-localhost; requires api_token
-api_token = ""                   # required when allow_external=true; also from $MUSTERD_API_TOKEN
+api_token = ""                   # required when allow_external=true; also from $muster_API_TOKEN
 cors_origins = []                # additional allowed origins when allow_external=true
 log_level = "info"               # debug | info | warn | error
 log_format = "json"              # json | text
@@ -878,8 +878,8 @@ escalate_on_double_fail = false
 require_vcs_step_before_review = true   # was require_jj_step_before_review
 default_vcs = "jj"               # "jj" or "git" — default backend for new beads
 tmux_grace = "30s"               # how long to keep a tmux session alive after step completion
-runlog_retention = "30d"         # runlog rows older than this are squashed by `musterd gc`
-worktree_idle_gc = "7d"          # worktrees idle longer than this are removed by `musterd gc`
+runlog_retention = "30d"         # runlog rows older than this are squashed by `muster gc`
+worktree_idle_gc = "7d"          # worktrees idle longer than this are removed by `muster gc`
 ws_buffer_seconds = 300          # WS replay buffer (seconds) for ?since= reconnects
 idempotency_ttl = "24h"          # Idempotency-Key dedup window
 
@@ -1002,24 +1002,24 @@ Cancellation is contextual: each step has a `context.Context` tied to the bead. 
 
 ### 14.1 Bootstrap
 
-`musterd init` does:
+`muster init` does:
 
 1. Creates `.muster/` under the cwd.
 2. Initialises Dolt (`bd init`) if not already.
 3. Detects installed CLI agents (claude, gemini, codex) and seeds their `Provider` rows (`kind = cli`). Probes the opencode SDK linkage and seeds an opencode `Provider` row (`kind = sdk`) if available. Probes for direct-API credentials and seeds those rows (`kind = api`) if found.
 4. Writes a starter `constitution.md` with sensible defaults.
-5. Prints `Run musterd serve to start the daemon`.
+5. Prints `Run muster serve to start the daemon`.
 
-`musterd serve` starts everything.
-`musterd gc` cleans up old worktrees (per `worktree_idle_gc`) and squashes runlog older than `runlog_retention`. Safe to run while the daemon is up — it acquires advisory file locks per worktree.
-`musterd doctor` runs the same checks as `bd doctor` plus the daemon-specific ones (port free, tmux available, Keychain unlocked, schema versions aligned).
-`musterd version` prints `{ build, schemaVersion, beadsVersion, goVersion }` — same fields surfaced in `/orchestrator/status`.
+`muster serve` starts everything.
+`muster gc` cleans up old worktrees (per `worktree_idle_gc`) and squashes runlog older than `runlog_retention`. Safe to run while the daemon is up — it acquires advisory file locks per worktree.
+`muster doctor` runs the same checks as `bd doctor` plus the daemon-specific ones (port free, tmux available, Keychain unlocked, schema versions aligned).
+`muster version` prints `{ build, schemaVersion, beadsVersion, goVersion }` — same fields surfaced in `/orchestrator/status`.
 
 ### 14.2 Schema migrations
 
-The Dolt schema is versioned (`schema_version` table, single row). On `musterd serve` startup, if `current < expected`, the daemon refuses to start and prints `Run musterd migrate to upgrade from v<N> to v<expected>`.
+The Dolt schema is versioned (`schema_version` table, single row). On `muster serve` startup, if `current < expected`, the daemon refuses to start and prints `Run muster migrate to upgrade from v<N> to v<expected>`.
 
-`musterd migrate` runs forward-only migrations from `migrations/<N>_<name>.sql`, each in its own transaction. Rollback is by `bd dolt reset` to the pre-migration commit (Dolt makes this trivial). Down-migrations are not supported.
+`muster migrate` runs forward-only migrations from `migrations/<N>_<name>.sql`, each in its own transaction. Rollback is by `bd dolt reset` to the pre-migration commit (Dolt makes this trivial). Down-migrations are not supported.
 
 Attached repos (§8) keep their **own** schema versions. The daemon surfaces a `SCHEMA_MIGRATION_REQUIRED` error to the UI and lets the user opt into `POST /api/v1/repos/{id}/migrate`. Out-of-date repos stay attached but go **read-only** until migration completes.
 
@@ -1094,7 +1094,7 @@ Adding a field is allowed (the UI must ignore unknowns); removing or renaming a 
 
 ### 17.4 Smoke
 
-`scripts/smoke.sh` spins up `musterd serve` against a throwaway dir, runs the integration matrix, then drives the UI end-to-end via `chromedp` (open board → create bead → dispatch → wait for runlog → approve). One pass on every PR + nightly against the release branch.
+`scripts/smoke.sh` spins up `muster serve` against a throwaway dir, runs the integration matrix, then drives the UI end-to-end via `chromedp` (open board → create bead → dispatch → wait for runlog → approve). One pass on every PR + nightly against the release branch.
 
 ---
 
@@ -1102,10 +1102,10 @@ Adding a field is allowed (the UI must ignore unknowns); removing or renaming a 
 
 ### 18.1 Distribution
 
-- Single static binary per platform: `musterd-{darwin,linux}-{amd64,arm64}`. The embedded UI ships inside via `go:embed`.
+- Single static binary per platform: `muster-{darwin,linux}-{amd64,arm64}`. The embedded UI ships inside via `go:embed`.
 - macOS builds are signed + notarised; binaries are Gatekeeper-friendly.
 - Linux builds are stripped, glibc ≥ 2.31. A musl variant ships behind a build tag for Alpine.
-- Homebrew tap: `brew install muster/tap/musterd`.
+- Homebrew tap: `brew install muster/tap/muster`.
 - Curl installer: `curl -fsSL https://muster.dev/install | sh` resolves the right asset from the latest GitHub release and verifies its SHA256.
 - Docker is **not** a primary distribution channel for v1 — the daemon needs host-level tmux + jj + git + Keychain. A devcontainer image exists for evaluation only.
 
@@ -1125,11 +1125,11 @@ UI and daemon ship from the same monorepo at the same SHA. The daemon refuses a 
 
 ## 19. Operational runbook
 
-Minimum surface a competent SRE needs to keep `musterd` healthy.
+Minimum surface a competent SRE needs to keep `muster` healthy.
 
 ### 19.1 Startup checks
 
-On boot, `musterd serve` logs (at info):
+On boot, `muster serve` logs (at info):
 
 ```
 startup port=7766 build=v1.2.3-abc123 schemaVersion=4 beadsVersion=0.9.1 tmux=3.4 jj=0.21 git=2.43
@@ -1147,9 +1147,9 @@ Absence of any of these lines is a startup failure; the process exits non-zero r
 | Beads stuck in `scheduled`             | `curl /api/v1/orchestrator/capacity`                     | every provider at limit or `auth.status != logged-in` |
 | Drawer shows old data after action     | `curl /api/v1/orchestrator/status` then check WS clients | `muster_ws_clients_connected==0` → UI lost the WS, ask user to refresh |
 | `/healthz` returning 503               | `tail -f stderr \| jq 'select(.level=="warn")'`          | dispatcher loop lag; long-running `applyEvent`     |
-| Worktree disk filling up               | `musterd gc --dry-run`                                   | candidates list; run `musterd gc` to reclaim       |
-| Runlog table large                     | `bd sql "SELECT count(*) FROM runlog"`                   | run `musterd gc` (squashes runlog past retention)  |
-| Tmux sessions orphaned                 | `tmux ls \| grep ^muster/`                               | reconcile via `musterd doctor --reconcile-tmux`    |
+| Worktree disk filling up               | `muster gc --dry-run`                                   | candidates list; run `muster gc` to reclaim       |
+| Runlog table large                     | `bd sql "SELECT count(*) FROM runlog"`                   | run `muster gc` (squashes runlog past retention)  |
+| Tmux sessions orphaned                 | `tmux ls \| grep ^muster/`                               | reconcile via `muster doctor --reconcile-tmux`    |
 | Quota tracker drift                    | `curl /api/v1/providers/<id>/quota`                      | compare to vendor dashboard; reset via `bd dolt sql 'UPDATE provider_quota …'` (rare) |
 
 ### 19.3 Recovery procedures

@@ -198,7 +198,10 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 	if input.TokensBudget != 0 {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "tokensBudget not supported by bd CLI"}
 	}
-	if input.Type != "" && !input.Type.Valid() {
+	if input.Type == "" {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "type is required"}
+	}
+	if !input.Type.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid type"}
 	}
 	if !input.Priority.Valid() {

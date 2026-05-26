@@ -218,9 +218,21 @@ func TestCreate_501_CLIMissing(t *testing.T) {
 
 	resp := doPost(t, srv, "/beads", map[string]interface{}{
 		"title": "Test bead",
+		"type":  "task",
 	})
 	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 	assert.Equal(t, "BD_CLI_MISSING", errorCode(t, resp))
+}
+
+func TestCreate_400_MissingType(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads", map[string]interface{}{
+		"title": "Test bead",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
 }
 
 // ── Patch — validation passes before CLI check ────────────────────────

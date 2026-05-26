@@ -1,6 +1,6 @@
-# Quickstart: musterd (M0)
+# Quickstart: muster (M0)
 
-**Goal**: Get `musterd` running locally in under 5 minutes.
+**Goal**: Get `muster` running locally in under 5 minutes.
 
 ## Prerequisites
 
@@ -15,14 +15,14 @@
 cp prototype/* ui/
 
 # 2. Build — the //go:embed ui/* directive requires ui/ to be populated.
-go build ./cmd/musterd
+go build ./cmd/muster
 
 # 3. Run
-./musterd serve
-# or: go run ./cmd/musterd serve
+./muster serve
+# or: go run ./cmd/muster serve
 
 # Expected stdout (banner — matches spec §Assumptions):
-# musterd listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)
+# muster listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)
 #
 # Expected stderr (slog text handler):
 # time=2026-05-22T17:42:11Z level=INFO msg="listening" addr=127.0.0.1:7766
@@ -159,7 +159,7 @@ curl -s -X POST http://localhost:7766/api/v1/beads/bd-a1f2/move \
 ## Custom bind address
 
 ```bash
-./musterd serve --addr 0.0.0.0:8080
+./muster serve --addr 0.0.0.0:8080
 ```
 
 ## Run tests
@@ -189,7 +189,7 @@ During development, regenerate the embedded UI from the prototype:
 ```bash
 make ui-copy    # cp -r prototype/* ui/
 # or:
-go generate ./cmd/musterd/...
+go generate ./cmd/muster/...
 ```
 
 The `ui/` directory is **kept under .gitignore** (except `.gitkeep`) so prototype changes flow

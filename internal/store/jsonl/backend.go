@@ -28,6 +28,7 @@ type Backend struct {
 	mu    sync.RWMutex
 	cache []store.Issue
 	mtime time.Time
+	size  int64
 }
 
 // NewJSONL constructs a Backend for the given beads directory.
@@ -107,14 +108,16 @@ func (b *Backend) Ping(_ context.Context) error {
 // Close is a no-op for the JSONL backend.
 func (b *Backend) Close() error { return nil }
 
-// Refresh re-reads the file if the mtime has changed.
+// Refresh re-reads the file if mtime OR size has changed.
+// Size is an additional signal for filesystems with coarse mtime resolution
+// where two writes within the same timestamp quantum would otherwise be missed.
 func (b *Backend) refreshIfStale() error {
 	info, err := os.Stat(b.path)
 	if err != nil {
 		return fmt.Errorf("stat issues.jsonl: %w", err)
 	}
 	b.mu.RLock()
-	stale := !info.ModTime().Equal(b.mtime)
+	stale := !info.ModTime().Equal(b.mtime) || info.Size() != b.size
 	b.mu.RUnlock()
 	if !stale {
 		return nil
@@ -123,7 +126,9 @@ func (b *Backend) refreshIfStale() error {
 }
 
 // reload parses the JSONL file and updates the cache.
-// Stat is captured before parse so mtime matches the content read.
+// Stat is captured before parse to record the mtime/size for staleness checks.
+// Atomic rename between stat and parse is acceptable: at worst we'll record an
+// older mtime+size for newer content, triggering one extra reload next call.
 func (b *Backend) reload() error {
 	info, err := os.Stat(b.path)
 	if err != nil {
@@ -133,6 +138,7 @@ func (b *Backend) reload() error {
 		return fmt.Errorf("issues.jsonl exceeds 64 MB limit (%d bytes)", info.Size())
 	}
 	mtime := info.ModTime()
+	size := info.Size()
 
 	issues := make([]store.Issue, 0)
 	var lastErr error
@@ -154,6 +160,7 @@ func (b *Backend) reload() error {
 	b.mu.Lock()
 	b.cache = issues
 	b.mtime = mtime
+	b.size = size
 	b.mu.Unlock()
 	return nil
 }

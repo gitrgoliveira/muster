@@ -1,4 +1,4 @@
-# Tasks: M0 — Skeleton (musterd binary + in-memory API + WS)
+# Tasks: M0 — Skeleton (muster binary + in-memory API + WS)
 
 **Input**: Design documents from `specs/001-m0-skeleton/`
 
@@ -7,7 +7,7 @@
 **TDD approach**: Within each phase, write failing tests first, then implement to pass. Run `go test -race ./...` before marking a phase done.
 
 **Go module**: `github.com/gitrgoliveira/muster`  
-**Binary**: `musterd` at `cmd/musterd/`  
+**Binary**: `muster` at `cmd/muster/`  
 **Dependencies**: go-chi/chi/v5@v5.2.1, coder/websocket@v1.8.13, google/uuid@v1.6.0, stretchr/testify@v1.10.0
 
 ## Format: `[ID] [P?] [Story?] Description`
@@ -22,17 +22,17 @@
 **Purpose**: Project initialization — go.mod, module layout, embed skeleton, Makefile. No tests in this phase.
 
 <!-- sequential -->
-- [x] T001 Initialize `go.mod` with module `github.com/gitrgoliveira/muster`, Go 1.26, add dependencies: `github.com/go-chi/chi/v5@v5.2.1`, `github.com/coder/websocket@v1.8.13`, `github.com/google/uuid@v1.6.0`, `github.com/stretchr/testify@v1.10.0`; run `go mod tidy` to generate `go.sum`; create all empty package directories: `cmd/musterd/`, `internal/core/`, `internal/store/`, `internal/services/`, `internal/ws/`, `internal/api/render/`, `internal/api/middleware/`, `internal/api/beads/`, `internal/api/stream/`, `internal/api/health/`, `ui/`
+- [x] T001 Initialize `go.mod` with module `github.com/gitrgoliveira/muster`, Go 1.26, add dependencies: `github.com/go-chi/chi/v5@v5.2.1`, `github.com/coder/websocket@v1.8.13`, `github.com/google/uuid@v1.6.0`, `github.com/stretchr/testify@v1.10.0`; run `go mod tidy` to generate `go.sum`; create all empty package directories: `cmd/muster/`, `internal/core/`, `internal/store/`, `internal/services/`, `internal/ws/`, `internal/api/render/`, `internal/api/middleware/`, `internal/api/beads/`, `internal/api/stream/`, `internal/api/health/`, `ui/`
 
 <!-- parallel-group: 1 (max 3 concurrent) -->
 - [x] T002 [P] Create `ui/.gitkeep` (empty file so `//go:embed ui/*` compiles on fresh clone); create placeholder `ui/index.html` with `<!DOCTYPE html><html><body>placeholder</body></html>` so the embed is non-empty at compile time (real UI copied in Phase 10)
-- [x] T003 [P] Create `cmd/musterd/embed.go` with `//go:embed ui/*` directive and exported `var UI embed.FS`; create `cmd/musterd/main.go` as bare skeleton: declare `--addr` flag defaulting to `127.0.0.1:7766`, print banner `musterd listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)` to stdout, then `os.Exit(0)`; must compile with `go build ./cmd/musterd/`
-- [x] T004 [P] Create `Makefile` at repo root with targets: `build` (`go build -o bin/musterd ./cmd/musterd/`), `test` (`go test -race ./...`), `run` (`go run ./cmd/musterd/ serve --addr 127.0.0.1:7766`), `ui-copy` (`cp -r prototype/ ui/`), `cover` (`go test -coverprofile=cover.out ./... && go tool cover -func=cover.out`), `cover-check` (implement as inline awk in Makefile: run `go tool cover -func=cover.out`, pipe to awk that checks each package total against a hardcoded threshold map; the awk script should: for each line matching `total:`, extract package path and statement percentage; compare against thresholds: `internal/core` ≥80, `internal/store` ≥80, `internal/services` ≥80, `internal/ws` ≥75, `internal/api/render` ≥90, `internal/api/middleware` ≥90, `internal/api/beads` ≥70, `internal/api/stream` ≥70, `internal/api/health` ≥70; exit 1 if any package is below threshold, printing which package failed), `lint` (`gofmt -l . && go vet ./... && golangci-lint run`)
+- [x] T003 [P] Create `cmd/muster/embed.go` with `//go:embed ui/*` directive and exported `var UI embed.FS`; create `cmd/muster/main.go` as bare skeleton: declare `--addr` flag defaulting to `127.0.0.1:7766`, print banner `muster listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)` to stdout, then `os.Exit(0)`; must compile with `go build ./cmd/muster/`
+- [x] T004 [P] Create `Makefile` at repo root with targets: `build` (`go build -o bin/muster ./cmd/muster/`), `test` (`go test -race ./...`), `run` (`go run ./cmd/muster/ serve --addr 127.0.0.1:7766`), `ui-copy` (`cp -r prototype/ ui/`), `cover` (`go test -coverprofile=cover.out ./... && go tool cover -func=cover.out`), `cover-check` (implement as inline awk in Makefile: run `go tool cover -func=cover.out`, pipe to awk that checks each package total against a hardcoded threshold map; the awk script should: for each line matching `total:`, extract package path and statement percentage; compare against thresholds: `internal/core` ≥80, `internal/store` ≥80, `internal/services` ≥80, `internal/ws` ≥75, `internal/api/render` ≥90, `internal/api/middleware` ≥90, `internal/api/beads` ≥70, `internal/api/stream` ≥70, `internal/api/health` ≥70; exit 1 if any package is below threshold, printing which package failed), `lint` (`gofmt -l . && go vet ./... && golangci-lint run`)
 
 <!-- sequential -->
 - [x] T005 Create `.golangci.yml` at repo root with config: `run.timeout: 3m`, `run.go: "1.26"`, `linters.disable-all: true`, `linters.enable: [errcheck, govet, gofmt, gosimple, ineffassign, staticcheck, unused]`, `issues.exclude-rules: [{path: _test\.go, linters: [errcheck]}]` (tests intentionally ignore some returns)
 
-**Checkpoint**: `go build ./cmd/musterd/` succeeds; binary prints banner and exits.
+**Checkpoint**: `go build ./cmd/muster/` succeeds; binary prints banner and exits.
 
 ---
 
@@ -176,18 +176,18 @@
 
 ## Phase 10: Router + Main (Wiring) [US1]
 
-**User Story**: US1 — Start musterd and view the UI
+**User Story**: US1 — Start muster and view the UI
 
 **Goal**: Assemble all components into a running server; embed real prototype UI; graceful shutdown.
 
-**Independent Test**: `./bin/musterd` starts, `curl http://localhost:7766/` returns 200 with HTML, `curl http://localhost:7766/api/v1/beads` returns 14 beads.
+**Independent Test**: `./bin/muster` starts, `curl http://localhost:7766/` returns 200 with HTML, `curl http://localhost:7766/api/v1/beads` returns 14 beads.
 
 <!-- sequential -->
 - [x] T034 [US1] TDD: Write `internal/api/router_test.go` with: `TestRouter_StaticUIServed` (GET / → 200 with HTML content), `TestRouter_APINotFound_ReturnsJSON` (GET /api/v1/nonexistent → 404 with JSON body `{"error":{"code":"NOT_FOUND",...}}`), `TestRouter_MethodNotAllowed_ReturnsJSON` (DELETE /api/v1/beads → 405 with JSON body `{"error":{"code":"METHOD_NOT_ALLOWED",...}}`), `TestRouter_PanicRecovered_Returns500JSON` (inject handler that panics → 500 with JSON body `{"error":{"code":"INTERNAL",...}}`); then write `internal/api/router.go` with `NewRouter(svc *services.BeadService, hub *ws.Hub, uiFS fs.FS) http.Handler` that creates a chi router, installs X-Request-ID middleware globally, installs body-limit middleware on /api/v1/ POST+PATCH routes, mounts beads sub-router at /api/v1/beads, mounts stream handler at /api/v1/stream, mounts health handlers at /api/v1/healthz and /api/v1/orchestrator/status, serves `uiFS` at / (with fallback to index.html for SPA), sets chi.NotFound/MethodNotAllowed handlers that call render.WriteError
 
-- [x] T035 [US1] TDD: Write `cmd/musterd/main_test.go` with (using `exec.Command` or in-process test server): `TestServer_BootsAndServesUI` (run `musterd serve`, GET /, confirm 200 with HTML), `TestServer_GracefulShutdown_DrainsWithin5s_ExitCode0` (send os.Interrupt, verify server stops cleanly within 5s), `TestServer_ParseAddr_IPv6` (`serve --addr [::1]:7777` → binds successfully), `TestServer_ParseAddr_InvalidFormat_Exits1` (`serve --addr notvalid` → process exits 1), `TestServer_PortInUse_Exits1` (pre-bind port then `serve` → exits 1), `TestNoSubcommand_PrintsUsageExits1` (no args → prints usage, exits 1); then complete `cmd/musterd/main.go`: **require `serve` subcommand** (parse `os.Args[1]` — if missing or unknown, print usage and exit 1; `serve` registers `--addr` flag defaulting to `127.0.0.1:7766`), get seedDolt=`store.SeedDolt()`, seedBeadsVersion=seedDolt.BeadsVersion (or from repos[0] seed — "0.9.1"), create `ws.NewHub(seedBeadsVersion)` (beadsVersion injected per T017) + `go hub.Run()`, create `store.NewMemStore()` seeded with SeedBeads/SeedProviders/SeedCapacity/SeedDolt, create `services.NewBeadService(store, hub.Broadcast)` (**`hub.Broadcast` as function value**, not `hub.BroadcastFunc()`), call `NewRouter(svc, hub, uiFS)`, create `http.Server{Addr, Handler, ReadHeaderTimeout: 5*time.Second}`, install `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` with 5s drain deadline, print banner `musterd listening on http://ADDR (build=dev schemaVersion=1)` to stdout, start `srv.ListenAndServe()`, on signal call `srv.Shutdown(drainCtx)`, exit 0 on clean shutdown or 1 on timeout/bind failure
+- [x] T035 [US1] TDD: Write `cmd/muster/main_test.go` with (using `exec.Command` or in-process test server): `TestServer_BootsAndServesUI` (run `muster serve`, GET /, confirm 200 with HTML), `TestServer_GracefulShutdown_DrainsWithin5s_ExitCode0` (send os.Interrupt, verify server stops cleanly within 5s), `TestServer_ParseAddr_IPv6` (`serve --addr [::1]:7777` → binds successfully), `TestServer_ParseAddr_InvalidFormat_Exits1` (`serve --addr notvalid` → process exits 1), `TestServer_PortInUse_Exits1` (pre-bind port then `serve` → exits 1), `TestNoSubcommand_PrintsUsageExits1` (no args → prints usage, exits 1); then complete `cmd/muster/main.go`: **require `serve` subcommand** (parse `os.Args[1]` — if missing or unknown, print usage and exit 1; `serve` registers `--addr` flag defaulting to `127.0.0.1:7766`), get seedDolt=`store.SeedDolt()`, seedBeadsVersion=seedDolt.BeadsVersion (or from repos[0] seed — "0.9.1"), create `ws.NewHub(seedBeadsVersion)` (beadsVersion injected per T017) + `go hub.Run()`, create `store.NewMemStore()` seeded with SeedBeads/SeedProviders/SeedCapacity/SeedDolt, create `services.NewBeadService(store, hub.Broadcast)` (**`hub.Broadcast` as function value**, not `hub.BroadcastFunc()`), call `NewRouter(svc, hub, uiFS)`, create `http.Server{Addr, Handler, ReadHeaderTimeout: 5*time.Second}`, install `signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)` with 5s drain deadline, print banner `muster listening on http://ADDR (build=dev schemaVersion=1)` to stdout, start `srv.ListenAndServe()`, on signal call `srv.Shutdown(drainCtx)`, exit 0 on clean shutdown or 1 on timeout/bind failure
 
-- [x] T036 [US1] Copy prototype UI files and verify embed: run `make ui-copy` to copy `prototype/` → `ui/`; run `go build -o bin/musterd ./cmd/musterd/`; run quickstart smoke test: start `./bin/musterd &`, verify `curl -sf http://localhost:7766/ | grep -i html` matches, `curl -sf http://localhost:7766/api/v1/beads | jq '.total'` returns 14, `curl -sf http://localhost:7766/api/v1/healthz | jq '.ok'` returns true, connect WS to `ws://localhost:7766/api/v1/stream` and receive hello frame, kill server; fix any deviations from quickstart.md examples
+- [x] T036 [US1] Copy prototype UI files and verify embed: run `make ui-copy` to copy `prototype/` → `ui/`; run `go build -o bin/muster ./cmd/muster/`; run quickstart smoke test: start `./bin/muster &`, verify `curl -sf http://localhost:7766/ | grep -i html` matches, `curl -sf http://localhost:7766/api/v1/beads | jq '.total'` returns 14, `curl -sf http://localhost:7766/api/v1/healthz | jq '.ok'` returns true, connect WS to `ws://localhost:7766/api/v1/stream` and receive hello frame, kill server; fix any deviations from quickstart.md examples
 
 **Checkpoint**: `go test -race ./...` fully green; binary boots and serves UI with seed data; all acceptance criteria in spec.md met.
 
@@ -228,7 +228,7 @@
 
 | User Story | Priority | Plan Phase(s) |
 |---|---|---|
-| US1 — Start musterd & view UI | P1 | Phase 10 (T034–T036) |
+| US1 — Start muster & view UI | P1 | Phase 10 (T034–T036) |
 | US2 — List beads via REST | P1 | Phase 8 (T026) |
 | US7 — WebSocket event stream | P1 | Phase 5 + Phase 9 (T017–T019, T033) |
 | US3 — Get single bead | P2 | Phase 8 (T028) |

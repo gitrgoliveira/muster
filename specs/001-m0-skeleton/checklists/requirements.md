@@ -50,7 +50,7 @@ written.
 - [ ] CHK031 Does the spec's clarification ("/move is unrestricted in M0") imply dispatch is also unrestricted, or do US8/FR-010 still impose `scheduled→running` ordering as the only valid path? Pick one. [Conflict, Spec §Clarifications vs §US8/§FR-010]
 - [ ] CHK032 Does the spec error-code table (`BEAD_NOT_FOUND`, `INVALID_STATE`, `INVALID_REQUEST`, `INTERNAL`) match the contract error code matrix (`BEAD_NOT_FOUND`, `INVALID_REQUEST`, `METHOD_NOT_ALLOWED`, `NOT_FOUND`, `INTERNAL_ERROR`)? Note `INTERNAL` vs `INTERNAL_ERROR` naming. [Conflict, Spec §Error Codes vs contracts/rest-api.md]
 - [ ] CHK033 Does `/orchestrator/status` shape in US10 (`{build, schemaVersion, beadsVersion, online, serverTime, dolt}`) match data-model.md (`{running, mode}`)? **Known conflict.** [Conflict, Spec §US10 vs data-model.md]
-- [ ] CHK034 Does the startup banner format in Assumptions (`musterd listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)`) match the quickstart example (`musterd build=dev schemaVersion=1 addr=127.0.0.1:7766`)? [Conflict, Spec §Assumptions vs quickstart.md]
+- [ ] CHK034 Does the startup banner format in Assumptions (`muster listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)`) match the quickstart example (`muster build=dev schemaVersion=1 addr=127.0.0.1:7766`)? [Conflict, Spec §Assumptions vs quickstart.md]
 - [ ] CHK035 Do the coverage targets in SC-006/SC-007 (80% core, 70% api) match the plan's per-package targets (80% core / 80% services / 75% ws / 90% render+middleware / 70% api handlers)? [Conflict, Spec §SC-006..SC-007 vs plan.md]
 - [ ] CHK036 Is the `internal/api/` module layout in spec §Technical Context (a single package) consistent with the plan's resource-subpackage layout (`internal/api/beads/`, `internal/api/stream/`, etc.)? [Conflict, Spec §Technical Context vs plan.md]
 - [ ] CHK037 Is `internal/services/` in plan.md reflected in spec §Technical Context module layout? **Known gap.** [Conflict, Spec §Technical Context vs plan.md]
@@ -64,7 +64,7 @@ written.
 - [ ] CHK042 Are the acceptance scenarios for FR-019 (`?column=` filter) specified, including what an invalid column value returns (400 vs empty list)? [Completeness, Spec §FR-019]
 - [ ] CHK043 Is the acceptance criterion for FR-017 (X-Request-ID on **all** responses, including 4xx/5xx and WS upgrade responses) testable? [Measurability, Spec §FR-017]
 - [ ] CHK044 Is "build clean" or "tests pass" defined as a measurable success criterion, separate from coverage? [Gap]
-- [ ] CHK045 Is there a measurable acceptance criterion for "the binary is self-contained" (e.g., `file ./musterd | grep -v dynamic`, or `ldd ./musterd` returns expected results)? [Measurability, Spec §FR-001]
+- [ ] CHK045 Is there a measurable acceptance criterion for "the binary is self-contained" (e.g., `file ./muster | grep -v dynamic`, or `ldd ./muster` returns expected results)? [Measurability, Spec §FR-001]
 
 ## Scenario Coverage
 

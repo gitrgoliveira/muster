@@ -191,7 +191,7 @@ the hub unregisters the slow client.
 
 ```bash
 # Terminal A — start server
-./musterd serve
+./muster serve
 
 # Terminal B — open WS stream (websocat installed via `brew install websocat`)
 websocat ws://127.0.0.1:7766/api/v1/stream

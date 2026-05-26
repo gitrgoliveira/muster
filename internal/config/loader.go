@@ -52,7 +52,8 @@ type BackendConfig struct {
 }
 
 // ResolveBeadsDir resolves the beads directory from flag, env, or cwd fallback.
-// Priority: flag > env (BEADS_DIR) > "./.beads/" in cwd.
+// Priority: flag > env (BEADS_DIR) > "./.beads" in cwd (only if it exists).
+// Returns an error if none of these locate a beads directory.
 func ResolveBeadsDir(flagVal, envVal string) (string, error) {
 	var raw string
 	switch {

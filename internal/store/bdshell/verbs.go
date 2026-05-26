@@ -50,8 +50,9 @@ func (c *CLI) Create(ctx context.Context, in CreateInput) (store.Issue, error) {
 
 // Update runs `bd update <id>` with the given patch and returns the updated issue.
 // bd update --json returns a JSON array; we unmarshal and return the first element.
+// Argv form: flags first, then "--" separator, then positional id (per bd-cli-bridge contract).
 func (c *CLI) Update(ctx context.Context, id string, p UpdatePatch) (store.Issue, error) {
-	args := []string{"update", id, "--json", "--dolt-auto-commit=on"}
+	args := []string{"update", "--json", "--dolt-auto-commit=on"}
 	if p.Claim {
 		args = append(args, "--claim")
 	}
@@ -73,6 +74,7 @@ func (c *CLI) Update(ctx context.Context, id string, p UpdatePatch) (store.Issue
 	if p.AppendNotes != nil {
 		args = append(args, "--append-notes="+*p.AppendNotes)
 	}
+	args = append(args, "--", id)
 	var issues []store.Issue
 	if err := c.RunJSON(ctx, &issues, args...); err != nil {
 		return store.Issue{}, err
@@ -83,9 +85,9 @@ func (c *CLI) Update(ctx context.Context, id string, p UpdatePatch) (store.Issue
 	return issues[0], nil
 }
 
-// Close runs `bd close <id> --dolt-auto-commit=on`.
+// Close runs `bd close --dolt-auto-commit=on -- <id>`.
 func (c *CLI) Close(ctx context.Context, id string) error {
-	return c.RunVoid(ctx, "close", id, "--dolt-auto-commit=on")
+	return c.RunVoid(ctx, "close", "--dolt-auto-commit=on", "--", id)
 }
 
 // Dispatch claims a bead (bd update <id> --claim --json).
