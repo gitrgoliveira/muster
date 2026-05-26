@@ -4,6 +4,7 @@ package dolt
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -64,7 +65,7 @@ func (b *Backend) Get(ctx context.Context, id string) (*store.Issue, error) {
 	row := b.db.QueryRowContext(ctx, getSQL, id)
 	var iss store.Issue
 	if err := scanIntoIssue(row, &iss); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
 		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)

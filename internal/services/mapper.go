@@ -82,8 +82,8 @@ func columnToStatuses(column string) []string {
 		return []string{"in_review"}
 	case "done":
 		return []string{"closed", "cancelled", "superseded"}
-	default: // "backlog" or any other
-		return []string{"open", "scheduled"}
+	default: // "backlog" or any other — per data-model.md
+		return []string{"open", "scheduled", "blocked", "deferred"}
 	}
 }
 

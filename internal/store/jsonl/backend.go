@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -174,7 +175,7 @@ func (b *Backend) parse() ([]store.Issue, error) {
 		// isPrefix==true means the internal buffer was full before a newline —
 		// the line is longer than maxLineSize; we drain and skip it.
 		chunk, isPrefix, rerr := reader.ReadLine()
-		if rerr == io.EOF {
+		if errors.Is(rerr, io.EOF) {
 			break
 		}
 		if rerr != nil {
@@ -186,7 +187,7 @@ func (b *Backend) parse() ([]store.Issue, error) {
 			for isPrefix && rerr == nil {
 				_, isPrefix, rerr = reader.ReadLine()
 			}
-			if rerr != nil && rerr != io.EOF {
+			if rerr != nil && !errors.Is(rerr, io.EOF) {
 				return nil, fmt.Errorf("scan issues.jsonl: %w", rerr)
 			}
 			continue

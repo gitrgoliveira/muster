@@ -100,10 +100,13 @@ func TestColumnToStatuses_RoundTrip(t *testing.T) {
 	}{
 		{"open", core.ColBacklog},
 		{"scheduled", core.ColBacklog},
+		{"blocked", core.ColBacklog},
+		{"deferred", core.ColBacklog},
 		{"in_progress", core.ColRunning},
 		{"in_review", core.ColReview},
 		{"closed", core.ColDone},
 		{"cancelled", core.ColDone},
+		{"superseded", core.ColDone},
 	}
 	for _, tc := range tests {
 		t.Run(tc.status, func(t *testing.T) {
