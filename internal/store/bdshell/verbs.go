@@ -49,6 +49,7 @@ func (c *CLI) Create(ctx context.Context, in CreateInput) (store.Issue, error) {
 }
 
 // Update runs `bd update <id>` with the given patch and returns the updated issue.
+// bd update --json returns a JSON array; we unmarshal and return the first element.
 func (c *CLI) Update(ctx context.Context, id string, p UpdatePatch) (store.Issue, error) {
 	args := []string{"update", id, "--json", "--dolt-auto-commit=on"}
 	if p.Claim {
@@ -72,11 +73,14 @@ func (c *CLI) Update(ctx context.Context, id string, p UpdatePatch) (store.Issue
 	if p.AppendNotes != nil {
 		args = append(args, "--append-notes="+*p.AppendNotes)
 	}
-	var iss store.Issue
-	if err := c.RunJSON(ctx, &iss, args...); err != nil {
+	var issues []store.Issue
+	if err := c.RunJSON(ctx, &issues, args...); err != nil {
 		return store.Issue{}, err
 	}
-	return iss, nil
+	if len(issues) == 0 {
+		return store.Issue{}, fmt.Errorf("bd update returned empty array")
+	}
+	return issues[0], nil
 }
 
 // Close runs `bd close <id> --dolt-auto-commit=on`.

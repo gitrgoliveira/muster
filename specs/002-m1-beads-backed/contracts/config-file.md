@@ -24,9 +24,9 @@ muster reads **two** config files from `<beads-dir>`. Both are written by the `b
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `database` | string | yes | Must be `"dolt"` in M1. Other values cause exit-1 with `STORE_UNAVAILABLE: unsupported database "<v>"`. |
-| `backend` | string | yes | Must be `"dolt"` in M1. |
-| `dolt_mode` | enum | yes | `"embedded"` or `"remote"`. Other values cause exit-1. |
+| `database` | string | no | Defaults to `"dolt"` when absent. Non-dolt values cause exit-1 with `unsupported database "<v>"`. |
+| `backend` | string | no | Informational; not consumed by muster. |
+| `dolt_mode` | enum | no | `"embedded"` (default when absent) or `"remote"`. Other values cause exit-1. |
 | `dolt_database` | string | yes | The Dolt schema name. For embedded, the subdirectory under `embeddeddolt/`. |
 | `dolt_host` | string | server mode only | Host of the Dolt SQL server. Default `127.0.0.1`. |
 | `dolt_port` | int | server mode only | Port of the Dolt SQL server. Default `3306`. |
