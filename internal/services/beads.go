@@ -244,6 +244,9 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 	if input.Type != nil && !input.Type.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid type"}
 	}
+	if input.Column != nil && !input.Column.Valid() {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid column"}
+	}
 	if input.Priority != nil && !input.Priority.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid priority"}
 	}

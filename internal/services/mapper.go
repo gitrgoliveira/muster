@@ -59,27 +59,27 @@ func IssueToBeads(issues []store.Issue, repo string) []core.Bead {
 }
 
 // statusToColumn maps a beads status value to a Kanban column.
+// Per bd-cli-bridge.md (M1 simplification): beads does not model a review
+// status, so review is folded into running. ColReview remains in the enum
+// for client-side UI use but no server-side bead is ever rendered into it.
 func statusToColumn(status string) core.Column {
 	switch status {
 	case "in_progress":
 		return core.ColRunning
-	case "in_review":
-		return core.ColReview
 	case "closed", "cancelled", "superseded":
 		return core.ColDone
-	default: // "open", "scheduled", unknown
+	default: // "open", "scheduled", "blocked", "deferred", unknown
 		return core.ColBacklog
 	}
 }
 
 // columnToStatuses returns the status values for a given column name.
 // Used to translate ?column= query params into store filter values.
+// Per bd-cli-bridge.md, review maps to in_progress (M1 simplification).
 func columnToStatuses(column string) []string {
 	switch column {
-	case "running":
+	case "running", "review":
 		return []string{"in_progress"}
-	case "review":
-		return []string{"in_review"}
 	case "done":
 		return []string{"closed", "cancelled", "superseded"}
 	default: // "backlog" or any other — per data-model.md

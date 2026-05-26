@@ -103,7 +103,6 @@ func TestColumnToStatuses_RoundTrip(t *testing.T) {
 		{"blocked", core.ColBacklog},
 		{"deferred", core.ColBacklog},
 		{"in_progress", core.ColRunning},
-		{"in_review", core.ColReview},
 		{"closed", core.ColDone},
 		{"cancelled", core.ColDone},
 		{"superseded", core.ColDone},

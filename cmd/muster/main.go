@@ -143,15 +143,27 @@ func main() {
 		}()
 
 		// Fan watcher events into the WS hub.
+		// bead.created/updated frames include the full Bead payload (M0 WS contract);
+		// bead.deleted carries only the ID (the bead is gone).
 		go func() {
 			for {
 				select {
 				case ev := <-watcherOut:
 					for _, id := range ev.CreatedIDs {
-						hub.Broadcast(ws.Frame{Type: ws.EventBeadCreated, ID: id})
+						bead, err := svc.GetBead(ctx, id)
+						if err != nil {
+							hub.Broadcast(ws.Frame{Type: ws.EventBeadCreated, ID: id})
+							continue
+						}
+						hub.Broadcast(ws.Frame{Type: ws.EventBeadCreated, Bead: bead})
 					}
 					for _, id := range ev.ChangedIDs {
-						hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, ID: id})
+						bead, err := svc.GetBead(ctx, id)
+						if err != nil {
+							hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, ID: id})
+							continue
+						}
+						hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, Bead: bead})
 					}
 					for _, id := range ev.DeletedIDs {
 						hub.Broadcast(ws.Frame{Type: ws.EventBeadDeleted, ID: id})
