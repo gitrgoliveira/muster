@@ -150,7 +150,7 @@ func TestOrchestratorStatus_ConfigFieldsPopulated(t *testing.T) {
 		BeadsDir:      "/data/beads",
 		DoltDatabase:  "mydb",
 		DoltMode:      "remote",
-		ReadSource:    "dolt",
+		ReadSource:    "dolt-sql",
 		BdCLI:         "/usr/local/bin/bd",
 		ProjectID:     "proj-123",
 		SchemaVersion: 2,
@@ -169,8 +169,8 @@ func TestOrchestratorStatus_ConfigFieldsPopulated(t *testing.T) {
 	if body.DoltDatabase != "mydb" {
 		t.Errorf("doltDatabase want mydb got %q", body.DoltDatabase)
 	}
-	if body.ReadSource != "dolt" {
-		t.Errorf("readSource want dolt got %q", body.ReadSource)
+	if body.ReadSource != "dolt-sql" {
+		t.Errorf("readSource want dolt-sql got %q", body.ReadSource)
 	}
 	if body.SchemaVersion != 2 {
 		t.Errorf("schemaVersion want 2 got %d", body.SchemaVersion)

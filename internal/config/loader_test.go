@@ -144,7 +144,7 @@ func TestLoadBackendConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("remote mode sets readSource dolt", func(t *testing.T) {
+	t.Run("remote mode sets readSource dolt-sql", func(t *testing.T) {
 		dir := makeDir(t, `{"schema_version":1,"dolt_mode":"remote","dolt_host":"localhost","dolt_database":"db","dolt_user":"u"}`)
 		cfg, err := config.LoadBackendConfig(dir)
 		if err != nil {
@@ -153,8 +153,8 @@ func TestLoadBackendConfig(t *testing.T) {
 		if cfg.Mode != "remote" {
 			t.Errorf("mode want remote got %q", cfg.Mode)
 		}
-		if cfg.ReadSource != "dolt" {
-			t.Errorf("readSource want dolt got %q", cfg.ReadSource)
+		if cfg.ReadSource != "dolt-sql" {
+			t.Errorf("readSource want dolt-sql got %q", cfg.ReadSource)
 		}
 	})
 

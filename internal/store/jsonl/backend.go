@@ -48,7 +48,10 @@ func NewJSONL(beadsDir string) (*Backend, error) {
 }
 
 // List returns issues matching the filter.
-func (b *Backend) List(_ context.Context, f store.Filter) ([]store.Issue, error) {
+func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := b.refreshIfStale(); err != nil {
 		return nil, err
 	}
@@ -72,9 +75,12 @@ func (b *Backend) List(_ context.Context, f store.Filter) ([]store.Issue, error)
 }
 
 // Get returns the issue with the given ID, or store.ErrNotFound.
-func (b *Backend) Get(_ context.Context, id string) (*store.Issue, error) {
+func (b *Backend) Get(ctx context.Context, id string) (*store.Issue, error) {
 	if id == "" {
 		return nil, store.ErrNotFound
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if err := b.refreshIfStale(); err != nil {
 		return nil, err

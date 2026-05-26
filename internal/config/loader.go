@@ -103,7 +103,7 @@ func LoadBackendConfig(dir string) (BackendConfig, error) {
 		cfg.ReadSource = "issues.jsonl"
 	case "remote":
 		cfg.Mode = "remote"
-		cfg.ReadSource = "dolt"
+		cfg.ReadSource = "dolt-sql"
 		if cfg.DoltHost == "" {
 			return BackendConfig{}, fmt.Errorf("dolt_host is required in remote mode")
 		}

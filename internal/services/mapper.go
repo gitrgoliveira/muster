@@ -65,7 +65,7 @@ func statusToColumn(status string) core.Column {
 		return core.ColRunning
 	case "in_review":
 		return core.ColReview
-	case "closed", "cancelled":
+	case "closed", "cancelled", "superseded":
 		return core.ColDone
 	default: // "open", "scheduled", unknown
 		return core.ColBacklog
@@ -81,7 +81,7 @@ func columnToStatuses(column string) []string {
 	case "review":
 		return []string{"in_review"}
 	case "done":
-		return []string{"closed", "cancelled"}
+		return []string{"closed", "cancelled", "superseded"}
 	default: // "backlog" or any other
 		return []string{"open", "scheduled"}
 	}
