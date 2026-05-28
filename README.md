@@ -15,7 +15,7 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 
 | Flag | Env | Default | Description |
 |---|---|---|---|
-| `--beads-dir` | `BEADS_DIR` | `./.beads` | Path to the beads directory containing `metadata.json` and `issues.jsonl` |
+| `--beads-dir` | `BEADS_DIR` | `./.beads` if present | Path to the beads directory containing `metadata.json` and `issues.jsonl`. Falls back to `./.beads` only when it exists; otherwise the flag/env is required. |
 | `--bd-bin` | `BD_BIN` | `bd` (from PATH) | Path to the `bd` CLI binary. Write endpoints are disabled if `bd` is not found. |
 | `--addr` | — | `127.0.0.1:7766` | TCP address to listen on |
 

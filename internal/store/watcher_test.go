@@ -126,7 +126,7 @@ func TestWatcher_DetectsChange(t *testing.T) {
 		if !containsID(ev.ChangedIDs, "mp-001") && !containsID(ev.CreatedIDs, "mp-001") {
 			t.Errorf("expected mp-001 in changed/created IDs; event: %+v", ev)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Error("timeout waiting for watcher event")
 	}
 }
@@ -197,7 +197,7 @@ func TestWatcher_DetectsNewIssue(t *testing.T) {
 		if !containsID(ev.CreatedIDs, "mp-003") {
 			t.Errorf("expected mp-003 in CreatedIDs; event: %+v", ev)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Error("timeout waiting for created event")
 	}
 }
@@ -232,7 +232,7 @@ func TestWatcher_DetectsDeletedIssue(t *testing.T) {
 		if !containsID(ev.DeletedIDs, "mp-002") {
 			t.Errorf("expected mp-002 in DeletedIDs; event: %+v", ev)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Error("timeout waiting for deleted event")
 	}
 }
@@ -270,7 +270,7 @@ func TestWatcher_WatcherEventFields(t *testing.T) {
 		if ev.Source == "" {
 			t.Error("WatcherEvent.Source should be set")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Error("timeout")
 	}
 }

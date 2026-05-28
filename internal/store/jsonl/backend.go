@@ -166,7 +166,8 @@ func (b *Backend) reload() error {
 }
 
 // parse reads and parses the JSONL file.
-// Lines longer than maxLineSize are silently skipped; unparseable lines are skipped too.
+// Lines longer than maxLineSize and unparseable lines are skipped and logged to
+// stderr (FR-017) so operators can detect truncation/corruption.
 func (b *Backend) parse() ([]store.Issue, error) {
 	f, err := os.Open(b.path)
 	if err != nil {
@@ -177,7 +178,9 @@ func (b *Backend) parse() ([]store.Issue, error) {
 	reader := bufio.NewReaderSize(f, maxLineSize)
 	issues := make([]store.Issue, 0)
 
+	lineNo := 0
 	for {
+		lineNo++
 		// ReadLine returns (line, isPrefix, err).
 		// isPrefix==true means the internal buffer was full before a newline —
 		// the line is longer than maxLineSize; we drain and skip it.
@@ -197,6 +200,7 @@ func (b *Backend) parse() ([]store.Issue, error) {
 			if rerr != nil && !errors.Is(rerr, io.EOF) {
 				return nil, fmt.Errorf("scan issues.jsonl: %w", rerr)
 			}
+			fmt.Fprintf(os.Stderr, "jsonl: skipping oversized line %d in %s (exceeds %d bytes)\n", lineNo, b.path, maxLineSize)
 			continue
 		}
 
@@ -206,6 +210,7 @@ func (b *Backend) parse() ([]store.Issue, error) {
 		}
 		var iss store.Issue
 		if err := json.Unmarshal([]byte(line), &iss); err != nil {
+			fmt.Fprintf(os.Stderr, "jsonl: skipping malformed line %d in %s: %v\n", lineNo, b.path, err)
 			continue
 		}
 		issues = append(issues, iss)

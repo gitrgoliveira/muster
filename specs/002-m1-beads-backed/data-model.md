@@ -43,7 +43,7 @@ type Metadata struct {
     Backend       string `json:"backend"`        // always "dolt" in M1
     DoltMode      string `json:"dolt_mode"`      // "embedded" | "remote"
     DoltDatabase  string `json:"dolt_database"`  // schema name
-    DoltHost      string `json:"dolt_host,omitempty"` // server mode: "127.0.0.1" default
+    DoltHost      string `json:"dolt_host,omitempty"` // server mode: required (no default)
     DoltPort      int    `json:"dolt_port,omitempty"` // server mode: 3306 default
     DoltUser      string `json:"dolt_user,omitempty"` // server mode: "root" default
     ProjectID     string `json:"project_id"`     // UUID
