@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 
@@ -61,8 +62,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "watcher: fsnotify unavailable: %v; falling back to polling\n", err)
 		return w.runPolling(ctx)
 	}
-	if addErr := fsw.Add(w.path); addErr != nil {
-		fmt.Fprintf(os.Stderr, "watcher: cannot watch %s: %v; falling back to polling\n", w.path, addErr)
+	// Watch the parent directory rather than the file itself. bd rewrites
+	// issues.jsonl via temp-file + rename, which detaches an inode-level watch;
+	// watching the directory and filtering by filename keeps the fast fsnotify
+	// path working across atomic replacements.
+	dir := filepath.Dir(w.path)
+	if addErr := fsw.Add(dir); addErr != nil {
+		fmt.Fprintf(os.Stderr, "watcher: cannot watch %s: %v; falling back to polling\n", dir, addErr)
 		_ = fsw.Close()
 		return w.runPolling(ctx)
 	}
@@ -89,12 +95,12 @@ func (w *Watcher) Run(ctx context.Context) error {
 				_ = fsw.Close()
 				return w.runPolling(ctx)
 			}
-			if ev.Has(fsnotify.Write) || ev.Has(fsnotify.Create) || ev.Has(fsnotify.Rename) {
-				if ev.Has(fsnotify.Rename) {
-					if addErr := fsw.Add(w.path); addErr != nil {
-						fmt.Fprintf(os.Stderr, "watcher: re-add after rename failed: %v\n", addErr)
-					}
-				}
+			// The directory watch reports events for every entry; only react
+			// to ones affecting our target file.
+			if filepath.Clean(ev.Name) != w.path {
+				continue
+			}
+			if ev.Has(fsnotify.Write) || ev.Has(fsnotify.Create) || ev.Has(fsnotify.Rename) || ev.Has(fsnotify.Remove) {
 				source = "fsnotify"
 				if debounceTimer != nil {
 					if !debounceTimer.Stop() {

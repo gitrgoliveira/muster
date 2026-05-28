@@ -85,9 +85,20 @@ func (c *CLI) Update(ctx context.Context, id string, p UpdatePatch) (store.Issue
 	return issues[0], nil
 }
 
-// Close runs `bd close --dolt-auto-commit=on -- <id>`.
-func (c *CLI) Close(ctx context.Context, id string) error {
-	return c.RunVoid(ctx, "close", "--dolt-auto-commit=on", "--", id)
+// Close runs `bd close --json` and returns the closed issue.
+// bd close --json returns a JSON array; we return the first element. Returning
+// the issue lets callers avoid a racy backend re-read after the close.
+// Argv form: flags first, then "--" separator, then positional id.
+func (c *CLI) Close(ctx context.Context, id string) (store.Issue, error) {
+	args := []string{"close", "--json", "--dolt-auto-commit=on", "--", id}
+	var issues []store.Issue
+	if err := c.RunJSON(ctx, &issues, args...); err != nil {
+		return store.Issue{}, err
+	}
+	if len(issues) == 0 {
+		return store.Issue{}, fmt.Errorf("bd close returned empty array")
+	}
+	return issues[0], nil
 }
 
 // Dispatch claims a bead (bd update <id> --claim --json).

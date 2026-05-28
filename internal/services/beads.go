@@ -16,7 +16,7 @@ import (
 type CLIRunner interface {
 	Create(ctx context.Context, in bdshell.CreateInput) (store.Issue, error)
 	Update(ctx context.Context, id string, p bdshell.UpdatePatch) (store.Issue, error)
-	Close(ctx context.Context, id string) error
+	Close(ctx context.Context, id string) (store.Issue, error)
 	Dispatch(ctx context.Context, id string) (store.Issue, error)
 	AppendNote(ctx context.Context, id, text string) (store.Issue, error)
 }
@@ -313,15 +313,13 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 
 	switch input.ToColumn {
 	case core.ColDone:
-		if cerr := svc.cli.Close(ctx, id); cerr != nil {
-			return nil, wrapCLIError(cerr)
+		// bd close --json returns the closed issue directly, so we use it
+		// rather than re-reading the backend (which may still serve the
+		// pre-close JSONL cache before bd's export lands).
+		iss, err = svc.cli.Close(ctx, id)
+		if err != nil {
+			return nil, wrapCLIError(err)
 		}
-		// Re-read the issue after close.
-		issue, rerr := svc.backend.Get(ctx, id)
-		if rerr != nil {
-			return nil, &ServiceError{Code: CodeInternal, Message: "failed to re-read bead after close"}
-		}
-		iss = *issue
 	case core.ColRunning:
 		iss, err = svc.cli.Update(ctx, id, bdshell.UpdatePatch{Claim: true})
 		if err != nil {
