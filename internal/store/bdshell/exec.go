@@ -74,6 +74,12 @@ func (c *CLI) Run(ctx context.Context, args ...string) (Result, error) {
 
 	cmd := exec.CommandContext(ctx, c.Path, args...) //nolint:gosec
 	cmd.Env = buildEnv(c.BeadsDir)
+	// CommandContext kills only the direct bd process on deadline. If bd spawned
+	// a child (e.g. a `dolt` server from `bd dolt start`) that inherited the
+	// stdout/stderr pipes, cmd.Run would otherwise block until that child exits,
+	// defeating the timeout. WaitDelay force-closes the pipes shortly after the
+	// process is killed so Run returns, without killing the intentional child.
+	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

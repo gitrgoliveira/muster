@@ -39,6 +39,9 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 	q, args := buildListQuery(f)
 	rows, err := b.db.QueryContext(ctx, q, args...)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
 	}
 	defer rows.Close() //nolint:errcheck
@@ -73,6 +76,9 @@ func (b *Backend) Get(ctx context.Context, id string) (*store.Issue, error) {
 	if err := scanIntoIssue(row, &iss); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
 		}
 		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
 	}
