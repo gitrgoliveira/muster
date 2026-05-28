@@ -52,7 +52,7 @@ Body is sparse. muster composes the flags for the supplied fields and runs ONE `
 | `desc` / `description` | `--description=<v>` |
 | `priority` | `--priority=<0-4>` (validate 0..4 in muster before invoking) |
 | `assignee` | `--assignee=<v>` |
-| `status` | `--status=<v>` (or `--claim` when transitioning to `in_progress`) |
+| `column` | `--status=<v>` (column mapped to a beads status via `columnToStatuses`) |
 
 Example: `PATCH /api/v1/beads/mp-abc {"title":"X","priority":1}`
 → `bd update --json --dolt-auto-commit=on mp-abc --title=X --priority=1`

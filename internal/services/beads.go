@@ -48,6 +48,7 @@ type CreateBeadInput struct {
 	Type         core.BeadType
 	Column       core.Column
 	Priority     core.Priority
+	Assignee     string
 	Labels       []string
 	VCS          core.VCS
 	TokensBudget int
@@ -60,6 +61,7 @@ type PatchBeadInput struct {
 	Type         *core.BeadType
 	Column       *core.Column
 	Priority     *core.Priority
+	Assignee     *string
 	Labels       *[]string
 	Ready        *bool
 	TokensBudget *int
@@ -186,6 +188,9 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 	if err := validateField("desc", input.Desc); err != nil {
 		return nil, err
 	}
+	if err := validateField("assignee", input.Assignee); err != nil {
+		return nil, err
+	}
 	if len(input.Labels) > 0 {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "labels not supported by bd CLI"}
 	}
@@ -217,6 +222,7 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 		Description: input.Desc,
 		Type:        string(input.Type),
 		Priority:    &p,
+		Assignee:    input.Assignee,
 	})
 	if err != nil {
 		return nil, wrapCLIError(err)
@@ -228,8 +234,8 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 // Patch validates and applies a partial update via the CLI.
 func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInput) (*core.Bead, error) {
 	if input.Title == nil && input.Desc == nil && input.Type == nil &&
-		input.Column == nil && input.Priority == nil && input.Labels == nil &&
-		input.Ready == nil && input.TokensBudget == nil {
+		input.Column == nil && input.Priority == nil && input.Assignee == nil &&
+		input.Labels == nil && input.Ready == nil && input.TokensBudget == nil {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "patch body must contain at least one field"}
 	}
 	if input.Labels != nil {
@@ -265,6 +271,11 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 			return nil, err
 		}
 	}
+	if input.Assignee != nil {
+		if err := validateField("assignee", *input.Assignee); err != nil {
+			return nil, err
+		}
+	}
 	if err := svc.requireCLI(); err != nil {
 		return nil, err
 	}
@@ -289,6 +300,9 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 	if input.Priority != nil {
 		p := int(*input.Priority)
 		patch.Priority = &p
+	}
+	if input.Assignee != nil {
+		patch.Assignee = input.Assignee
 	}
 
 	iss, err := svc.cli.Update(ctx, id, patch)

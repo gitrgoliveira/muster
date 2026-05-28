@@ -298,6 +298,19 @@ func TestPatch_400_DescAndDescription(t *testing.T) {
 	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
 }
 
+func TestPatch_Assignee_Accepted(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	// assignee is a documented PATCH body field; it must pass decode/validation
+	// and reach the CLI-missing check (501) rather than being rejected as unknown.
+	resp := doPatch(t, srv, "/beads/mp-aaa", map[string]interface{}{
+		"assignee": "alice",
+	})
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	assert.Equal(t, "BD_CLI_MISSING", errorCode(t, resp))
+}
+
 // ── Move — validation passes before CLI check ─────────────────────────
 
 func TestMove_400_MissingToColumn(t *testing.T) {

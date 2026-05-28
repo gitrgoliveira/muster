@@ -14,6 +14,7 @@ type CreateRequest struct {
 	Type         core.BeadType  `json:"type,omitempty"`
 	Column       core.Column    `json:"column,omitempty"`
 	Priority     *core.Priority `json:"priority,omitempty"`
+	Assignee     string         `json:"assignee,omitempty"`
 	Labels       []string       `json:"labels,omitempty"`
 	VCS          core.VCS       `json:"vcs,omitempty"`
 	TokensBudget int            `json:"tokensBudget,omitempty"`
@@ -27,6 +28,7 @@ type PatchRequest struct {
 	Type         *core.BeadType `json:"type,omitempty"`
 	Column       *core.Column   `json:"column,omitempty"`
 	Priority     *core.Priority `json:"priority,omitempty"`
+	Assignee     *string        `json:"assignee,omitempty"`
 	Labels       *[]string      `json:"labels,omitempty"`
 	Ready        *bool          `json:"ready,omitempty"`
 	TokensBudget *int           `json:"tokensBudget,omitempty"`
