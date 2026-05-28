@@ -273,6 +273,7 @@ func makeTempBeadsDirWithIssues(t *testing.T, issues []map[string]any) string {
 	meta := map[string]any{
 		"schema_version": 1,
 		"dolt_mode":      "embedded",
+		"dolt_database":  "muster",
 		"project_id":     "test-project",
 	}
 	b, err := json.Marshal(meta)

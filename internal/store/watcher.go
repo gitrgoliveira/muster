@@ -193,10 +193,13 @@ func (w *Watcher) emitDiff(ctx context.Context, source string) {
 	}
 	select {
 	case w.out <- ev:
+		// Only advance the snapshot once the event is delivered. If the send
+		// dropped (default branch), the old snapshot is retained so these same
+		// changes are re-detected and re-emitted on the next diff instead of
+		// being lost permanently.
 		w.snapshot = current
 	default:
-		w.snapshot = current
-		fmt.Fprintf(os.Stderr, "watcher: event channel full, dropping diff (%d changed, %d created, %d deleted)\n",
+		fmt.Fprintf(os.Stderr, "watcher: event channel full, retrying diff next tick (%d changed, %d created, %d deleted)\n",
 			len(changed), len(created), len(deleted))
 	}
 }

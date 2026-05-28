@@ -82,7 +82,7 @@ func TestLoadBackendConfig(t *testing.T) {
 	}
 
 	t.Run("embedded mode defaults", func(t *testing.T) {
-		dir := makeDir(t, `{"schema_version":1}`)
+		dir := makeDir(t, `{"schema_version":1,"dolt_database":"muster"}`)
 		cfg, err := config.LoadBackendConfig(dir)
 		if err != nil {
 			t.Fatal(err)

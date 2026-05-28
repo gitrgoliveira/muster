@@ -76,7 +76,7 @@ None directly.
 | Condition | Exit code | Message |
 |---|---|---|
 | `dolt_host` empty in metadata.json | 1 | `error: dolt_host is required in remote mode` |
-| `dolt_database` empty in metadata.json | 1 | `error: dolt_database is required in remote mode` |
+| `dolt_database` empty in metadata.json (both modes) | 1 | `error: dolt_database is required` |
 | `bd dolt start` fails | — | Warning logged; continues to attempt SQL connection |
 | MySQL connection fails (10 s timeout) | 1 | `cannot connect to dolt server: <err>` |
 

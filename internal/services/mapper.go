@@ -23,6 +23,7 @@ func IssueToBead(issue *store.Issue, repo string) core.Bead {
 		Column:     col,
 		Priority:   core.Priority(issue.Priority),
 		Type:       issueTypeToBeadType(issue.IssueType),
+		Ready:      issue.DependencyCount == 0 && issue.Status == "open",
 		Repo:       repo,
 		Assignee:   core.AgentID(assigneeStr),
 		Labels:     []string{},

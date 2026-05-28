@@ -108,11 +108,14 @@ func LoadBackendConfig(dir string) (BackendConfig, error) {
 		if cfg.DoltHost == "" {
 			return BackendConfig{}, fmt.Errorf("dolt_host is required in remote mode")
 		}
-		if cfg.DoltDatabase == "" {
-			return BackendConfig{}, fmt.Errorf("dolt_database is required in remote mode")
-		}
 	default:
 		return BackendConfig{}, fmt.Errorf("invalid dolt_mode %q (want embedded or remote)", m.DoltMode)
+	}
+
+	// dolt_database is required in both modes: it names the Dolt schema and is
+	// surfaced as the bead Repo field and X-Beads-Database header.
+	if cfg.DoltDatabase == "" {
+		return BackendConfig{}, fmt.Errorf("dolt_database is required")
 	}
 
 	return cfg, nil
