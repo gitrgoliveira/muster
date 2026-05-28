@@ -162,6 +162,12 @@ shutdown, because other `bd` processes may depend on the running server.
 deltas in memory against the previous snapshot. The watcher emits `WatcherEvent{ChangedIDs: <ids>}`;
 the services layer turns those into `bead.updated` / `bead.created` / `bead.deleted` WS events.
 
+**Remote mode (no watcher)**: in remote (Dolt SQL) mode there is no `issues.jsonl` watcher, so the
+`BeadService` publishes WS frames directly after each successful CLI write (`bead.created` on create,
+`bead.updated` on patch/move/dispatch/comment). Embedded mode leaves this off (the watcher is the
+single source, avoiding double-announce). External `bd` mutations against a remote Dolt server are
+still not broadcast — that requires a Dolt change-notification mechanism, deferred to a later milestone.
+
 **Initial snapshot bootstrapping**: `Watcher.Run(ctx)` calls `backend.List` **synchronously** before
 starting fsnotify and before returning. This populates `snapshot` with the real initial state, so
 the first delta is a no-op (or contains only real changes that happened during startup), NOT a flood

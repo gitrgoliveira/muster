@@ -10,6 +10,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/store/bdshell"
+	"github.com/gitrgoliveira/muster/internal/ws"
 )
 
 // CLIRunner abstracts bd CLI write operations.
@@ -91,6 +92,10 @@ type BeadService struct {
 	cli     CLIRunner // may be nil; writes return CodeCLIMissing when nil
 	repo    string
 	publish Publisher
+	// publishOnWrite broadcasts a WS frame after each successful CLI write.
+	// Enabled in remote mode (no file watcher); embedded mode leaves it false
+	// so the watcher remains the single WS source and writes aren't double-announced.
+	publishOnWrite bool
 }
 
 // NewBeadService constructs a BeadService.
@@ -100,8 +105,17 @@ func NewBeadService(backend store.Backend, cli CLIRunner, pub Publisher) *BeadSe
 }
 
 // NewBeadServiceWithRepo constructs a BeadService with an explicit repo name.
-func NewBeadServiceWithRepo(backend store.Backend, cli CLIRunner, pub Publisher, repo string) *BeadService {
-	return &BeadService{backend: backend, cli: cli, repo: repo, publish: pub}
+// publishOnWrite should be true in remote mode (where no watcher runs).
+func NewBeadServiceWithRepo(backend store.Backend, cli CLIRunner, pub Publisher, repo string, publishOnWrite bool) *BeadService {
+	return &BeadService{backend: backend, cli: cli, repo: repo, publish: pub, publishOnWrite: publishOnWrite}
+}
+
+// publishWrite broadcasts a write event when publish-on-write is enabled.
+func (svc *BeadService) publishWrite(eventType ws.EventType, bead *core.Bead) {
+	if !svc.publishOnWrite || svc.publish == nil {
+		return
+	}
+	svc.publish(ws.Frame{Type: eventType, Bead: bead})
 }
 
 func (svc *BeadService) requireCLI() error {
@@ -228,6 +242,7 @@ func (svc *BeadService) Create(ctx context.Context, input CreateBeadInput) (*cor
 		return nil, wrapCLIError(err)
 	}
 	b := IssueToBead(&iss, svc.repo)
+	svc.publishWrite(ws.EventBeadCreated, &b)
 	return &b, nil
 }
 
@@ -310,6 +325,7 @@ func (svc *BeadService) Patch(ctx context.Context, id string, input PatchBeadInp
 		return nil, wrapCLIError(err)
 	}
 	b := IssueToBead(&iss, svc.repo)
+	svc.publishWrite(ws.EventBeadUpdated, &b)
 	return &b, nil
 }
 
@@ -351,6 +367,7 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 	}
 
 	b := IssueToBead(&iss, svc.repo)
+	svc.publishWrite(ws.EventBeadUpdated, &b)
 	return &b, nil
 }
 
@@ -371,6 +388,7 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		return nil, wrapCLIError(err)
 	}
 	b := IssueToBead(&iss, svc.repo)
+	svc.publishWrite(ws.EventBeadUpdated, &b)
 	return &b, nil
 }
 
@@ -401,5 +419,6 @@ func (svc *BeadService) AddComment(ctx context.Context, id string, input Comment
 		return nil, wrapCLIError(err)
 	}
 	b := IssueToBead(&iss, svc.repo)
+	svc.publishWrite(ws.EventBeadUpdated, &b)
 	return &b, nil
 }

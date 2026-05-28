@@ -112,7 +112,10 @@ func main() {
 	if cli != nil {
 		svcCLI = cli
 	}
-	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase)
+	// In remote mode no file watcher runs, so the service publishes WS frames
+	// directly on write. Embedded mode leaves this off — the watcher is the
+	// single WS source there.
+	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase, cfg.Mode == "remote")
 
 	// Print startup banner.
 	bdCLIDisplay := "(missing — write endpoints disabled)"

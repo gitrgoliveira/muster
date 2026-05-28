@@ -128,8 +128,67 @@ func TestColumnToStatuses_RoundTrip(t *testing.T) {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
-func intPtr(i int) *int    { return &i }
+// fakeCLI is a CLIRunner that returns a fixed issue for every write.
+type fakeCLI struct{ iss store.Issue }
+
+func (f fakeCLI) Create(context.Context, bdshell.CreateInput) (store.Issue, error) {
+	return f.iss, nil
+}
+func (f fakeCLI) Update(context.Context, string, bdshell.UpdatePatch) (store.Issue, error) {
+	return f.iss, nil
+}
+func (f fakeCLI) Close(context.Context, string) (store.Issue, error)    { return f.iss, nil }
+func (f fakeCLI) Dispatch(context.Context, string) (store.Issue, error) { return f.iss, nil }
+func (f fakeCLI) AppendNote(context.Context, string, string) (store.Issue, error) {
+	return f.iss, nil
+}
+
+func TestPublishOnWrite_RemoteMode(t *testing.T) {
+	backend := store.NewMemoryBackend(nil)
+	cli := fakeCLI{iss: store.Issue{ID: "mp-aaa", Title: "T", Status: "open", IssueType: "task"}}
+
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	svc := NewBeadServiceWithRepo(backend, cli, pub, "muster", true)
+
+	if _, err := svc.Create(context.Background(), CreateBeadInput{Title: "T", Type: core.TypeTask, Priority: 2}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.Patch(context.Background(), "mp-aaa", PatchBeadInput{Title: strPtr("T2")}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	if len(frames) != 2 {
+		t.Fatalf("want 2 frames, got %d: %+v", len(frames), frames)
+	}
+	if frames[0].Type != ws.EventBeadCreated || frames[0].Bead == nil {
+		t.Errorf("frame[0] = %+v, want bead.created with Bead", frames[0])
+	}
+	if frames[1].Type != ws.EventBeadUpdated || frames[1].Bead == nil {
+		t.Errorf("frame[1] = %+v, want bead.updated with Bead", frames[1])
+	}
+}
+
+func TestPublishOnWrite_EmbeddedModeSilent(t *testing.T) {
+	backend := store.NewMemoryBackend(nil)
+	cli := fakeCLI{iss: store.Issue{ID: "mp-aaa", Title: "T", Status: "open", IssueType: "task"}}
+
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	// publishOnWrite=false → watcher is the WS source, service must not publish.
+	svc := NewBeadServiceWithRepo(backend, cli, pub, "muster", false)
+
+	if _, err := svc.Create(context.Background(), CreateBeadInput{Title: "T", Type: core.TypeTask, Priority: 2}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(frames) != 0 {
+		t.Errorf("embedded mode must not publish on write, got %d frames", len(frames))
+	}
+}
+
+func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool    { return &b }
+func intPtr(i int) *int       { return &i }
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOf(s, substr) >= 0)
