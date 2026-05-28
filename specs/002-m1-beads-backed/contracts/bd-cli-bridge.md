@@ -29,6 +29,7 @@ Every `bd` invocation runs with:
 | `BEADS_DIR` | `BackendConfig.BeadsDir` | Routes `bd` to the same database muster is reading. Critical in multi-repo setups (`mp` vs `muster`). |
 | `PATH` | inherited | So `bd` can find `dolt`. |
 | `HOME` | inherited | `bd` reads `~/.config/...` for some prefs. |
+| `BEADS_DOLT_PASSWORD` | inherited when set | Remote-mode `bd` writes / `bd dolt start` need it to reach a password-protected Dolt server. |
 | All other env | NOT inherited | Hygiene — muster starts each `bd` with a minimal env. |
 
 Working directory: muster's own cwd (the value of `BEADS_DIR` is authoritative for `bd`).

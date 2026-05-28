@@ -123,6 +123,11 @@ func buildEnv(beadsDir string) []string {
 	if home := os.Getenv("HOME"); home != "" {
 		env = append(env, "HOME="+home)
 	}
+	// Remote-mode bd commands (writes, `bd dolt start`) need the Dolt password
+	// to reach a password-protected server; muster reads the same var for its DSN.
+	if pw := os.Getenv("BEADS_DOLT_PASSWORD"); pw != "" {
+		env = append(env, "BEADS_DOLT_PASSWORD="+pw)
+	}
 	return env
 }
 

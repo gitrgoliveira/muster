@@ -272,6 +272,32 @@ func TestPatch_501_CLIMissing(t *testing.T) {
 	assert.Equal(t, "BD_CLI_MISSING", errorCode(t, resp))
 }
 
+func TestPatch_DescriptionAlias_Accepted(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	// "description" is a documented alias for "desc"; it must not be rejected
+	// as an unknown field. With a nil CLI it passes decode/validation and
+	// reaches the CLI-missing check (501).
+	resp := doPatch(t, srv, "/beads/mp-aaa", map[string]interface{}{
+		"description": "via alias",
+	})
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	assert.Equal(t, "BD_CLI_MISSING", errorCode(t, resp))
+}
+
+func TestPatch_400_DescAndDescription(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPatch(t, srv, "/beads/mp-aaa", map[string]interface{}{
+		"desc":        "one",
+		"description": "two",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
 // ── Move — validation passes before CLI check ─────────────────────────
 
 func TestMove_400_MissingToColumn(t *testing.T) {

@@ -171,9 +171,19 @@ func (h *Handlers) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// desc and description are documented aliases; accept either but not both.
+	desc := req.Desc
+	if req.Description != nil {
+		if req.Desc != nil {
+			render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "specify either desc or description, not both")
+			return
+		}
+		desc = req.Description
+	}
+
 	input := services.PatchBeadInput{
 		Title:        req.Title,
-		Desc:         req.Desc,
+		Desc:         desc,
 		Type:         req.Type,
 		Column:       req.Column,
 		Priority:     req.Priority,
