@@ -157,8 +157,25 @@ func (w *Watcher) refreshSnapshot(ctx context.Context) error {
 	return nil
 }
 
+// reloader is implemented by backends (e.g. JSONL) that cache file contents and
+// can be told to re-read unconditionally.
+type reloader interface {
+	Reload(ctx context.Context) error
+}
+
 // emitDiff lists current issues, diffs against snapshot, and emits an event if anything changed.
 func (w *Watcher) emitDiff(ctx context.Context, source string) {
+	// On a definitive fsnotify signal, force a reload so a same-size rewrite at
+	// the same mtime is not masked by the backend's staleness cache. The poll
+	// path keeps the cheap mtime/size gate.
+	if source != "poll" {
+		if r, ok := w.backend.(reloader); ok {
+			if err := r.Reload(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "watcher: %s reload failed: %v\n", source, err)
+			}
+		}
+	}
+
 	issues, err := w.backend.List(ctx, Filter{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "watcher: %s diff failed: %v\n", source, err)

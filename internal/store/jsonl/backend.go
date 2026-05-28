@@ -108,6 +108,16 @@ func (b *Backend) Ping(_ context.Context) error {
 // Close is a no-op for the JSONL backend.
 func (b *Backend) Close() error { return nil }
 
+// Reload forces an immediate re-read of the file, bypassing the mtime/size
+// staleness check. Used by the watcher when fsnotify reports a definitive
+// change, since mtime+size can miss a same-size rewrite at the same mtime.
+func (b *Backend) Reload(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return b.reload()
+}
+
 // Refresh re-reads the file if mtime OR size has changed.
 // Size is an additional signal for filesystems with coarse mtime resolution
 // where two writes within the same timestamp quantum would otherwise be missed.

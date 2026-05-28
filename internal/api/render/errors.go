@@ -15,7 +15,7 @@ const (
 	CodeMethodNotAllowed = "METHOD_NOT_ALLOWED"
 	CodeInternal         = "INTERNAL"
 	CodeCLIMissing       = "BD_CLI_MISSING"
-	CodeCLIValidation    = "BD_CLI_VALIDATION"
+	CodeCLIValidation    = "UNPROCESSABLE_ENTITY"
 	CodeStoreUnavailable = "STORE_UNAVAILABLE"
 	CodeGatewayTimeout   = "GATEWAY_TIMEOUT"
 )
