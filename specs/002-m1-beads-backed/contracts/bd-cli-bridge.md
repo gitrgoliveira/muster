@@ -55,7 +55,7 @@ Body is sparse. muster composes the flags for the supplied fields and runs ONE `
 | `column` | `--status=<v>` (column mapped to a beads status via `columnToStatuses`) |
 
 Example: `PATCH /api/v1/beads/mp-abc {"title":"X","priority":1}`
-→ `bd update --json --dolt-auto-commit=on mp-abc --title=X --priority=1`
+→ `bd update --json --dolt-auto-commit=on --title=X --priority=1 -- mp-abc`
 
 Output is parsed as a JSON array; the first element is the updated issue.
 

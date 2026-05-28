@@ -110,6 +110,7 @@ If your beads database uses a Dolt server (not embedded), set `dolt_mode` to `"r
   "backend":  "dolt",
   "dolt_mode": "remote",
   "dolt_database": "muster",
+  "dolt_host": "127.0.0.1",
   "project_id": "..."
 }
 ```

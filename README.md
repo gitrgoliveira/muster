@@ -1,6 +1,6 @@
 # muster
 
-A central hub that aggregates and serves [beads](https://github.com/gastownhall/beads) issues from one or more repositories via a REST + WebSocket API.
+A central hub that serves [beads](https://github.com/gastownhall/beads) issues over a REST + WebSocket API. M1 serves a single beads repository (via `--beads-dir`); aggregating multiple repositories from one instance is planned for a later milestone.
 
 ## Quick start
 
