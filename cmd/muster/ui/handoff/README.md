@@ -7,7 +7,7 @@ It is split into two independent implementation tracks. You can pick up either o
 | Track    | Canonical spec | What you build                                                                                       |
 |----------|----------------|------------------------------------------------------------------------------------------------------|
 | **UI**   | `DESIGN.md`    | A React (or framework-of-your-choice) application that matches the HTML prototype in `prototype/`.   |
-| **Backend** | `spec.md`   | A single Go binary `musterd` that serves the UI + an HTTP/WS API at `:7766`. |
+| **Backend** | `spec.md`   | A single Go binary `muster` that serves the UI + an HTTP/WS API at `:7766`. |
 
 The bridge between the two tracks is **DESIGN.md §11 — Mock → backend handover map**, which lists every place the UI is currently mocked and the spec.md endpoint that replaces each mock.
 
@@ -84,7 +84,7 @@ The prototype seeds itself from `data.jsx`'s `window.MUSTER_DATA` — every shap
 ## Where to start (concrete first PR)
 
 If you're picking up the backend cold, the first PR should be **spec.md §20 M0 — Skeleton**:
-- A `musterd serve` that binds `127.0.0.1:7766`, serves the embedded UI, exposes `GET /api/v1/beads` returning an in-memory array, and pushes optimistic mutations via WS at `/api/v1/stream`.
+- A `muster serve` that binds `127.0.0.1:7766`, serves the embedded UI, exposes `GET /api/v1/beads` returning an in-memory array, and pushes optimistic mutations via WS at `/api/v1/stream`.
 - Use the seed data from `prototype/data.jsx`'s `TASKS` array as the in-memory fixture so the UI renders without changes.
 
 If you're picking up the UI cold, the first PR should be **DESIGN.md §12 — Production-readiness checklist** item 1 (timestamps) plus standing up a real Vite + React project that imports the JSX files unchanged. Once that runs, work through the §11 handover map endpoint by endpoint.

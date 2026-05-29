@@ -1,0 +1,219 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	api "github.com/gitrgoliveira/muster/internal/api"
+	"github.com/gitrgoliveira/muster/internal/api/health"
+	"github.com/gitrgoliveira/muster/internal/config"
+	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/store"
+	"github.com/gitrgoliveira/muster/internal/store/bdshell"
+	"github.com/gitrgoliveira/muster/internal/store/dolt"
+	"github.com/gitrgoliveira/muster/internal/store/jsonl"
+	"github.com/gitrgoliveira/muster/internal/ws"
+)
+
+func main() {
+	if len(os.Args) < 2 || os.Args[1] != "serve" {
+		fmt.Fprintf(os.Stderr, "Usage: muster serve [--addr HOST:PORT] [--beads-dir DIR] [--bd-bin PATH]\n")
+		os.Exit(1)
+	}
+
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:7766", "listen address")
+	beadsDirFlag := fs.String("beads-dir", "", "path to beads directory (overrides $BEADS_DIR)")
+	bdBinFlag := fs.String("bd-bin", "", "path to bd binary (overrides $BD_BIN and PATH)")
+	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles the error
+
+	// Validate addr format.
+	if _, _, err := net.SplitHostPort(*addr); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid addr %q: %v\n", *addr, err)
+		os.Exit(1)
+	}
+
+	// Resolve beads directory.
+	beadsDir, err := config.ResolveBeadsDir(*beadsDirFlag, os.Getenv("BEADS_DIR"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Load backend config from metadata.json.
+	cfg, err := config.LoadBackendConfig(beadsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Resolve bd binary path.
+	bdBin := *bdBinFlag
+	if bdBin == "" {
+		bdBin = os.Getenv("BD_BIN")
+	}
+	cfg.BdBin = bdBin
+
+	const beadsVersion = "0.9.1"
+
+	hub := ws.NewHub(beadsVersion)
+	go hub.Run()
+
+	// Resolve bd CLI binary (optional — tries LookPath when flag/env is empty).
+	var cli *bdshell.CLI
+	cli, cliErr := bdshell.NewCLI(cfg.BdBin, beadsDir)
+	if cliErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: bd CLI not available: %v\n", cliErr)
+		cli = nil
+	}
+
+	// Construct the read backend.
+	var backend store.Backend
+	switch cfg.Mode {
+	case "embedded":
+		b, berr := jsonl.NewJSONL(beadsDir)
+		if berr != nil {
+			fmt.Fprintf(os.Stderr, "cannot open issues.jsonl: %v\n", berr)
+			os.Exit(1)
+		}
+		backend = b
+	case "remote":
+		// Start the dolt server (idempotent).
+		if cli != nil {
+			startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := cli.DoltStart(startCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: bd dolt start: %v\n", err)
+			}
+			startCancel()
+		}
+		dsn := config.BuildDoltDSN(cfg)
+		initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		b, berr := dolt.NewDolt(initCtx, dsn)
+		initCancel()
+		if berr != nil {
+			fmt.Fprintf(os.Stderr, "cannot connect to dolt server: %v\n", berr)
+			os.Exit(1)
+		}
+		backend = b
+	default:
+		fmt.Fprintf(os.Stderr, "unsupported dolt_mode %q\n", cfg.Mode)
+		os.Exit(1)
+	}
+
+	var svcCLI services.CLIRunner
+	if cli != nil {
+		svcCLI = cli
+	}
+	// In remote mode no file watcher runs, so the service publishes WS frames
+	// directly on write. Embedded mode leaves this off — the watcher is the
+	// single WS source there.
+	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase, cfg.Mode == "remote")
+
+	// Print startup banner.
+	bdCLIDisplay := "(missing — write endpoints disabled)"
+	if cli != nil {
+		bdCLIDisplay = cli.Path
+	}
+	fmt.Printf("muster listening on http://%s\n", *addr)
+	fmt.Printf("  build         = dev\n")
+	fmt.Printf("  schemaVersion = %d\n", cfg.SchemaVersion)
+	fmt.Printf("  beadsDir      = %s\n", cfg.BeadsDir)
+	fmt.Printf("  doltDatabase  = %s\n", cfg.DoltDatabase)
+	fmt.Printf("  doltMode      = %s\n", cfg.Mode)
+	fmt.Printf("  readSource    = %s\n", cfg.ReadSource)
+	fmt.Printf("  bdCLI         = %s\n", bdCLIDisplay)
+
+	// Start file watcher for embedded mode.
+	watcherOut := make(chan store.WatcherEvent, 32)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if cfg.Mode == "embedded" {
+		jsonlPath := filepath.Join(beadsDir, "issues.jsonl")
+		w := store.NewWatcher(backend, jsonlPath, watcherOut)
+		go func() {
+			if err := w.Run(ctx); err != nil && err != context.Canceled {
+				fmt.Fprintf(os.Stderr, "watcher: %v\n", err)
+			}
+		}()
+
+		// Fan watcher events into the WS hub.
+		// bead.created/updated frames include the full Bead payload (M0 WS contract);
+		// bead.deleted carries only the ID (the bead is gone).
+		go func() {
+			for {
+				select {
+				case ev := <-watcherOut:
+					for _, id := range ev.CreatedIDs {
+						bead, err := svc.GetBead(ctx, id)
+						if err != nil {
+							hub.Broadcast(ws.Frame{Type: ws.EventBeadCreated, ID: id})
+							continue
+						}
+						hub.Broadcast(ws.Frame{Type: ws.EventBeadCreated, Bead: bead})
+					}
+					for _, id := range ev.ChangedIDs {
+						bead, err := svc.GetBead(ctx, id)
+						if err != nil {
+							hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, ID: id})
+							continue
+						}
+						hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, Bead: bead})
+					}
+					for _, id := range ev.DeletedIDs {
+						hub.Broadcast(ws.Frame{Type: ws.EventBeadDeleted, ID: id})
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	statusCfg := health.StatusConfig{
+		BeadsVersion:  beadsVersion,
+		BeadsDir:      cfg.BeadsDir,
+		ProjectID:     cfg.ProjectID,
+		DoltDatabase:  cfg.DoltDatabase,
+		DoltMode:      cfg.Mode,
+		ReadSource:    cfg.ReadSource,
+		BdCLI:         bdCLIDisplay,
+		SchemaVersion: cfg.SchemaVersion,
+		Pinger:        backend,
+	}
+
+	handler := api.NewRouter(svc, hub, UI, statusCfg)
+
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "listen: %v\n", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	stop()
+
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(drainCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
+		os.Exit(1)
+	}
+
+	backend.Close() //nolint:errcheck
+}

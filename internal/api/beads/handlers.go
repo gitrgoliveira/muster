@@ -9,21 +9,21 @@ import (
 	"github.com/gitrgoliveira/muster/internal/api/render"
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
-	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
-var idPattern = regexp.MustCompile(`^bd-[0-9a-f]{4}$`)
+// idPattern accepts real beads IDs: <prefix>-<suffix> where prefix is lowercase
+// alpha and suffix is alphanumeric (e.g. mp-kbj, muster-xyz, bd-0000).
+var idPattern = regexp.MustCompile(`^[a-z]+-[0-9a-z]+$`)
 
 // Handlers groups all bead-related HTTP handlers.
 type Handlers struct {
-	svc   *services.BeadService
-	store store.Store
+	svc *services.BeadService
 }
 
-// NewHandlers constructs a Handlers with the given service and store.
-func NewHandlers(svc *services.BeadService, st store.Store) *Handlers {
-	return &Handlers{svc: svc, store: st}
+// NewHandlers constructs a Handlers backed by the given service.
+func NewHandlers(svc *services.BeadService) *Handlers {
+	return &Handlers{svc: svc}
 }
 
 // mapServiceError translates a ServiceError into an HTTP response. Returns true
@@ -34,7 +34,7 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 	}
 	se, ok := err.(*services.ServiceError)
 	if !ok {
-		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, err.Error())
+		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, "internal server error")
 		return true
 	}
 	switch se.Code {
@@ -44,6 +44,14 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, se.Message)
 	case services.CodeInvalidState:
 		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidState, se.Message)
+	case services.CodeCLIMissing:
+		render.WriteError(w, r, http.StatusNotImplemented, render.CodeCLIMissing, se.Message)
+	case services.CodeCLIValidation:
+		render.WriteError(w, r, http.StatusUnprocessableEntity, render.CodeCLIValidation, se.Message)
+	case services.CodeCLIUnavailable:
+		render.WriteError(w, r, http.StatusServiceUnavailable, render.CodeStoreUnavailable, se.Message)
+	case services.CodeCLITimeout:
+		render.WriteError(w, r, http.StatusGatewayTimeout, render.CodeGatewayTimeout, se.Message)
 	case services.CodeInternal:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	default:
@@ -68,10 +76,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		msg := err.Error()
-		// Produce a cleaner message for unknown field errors.
 		if strings.Contains(msg, "unknown field") {
-			// Extract the field name from the error message.
-			// json decoder reports: `json: unknown field "fieldname"`
 			const prefix = `json: unknown field "`
 			if idx := strings.Index(msg, prefix); idx >= 0 {
 				rest := msg[idx+len(prefix):]
@@ -95,9 +100,8 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	beads, err := h.store.List(r.Context(), column)
-	if err != nil {
-		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, err.Error())
+	beads, err := h.svc.ListBeads(r.Context(), column)
+	if mapServiceError(w, r, err) {
 		return
 	}
 
@@ -108,6 +112,21 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Get handles GET /beads/{id}.
+func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	bead, err := h.svc.GetBead(r.Context(), id)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, bead)
+}
+
 // Create handles POST /beads.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	var req CreateRequest
@@ -115,7 +134,6 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply priority default.
 	priority := core.Priority(2)
 	if req.Priority != nil {
 		priority = *req.Priority
@@ -127,6 +145,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		Type:         req.Type,
 		Column:       req.Column,
 		Priority:     priority,
+		Assignee:     req.Assignee,
 		Labels:       req.Labels,
 		VCS:          req.VCS,
 		TokensBudget: req.TokensBudget,
@@ -141,26 +160,6 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	render.WriteJSON(w, http.StatusCreated, bead)
 }
 
-// Get handles GET /beads/{id}.
-func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if !validateID(w, r, id) {
-		return
-	}
-
-	bead, err := h.store.Get(r.Context(), id)
-	if err != nil {
-		if err == store.ErrNotFound {
-			render.WriteError(w, r, http.StatusNotFound, render.CodeBeadNotFound, "bead not found")
-			return
-		}
-		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, err.Error())
-		return
-	}
-
-	render.WriteJSON(w, http.StatusOK, bead)
-}
-
 // Patch handles PATCH /beads/{id}.
 func (h *Handlers) Patch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -173,12 +172,23 @@ func (h *Handlers) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// desc and description are documented aliases; accept either but not both.
+	desc := req.Desc
+	if req.Description != nil {
+		if req.Desc != nil {
+			render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "specify either desc or description, not both")
+			return
+		}
+		desc = req.Description
+	}
+
 	input := services.PatchBeadInput{
 		Title:        req.Title,
-		Desc:         req.Desc,
+		Desc:         desc,
 		Type:         req.Type,
 		Column:       req.Column,
 		Priority:     req.Priority,
+		Assignee:     req.Assignee,
 		Labels:       req.Labels,
 		Ready:        req.Ready,
 		TokensBudget: req.TokensBudget,

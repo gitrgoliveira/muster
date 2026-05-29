@@ -1,6 +1,7 @@
 package health_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/api/health"
-	"github.com/gitrgoliveira/muster/internal/store"
 )
 
 func TestHealthz_Returns200_AndOK(t *testing.T) {
@@ -31,9 +31,12 @@ func TestHealthz_Returns200_AndOK(t *testing.T) {
 	}
 }
 
+func minCfg(beadsVersion string) health.StatusConfig {
+	return health.StatusConfig{BeadsVersion: beadsVersion, SchemaVersion: 1}
+}
+
 func TestOrchestratorStatus_ReturnsFullPayload(t *testing.T) {
-	seed := store.SeedDolt()
-	handler := health.OrchestratorStatusHandler("1.0.0", seed)
+	handler := health.OrchestratorStatusHandler(minCfg("1.0.0"))
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
@@ -64,16 +67,11 @@ func TestOrchestratorStatus_ReturnsFullPayload(t *testing.T) {
 	if body.ServerTime == "" {
 		t.Error("expected non-empty serverTime")
 	}
-	// Dolt sub-fields should be non-zero (from seed).
-	if body.Dolt.Branch == "" {
-		t.Error("expected non-empty dolt.branch")
-	}
 }
 
 func TestOrchestratorStatus_BeadsVersionMatchesSeed(t *testing.T) {
 	const wantVersion = "0.9.1"
-	seed := store.SeedDolt()
-	handler := health.OrchestratorStatusHandler(wantVersion, seed)
+	handler := health.OrchestratorStatusHandler(minCfg(wantVersion))
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
@@ -89,52 +87,8 @@ func TestOrchestratorStatus_BeadsVersionMatchesSeed(t *testing.T) {
 	}
 }
 
-func TestOrchestratorStatus_DoltMatchesSeed(t *testing.T) {
-	seed := store.SeedDolt()
-	handler := health.OrchestratorStatusHandler("0.1.0", seed)
-
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
-	w := httptest.NewRecorder()
-	handler(w, req)
-
-	var body health.OrchestratorStatusResponse
-	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
-		t.Fatalf("failed to decode body: %v", err)
-	}
-
-	got := body.Dolt
-	if got.Branch != seed.Branch {
-		t.Errorf("dolt.branch: want %q, got %q", seed.Branch, got.Branch)
-	}
-	if got.Status != seed.Status {
-		t.Errorf("dolt.status: want %q, got %q", seed.Status, got.Status)
-	}
-	if got.Port != seed.Port {
-		t.Errorf("dolt.port: want %d, got %d", seed.Port, got.Port)
-	}
-	if got.Remote != seed.Remote {
-		t.Errorf("dolt.remote: want %q, got %q", seed.Remote, got.Remote)
-	}
-	if got.Ahead != seed.Ahead {
-		t.Errorf("dolt.ahead: want %d, got %d", seed.Ahead, got.Ahead)
-	}
-	if got.Behind != seed.Behind {
-		t.Errorf("dolt.behind: want %d, got %d", seed.Behind, got.Behind)
-	}
-	if got.LastSync != seed.LastSync {
-		t.Errorf("dolt.lastSync: want %q, got %q", seed.LastSync, got.LastSync)
-	}
-	if got.Server != seed.Server {
-		t.Errorf("dolt.server: want %q, got %q", seed.Server, got.Server)
-	}
-	if got.Writers != seed.Writers {
-		t.Errorf("dolt.writers: want %d, got %d", seed.Writers, got.Writers)
-	}
-}
-
 func TestOrchestratorStatus_ServerTimeIsRFC3339(t *testing.T) {
-	seed := store.SeedDolt()
-	handler := health.OrchestratorStatusHandler("1.0.0", seed)
+	handler := health.OrchestratorStatusHandler(minCfg("1.0.0"))
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
@@ -147,5 +101,78 @@ func TestOrchestratorStatus_ServerTimeIsRFC3339(t *testing.T) {
 
 	if _, err := time.Parse(time.RFC3339, body.ServerTime); err != nil {
 		t.Errorf("serverTime %q is not valid RFC3339: %v", body.ServerTime, err)
+	}
+}
+
+// pingOK is a Pinger that always returns nil.
+type pingOK struct{}
+
+func (pingOK) Ping(_ context.Context) error { return nil }
+
+// pingFail is a Pinger that always returns an error.
+type pingFail struct{}
+
+func (pingFail) Ping(_ context.Context) error { return context.DeadlineExceeded }
+
+func TestOrchestratorStatus_OnlineWhenPingOK(t *testing.T) {
+	cfg := health.StatusConfig{BeadsVersion: "1.0.0", SchemaVersion: 1, Pinger: pingOK{}}
+	handler := health.OrchestratorStatusHandler(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	json.NewDecoder(w.Result().Body).Decode(&body) //nolint:errcheck
+	if !body.Online {
+		t.Error("expected online=true when Ping succeeds")
+	}
+}
+
+func TestOrchestratorStatus_OfflineWhenPingFails(t *testing.T) {
+	cfg := health.StatusConfig{BeadsVersion: "1.0.0", SchemaVersion: 1, Pinger: pingFail{}}
+	handler := health.OrchestratorStatusHandler(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	json.NewDecoder(w.Result().Body).Decode(&body) //nolint:errcheck
+	if body.Online {
+		t.Error("expected online=false when Ping fails")
+	}
+}
+
+func TestOrchestratorStatus_ConfigFieldsPopulated(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "2.0.0",
+		BeadsDir:      "/data/beads",
+		DoltDatabase:  "mydb",
+		DoltMode:      "remote",
+		ReadSource:    "dolt-sql",
+		BdCLI:         "/usr/local/bin/bd",
+		ProjectID:     "proj-123",
+		SchemaVersion: 2,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	json.NewDecoder(w.Result().Body).Decode(&body) //nolint:errcheck
+
+	if body.BeadsDir != "/data/beads" {
+		t.Errorf("beadsDir want /data/beads got %q", body.BeadsDir)
+	}
+	if body.DoltDatabase != "mydb" {
+		t.Errorf("doltDatabase want mydb got %q", body.DoltDatabase)
+	}
+	if body.ReadSource != "dolt-sql" {
+		t.Errorf("readSource want dolt-sql got %q", body.ReadSource)
+	}
+	if body.SchemaVersion != 2 {
+		t.Errorf("schemaVersion want 2 got %d", body.SchemaVersion)
 	}
 }

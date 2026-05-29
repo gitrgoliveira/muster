@@ -1,47 +1,28 @@
 package stream_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/gitrgoliveira/muster/internal/api/beads"
 	"github.com/gitrgoliveira/muster/internal/api/stream"
-	"github.com/gitrgoliveira/muster/internal/services"
-	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/ws"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// ensure net/http is used (POST in TestStream_ReceivesBeadCreatedOnPostBeads).
-var _ = http.StatusCreated
-
 func newTestServer(t *testing.T) (*httptest.Server, *ws.Hub) {
 	t.Helper()
 	hub := ws.NewHub("0.9.1")
 	go hub.Run()
 
-	ms := store.NewMemStore(store.SeedBeads())
-	pub := services.Publisher(hub.Broadcast)
-	svc := services.NewBeadService(ms, pub)
-
 	r := chi.NewRouter()
 	r.Get("/stream", stream.StreamHandler(hub))
-
-	// Also mount beads for integration tests.
-	bh := beads.NewHandlers(svc, ms)
-	r.Post("/beads", bh.Create)
-	r.Post("/beads/{id}/move", bh.Move)
-	r.Patch("/beads/{id}", bh.Patch)
-	r.Post("/beads/{id}/comments", bh.Comment)
 
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -86,7 +67,6 @@ func readFrame(t *testing.T, conn *websocket.Conn, timeout time.Duration) map[st
 // A successful dial implies the server returned 101 Switching Protocols.
 func TestStream_UpgradesToWS(t *testing.T) {
 	srv, _ := newTestServer(t)
-	// dialWS already asserts no error and registers cleanup.
 	conn := dialWS(t, srv)
 	// Drain hello so the hub doesn't block on a slow client.
 	_ = readFrame(t, conn, 1*time.Second)
@@ -134,85 +114,20 @@ func TestStream_PingProducesPong(t *testing.T) {
 	assert.NotEmpty(t, frame["at"], "pong at field should be non-empty")
 }
 
-// TestStream_ReceivesBeadCreatedOnPostBeads verifies bead.created is broadcast on POST /beads.
-func TestStream_ReceivesBeadCreatedOnPostBeads(t *testing.T) {
-	srv, _ := newTestServer(t)
+// TestStream_BroadcastDelivered verifies that a direct hub.Broadcast reaches a connected client.
+func TestStream_BroadcastDelivered(t *testing.T) {
+	srv, hub := newTestServer(t)
 	conn := dialWS(t, srv)
 
 	// Drain hello frame.
 	_ = readFrame(t, conn, 1*time.Second)
 
-	// POST a new bead via HTTP.
-	body := bytes.NewBufferString(`{"title":"integration test bead"}`)
-	resp, err := srv.Client().Post(srv.URL+"/beads", "application/json", body)
-	require.NoError(t, err, "POST /beads")
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	// Broadcast a test event.
+	hub.Broadcast(ws.Frame{Type: "test.event"})
 
-	// Expect bead.created event within 500ms.
+	// Expect the event within 500ms.
 	frame := readFrame(t, conn, 500*time.Millisecond)
-	assert.Equal(t, "bead.created", frame["type"], "should receive bead.created event")
-}
-
-// TestStream_ReceivesBeadMovedOnPostMove verifies bead.moved is broadcast on POST /beads/{id}/move.
-func TestStream_ReceivesBeadMovedOnPostMove(t *testing.T) {
-	srv, _ := newTestServer(t)
-	conn := dialWS(t, srv)
-
-	_ = readFrame(t, conn, 1*time.Second)
-
-	body := bytes.NewBufferString(`{"toColumn":"review"}`)
-	resp, err := srv.Client().Post(srv.URL+"/beads/bd-a1f2/move", "application/json", body)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	frame := readFrame(t, conn, 500*time.Millisecond)
-	assert.Equal(t, "bead.moved", frame["type"])
-	assert.Equal(t, "bd-a1f2", frame["id"])
-	assert.Equal(t, "running", frame["fromColumn"])
-	assert.Equal(t, "review", frame["toColumn"])
-}
-
-// TestStream_ReceivesBeadUpdatedOnPatch verifies bead.updated is broadcast on PATCH /beads/{id}.
-func TestStream_ReceivesBeadUpdatedOnPatch(t *testing.T) {
-	srv, _ := newTestServer(t)
-	conn := dialWS(t, srv)
-
-	_ = readFrame(t, conn, 1*time.Second)
-
-	body := bytes.NewBufferString(`{"title":"patched title"}`)
-	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/beads/bd-a1f2", body)
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := srv.Client().Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	frame := readFrame(t, conn, 500*time.Millisecond)
-	assert.Equal(t, "bead.updated", frame["type"])
-	bead, ok := frame["bead"].(map[string]interface{})
-	require.True(t, ok, "frame should contain a bead field")
-	assert.Equal(t, "bd-a1f2", bead["id"])
-}
-
-// TestStream_ReceivesCommentAddedOnPostComment verifies comment.added is broadcast on POST /beads/{id}/comments.
-func TestStream_ReceivesCommentAddedOnPostComment(t *testing.T) {
-	srv, _ := newTestServer(t)
-	conn := dialWS(t, srv)
-
-	_ = readFrame(t, conn, 1*time.Second)
-
-	body := bytes.NewBufferString(`{"actor":"tester","note":"LGTM"}`)
-	resp, err := srv.Client().Post(srv.URL+"/beads/bd-a1f2/comments", "application/json", body)
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	frame := readFrame(t, conn, 500*time.Millisecond)
-	assert.Equal(t, "comment.added", frame["type"])
-	assert.Equal(t, "bd-a1f2", frame["id"])
+	assert.Equal(t, "test.event", frame["type"])
 }
 
 // TestStream_DisconnectUnregistersClient verifies a closed connection is cleaned up

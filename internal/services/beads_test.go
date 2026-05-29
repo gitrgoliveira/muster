@@ -1,482 +1,204 @@
-package services_test
+package services
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/gitrgoliveira/muster/internal/core"
-	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
+	"github.com/gitrgoliveira/muster/internal/store/bdshell"
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
 
-// mockStore is a minimal store.Store implementation for service tests.
-type mockStore struct {
-	beads map[string]*core.Bead
-	// Injectable error for testing error paths.
-	createErr   error
-	patchErr    error
-	moveErr     error
-	dispatchErr error
-	commentErr  error
-}
-
-func newMockStore(initial ...*core.Bead) *mockStore {
-	m := &mockStore{beads: make(map[string]*core.Bead)}
-	for _, b := range initial {
-		cp := *b
-		m.beads[b.ID] = &cp
-	}
-	return m
-}
-
-func (m *mockStore) List(_ context.Context, column string) ([]core.Bead, error) {
-	var out []core.Bead
-	for _, b := range m.beads {
-		if column == "" || string(b.Column) == column {
-			out = append(out, *b)
-		}
-	}
-	return out, nil
-}
-
-func (m *mockStore) Get(_ context.Context, id string) (*core.Bead, error) {
-	b, ok := m.beads[id]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	cp := *b
-	return &cp, nil
-}
-
-func (m *mockStore) Create(_ context.Context, b core.Bead) (*core.Bead, error) {
-	if m.createErr != nil {
-		return nil, m.createErr
-	}
-	b.ID = "bd-t001"
-	m.beads[b.ID] = &b
-	cp := b
-	return &cp, nil
-}
-
-func (m *mockStore) Patch(_ context.Context, id string, patch store.PatchBeadInput) (*core.Bead, error) {
-	if m.patchErr != nil {
-		return nil, m.patchErr
-	}
-	b, ok := m.beads[id]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	if patch.Title != nil {
-		b.Title = *patch.Title
-	}
-	if patch.Desc != nil {
-		b.Desc = *patch.Desc
-	}
-	if patch.Type != nil {
-		b.Type = *patch.Type
-	}
-	if patch.Column != nil {
-		b.Column = *patch.Column
-	}
-	if patch.Priority != nil {
-		b.Priority = *patch.Priority
-	}
-	if patch.Ready != nil {
-		b.Ready = *patch.Ready
-	}
-	if patch.Labels != nil {
-		b.Labels = *patch.Labels
-	}
-	if patch.TokensBudget != nil {
-		b.TokensBudget = *patch.TokensBudget
-	}
-	cp := *b
-	return &cp, nil
-}
-
-func (m *mockStore) Move(_ context.Context, id, toColumn, beforeID string) (*core.Bead, error) {
-	if m.moveErr != nil {
-		return nil, m.moveErr
-	}
-	b, ok := m.beads[id]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	b.Column = core.Column(toColumn)
-	cp := *b
-	return &cp, nil
-}
-
-func (m *mockStore) Dispatch(_ context.Context, id string, req store.DispatchRequest) (*core.Bead, error) {
-	if m.dispatchErr != nil {
-		return nil, m.dispatchErr
-	}
-	b, ok := m.beads[id]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	if b.Column != core.ColScheduled {
-		return nil, store.ErrInvalidState
-	}
-	b.Column = core.ColRunning
-	b.Steps = append(b.Steps, core.Step{
-		Agent:  req.Agent,
-		Mode:   req.Mode,
-		Skills: []string{},
-		Status: core.StepActive,
-	})
-	b.History = append(b.History,
-		core.HistoryEvent{Kind: core.EvClaimed, Actor: "dispatcher", Agent: req.Agent},
-		core.HistoryEvent{Kind: core.EvStarted, Actor: string(req.Agent)},
-	)
-	cp := *b
-	return &cp, nil
-}
-
-func (m *mockStore) AddComment(_ context.Context, id string, req store.CommentRequest) (*core.Bead, error) {
-	if m.commentErr != nil {
-		return nil, m.commentErr
-	}
-	b, ok := m.beads[id]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	b.History = append(b.History, core.HistoryEvent{
-		Kind:  core.EvComment,
-		Actor: req.Actor,
-		Note:  req.Note,
-	})
-	b.Comments++
-	cp := *b
-	return &cp, nil
-}
-
-// noopPublish discards all events.
-func noopPublish(_ ws.Frame) {}
-
-// svcError extracts a *services.ServiceError from err, failing the test if absent.
-func svcError(t *testing.T, err error) *services.ServiceError {
-	t.Helper()
-	var se *services.ServiceError
-	require.True(t, errors.As(err, &se), "expected *services.ServiceError, got %T: %v", err, err)
-	return se
-}
-
-func ptr[T any](v T) *T { return &v }
-
-// ── Create ────────────────────────────────────────────────────────────────────
-
-func TestCreate_MissingTitle(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	_, err := svc.Create(context.Background(), services.CreateBeadInput{Title: ""})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
-}
-
-func TestCreate_TitleTooLong(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	_, err := svc.Create(context.Background(), services.CreateBeadInput{
-		Title:    strings.Repeat("ü", 256), // 256 runes, each multibyte
-		Priority: 2,
-	})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
-}
-
-func TestCreate_InvalidType(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	_, err := svc.Create(context.Background(), services.CreateBeadInput{
-		Title:    "ok",
-		Type:     core.BeadType("unknown"),
-		Priority: 2,
-	})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
-}
-
-func TestCreate_InvalidPriority(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	_, err := svc.Create(context.Background(), services.CreateBeadInput{
-		Title:    "ok",
-		Priority: core.Priority(99),
-	})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
-}
-
-func TestCreate_WhitespaceTitleTrimmed(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	b, err := svc.Create(context.Background(), services.CreateBeadInput{
-		Title:    "  hello world  ",
-		Priority: 2,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "hello world", b.Title)
-}
-
-// ── Patch ─────────────────────────────────────────────────────────────────────
-
-func TestPatch_EmptyBodyReturnsInvalidRequest(t *testing.T) {
-	ms := newMockStore(&core.Bead{ID: "bd-0001", Column: core.ColBacklog})
-	svc := services.NewBeadService(ms, noopPublish)
-	_, err := svc.Patch(context.Background(), "bd-0001", services.PatchBeadInput{})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
-}
-
-func TestPatch_AllPointerFields(t *testing.T) {
-	type tc struct {
-		name  string
-		patch services.PatchBeadInput
-		check func(t *testing.T, b *core.Bead)
-	}
-	tests := []tc{
-		{
-			name:  "title",
-			patch: services.PatchBeadInput{Title: ptr("new title")},
-			check: func(t *testing.T, b *core.Bead) { assert.Equal(t, "new title", b.Title) },
-		},
-		{
-			name:  "desc",
-			patch: services.PatchBeadInput{Desc: ptr("some desc")},
-			check: func(t *testing.T, b *core.Bead) { assert.Equal(t, "some desc", b.Desc) },
-		},
-		{
-			name:  "type",
-			patch: services.PatchBeadInput{Type: ptr(core.TypeBug)},
-			check: func(t *testing.T, b *core.Bead) { assert.Equal(t, core.TypeBug, b.Type) },
-		},
-		{
-			name:  "priority",
-			patch: services.PatchBeadInput{Priority: ptr(core.Priority(1))},
-			check: func(t *testing.T, b *core.Bead) { assert.Equal(t, core.Priority(1), b.Priority) },
-		},
-		{
-			name:  "labels",
-			patch: services.PatchBeadInput{Labels: ptr([]string{"a", "b"})},
-			check: func(t *testing.T, b *core.Bead) { assert.Equal(t, []string{"a", "b"}, b.Labels) },
-		},
-		{
-			name:  "tokensBudget",
-			patch: services.PatchBeadInput{TokensBudget: ptr(100_000)},
-			check: func(t *testing.T, b *core.Bead) { assert.Equal(t, 100_000, b.TokensBudget) },
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ms := newMockStore(&core.Bead{
-				ID:     "bd-0001",
-				Title:  "original",
-				Column: core.ColBacklog,
-				Labels: []string{},
-			})
-			svc := services.NewBeadService(ms, noopPublish)
-			b, err := svc.Patch(context.Background(), "bd-0001", tc.patch)
-			require.NoError(t, err)
-			tc.check(t, b)
-		})
-	}
-}
-
-// ── Move ──────────────────────────────────────────────────────────────────────
-
-func TestMove_ColumnChange(t *testing.T) {
-	ms := newMockStore(&core.Bead{
-		ID:     "bd-0002",
-		Column: core.ColBacklog,
-	})
-	svc := services.NewBeadService(ms, noopPublish)
-	b, err := svc.Move(context.Background(), "bd-0002", services.MoveInput{ToColumn: core.ColScheduled})
-	require.NoError(t, err)
-	assert.Equal(t, core.ColScheduled, b.Column)
-}
-
-func TestMove_BeforeID_Reorder(t *testing.T) {
-	ms := newMockStore(
-		&core.Bead{ID: "bd-0003", Column: core.ColBacklog},
-		&core.Bead{ID: "bd-0004", Column: core.ColBacklog},
-	)
-	svc := services.NewBeadService(ms, noopPublish)
-	// Move 0003 before 0004 (same column, reorder).
-	b, err := svc.Move(context.Background(), "bd-0003", services.MoveInput{
-		ToColumn: core.ColBacklog,
-		BeforeID: "bd-0004",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, core.ColBacklog, b.Column)
-}
-
-// ── Dispatch ──────────────────────────────────────────────────────────────────
-
-func TestDispatch_Scheduled_Succeeds(t *testing.T) {
-	ms := newMockStore(&core.Bead{
-		ID:      "bd-0005",
-		Column:  core.ColScheduled,
-		Steps:   []core.Step{},
-		History: []core.HistoryEvent{},
-	})
-	svc := services.NewBeadService(ms, noopPublish)
-	b, err := svc.Dispatch(context.Background(), "bd-0005", services.DispatchInput{
-		Agent: core.AgentClaude,
-		Mode:  core.ModeBuild,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, core.ColRunning, b.Column)
-}
-
-func TestDispatch_NonScheduled_ReturnsInvalidState(t *testing.T) {
-	ms := newMockStore(&core.Bead{
-		ID:     "bd-0006",
-		Column: core.ColRunning,
-	})
-	svc := services.NewBeadService(ms, noopPublish)
-	_, err := svc.Dispatch(context.Background(), "bd-0006", services.DispatchInput{
-		Agent: core.AgentClaude,
-		Mode:  core.ModeBuild,
-	})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidState, se.Code)
-}
-
-func TestDispatch_AppendsStepAndTwoHistoryEvents(t *testing.T) {
-	ms := newMockStore(&core.Bead{
-		ID:      "bd-0007",
-		Column:  core.ColScheduled,
-		Steps:   []core.Step{},
-		History: []core.HistoryEvent{},
-	})
-	svc := services.NewBeadService(ms, noopPublish)
-	b, err := svc.Dispatch(context.Background(), "bd-0007", services.DispatchInput{
-		Agent: core.AgentGemini,
-		Mode:  core.ModePlan,
-	})
-	require.NoError(t, err)
-	require.Len(t, b.Steps, 1)
-	assert.Equal(t, core.AgentGemini, b.Steps[0].Agent)
-	assert.Equal(t, core.ModePlan, b.Steps[0].Mode)
-	assert.Equal(t, core.StepActive, b.Steps[0].Status)
-
-	require.Len(t, b.History, 2)
-	assert.Equal(t, core.EvClaimed, b.History[0].Kind)
-	assert.Equal(t, core.EvStarted, b.History[1].Kind)
-}
-
-// ── AddComment ────────────────────────────────────────────────────────────────
-
-func TestAddComment_AppendsAndCounts(t *testing.T) {
-	ms := newMockStore(&core.Bead{
-		ID:       "bd-0008",
-		Column:   core.ColRunning,
-		History:  []core.HistoryEvent{},
-		Comments: 0,
-	})
-	svc := services.NewBeadService(ms, noopPublish)
-	b, err := svc.AddComment(context.Background(), "bd-0008", services.CommentInput{
-		Actor: "claude",
-		Note:  "looks good",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, 1, b.Comments)
-	require.Len(t, b.History, 1)
-	assert.Equal(t, core.EvComment, b.History[0].Kind)
-	assert.Equal(t, "claude", b.History[0].Actor)
-	assert.Equal(t, "looks good", b.History[0].Note)
-}
-
-// ── Error paths ───────────────────────────────────────────────────────────────
-
-func TestServiceError_Error(t *testing.T) {
-	se := &services.ServiceError{Code: "INVALID_REQUEST", Message: "title is required"}
-	assert.Contains(t, se.Error(), "INVALID_REQUEST")
-	assert.Contains(t, se.Error(), "title is required")
-}
-
-func TestPatch_NotFound(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	_, err := svc.Patch(context.Background(), "bd-missing", services.PatchBeadInput{Title: ptr("x")})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeNotFound, se.Code)
-}
-
-func TestMove_InvalidColumn(t *testing.T) {
-	ms := newMockStore(&core.Bead{ID: "bd-0020", Column: core.ColBacklog})
-	svc := services.NewBeadService(ms, noopPublish)
-	_, err := svc.Move(context.Background(), "bd-0020", services.MoveInput{ToColumn: "invalid"})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
-}
-
-func TestMove_NotFound(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	_, err := svc.Move(context.Background(), "bd-missing", services.MoveInput{ToColumn: core.ColBacklog})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeNotFound, se.Code)
-}
-
-func TestMove_BeforeIDErrors(t *testing.T) {
+func TestWrapCLIError(t *testing.T) {
 	tests := []struct {
 		name     string
-		storeErr error
+		err      error
 		wantCode string
 	}{
-		{"beforeID not found", store.ErrBeforeIDNotFound, services.CodeInvalidRequest},
-		{"beforeID different column", store.ErrBeforeIDDifferentColumn, services.CodeInvalidRequest},
-		{"beforeID same as moved", store.ErrBeforeIDSameAsMoved, services.CodeInvalidRequest},
+		{"exit 1 → validation", &bdshell.CLIError{ExitCode: 1, Stderr: "bad input"}, CodeCLIValidation},
+		{"exit 2 → not found", &bdshell.CLIError{ExitCode: 2, Stderr: "missing"}, CodeNotFound},
+		{"exit 3 → unavailable", &bdshell.CLIError{ExitCode: 3, Stderr: "down"}, CodeCLIUnavailable},
+		{"exit 99 → internal", &bdshell.CLIError{ExitCode: 99, Stderr: "unknown"}, CodeInternal},
+		{"deadline exceeded → timeout", context.DeadlineExceeded, CodeCLITimeout},
+		{"generic error → internal", errors.New("oops"), CodeInternal},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ms := newMockStore(&core.Bead{ID: "bd-0021", Column: core.ColBacklog})
-			ms.moveErr = tc.storeErr
-			svc := services.NewBeadService(ms, noopPublish)
-			_, err := svc.Move(context.Background(), "bd-0021", services.MoveInput{
-				ToColumn: core.ColBacklog,
-				BeforeID: "bd-other",
-			})
-			se := svcError(t, err)
-			assert.Equal(t, tc.wantCode, se.Code)
+			got := wrapCLIError(tc.err)
+			if got.Code != tc.wantCode {
+				t.Errorf("wrapCLIError(%v) code = %q, want %q", tc.err, got.Code, tc.wantCode)
+			}
 		})
 	}
 }
 
-func TestDispatch_InvalidAgent(t *testing.T) {
-	ms := newMockStore(&core.Bead{ID: "bd-0022", Column: core.ColScheduled})
-	svc := services.NewBeadService(ms, noopPublish)
-	_, err := svc.Dispatch(context.Background(), "bd-0022", services.DispatchInput{
-		Agent: core.AgentID("unknown"),
-		Mode:  core.ModeBuild,
-	})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
+func TestPatch_RejectsUnsupportedFields(t *testing.T) {
+	backend := store.NewMemoryBackend(nil)
+	svc := NewBeadService(backend, nil, func(_ ws.Frame) {})
+
+	tests := []struct {
+		name  string
+		input PatchBeadInput
+		want  string
+	}{
+		{
+			"labels rejected",
+			PatchBeadInput{Labels: &[]string{"foo"}},
+			"labels patch not supported",
+		},
+		{
+			"ready rejected",
+			PatchBeadInput{Ready: boolPtr(true)},
+			"ready patch not supported",
+		},
+		{
+			"tokensBudget rejected",
+			PatchBeadInput{TokensBudget: intPtr(100)},
+			"tokensBudget patch not supported",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.Patch(context.Background(), "mp-aaa", tc.input)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			se, ok := err.(*ServiceError)
+			if !ok {
+				t.Fatalf("expected ServiceError, got %T", err)
+			}
+			if se.Code != CodeInvalidRequest {
+				t.Errorf("code = %q, want %q", se.Code, CodeInvalidRequest)
+			}
+			if !contains(se.Message, tc.want) {
+				t.Errorf("message %q does not contain %q", se.Message, tc.want)
+			}
+		})
+	}
 }
 
-func TestDispatch_InvalidMode(t *testing.T) {
-	ms := newMockStore(&core.Bead{ID: "bd-0024", Column: core.ColScheduled})
-	svc := services.NewBeadService(ms, noopPublish)
-	_, err := svc.Dispatch(context.Background(), "bd-0024", services.DispatchInput{
-		Agent: core.AgentClaude,
-		Mode:  core.Mode("unknown"),
-	})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
+func TestColumnToStatuses_BacklogIncludesScheduled(t *testing.T) {
+	statuses := columnToStatuses("backlog")
+	found := false
+	for _, s := range statuses {
+		if s == "scheduled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("columnToStatuses(\"backlog\") = %v, want to include \"scheduled\"", statuses)
+	}
 }
 
-func TestAddComment_MissingActor(t *testing.T) {
-	ms := newMockStore(&core.Bead{ID: "bd-0023", Column: core.ColRunning, History: []core.HistoryEvent{}})
-	svc := services.NewBeadService(ms, noopPublish)
-	_, err := svc.AddComment(context.Background(), "bd-0023", services.CommentInput{Actor: "", Note: "hi"})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeInvalidRequest, se.Code)
+func TestColumnToStatuses_RoundTrip(t *testing.T) {
+	tests := []struct {
+		status string
+		column core.Column
+	}{
+		{"open", core.ColBacklog},
+		{"scheduled", core.ColBacklog},
+		{"blocked", core.ColBacklog},
+		{"deferred", core.ColBacklog},
+		{"in_progress", core.ColRunning},
+		{"closed", core.ColDone},
+		{"cancelled", core.ColDone},
+		{"superseded", core.ColDone},
+	}
+	for _, tc := range tests {
+		t.Run(tc.status, func(t *testing.T) {
+			col := statusToColumn(tc.status)
+			if col != tc.column {
+				t.Errorf("statusToColumn(%q) = %q, want %q", tc.status, col, tc.column)
+			}
+			statuses := columnToStatuses(string(tc.column))
+			found := false
+			for _, s := range statuses {
+				if s == tc.status {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("columnToStatuses(%q) = %v, does not include %q", tc.column, statuses, tc.status)
+			}
+		})
+	}
 }
 
-func TestAddComment_NotFound(t *testing.T) {
-	svc := services.NewBeadService(newMockStore(), noopPublish)
-	_, err := svc.AddComment(context.Background(), "bd-missing", services.CommentInput{Actor: "x", Note: "y"})
-	se := svcError(t, err)
-	assert.Equal(t, services.CodeNotFound, se.Code)
+// fakeCLI is a CLIRunner that returns a fixed issue for every write.
+type fakeCLI struct{ iss store.Issue }
+
+func (f fakeCLI) Create(context.Context, bdshell.CreateInput) (store.Issue, error) {
+	return f.iss, nil
+}
+func (f fakeCLI) Update(context.Context, string, bdshell.UpdatePatch) (store.Issue, error) {
+	return f.iss, nil
+}
+func (f fakeCLI) Close(context.Context, string) (store.Issue, error)    { return f.iss, nil }
+func (f fakeCLI) Dispatch(context.Context, string) (store.Issue, error) { return f.iss, nil }
+func (f fakeCLI) AppendNote(context.Context, string, string) (store.Issue, error) {
+	return f.iss, nil
+}
+
+func TestPublishOnWrite_RemoteMode(t *testing.T) {
+	backend := store.NewMemoryBackend(nil)
+	cli := fakeCLI{iss: store.Issue{ID: "mp-aaa", Title: "T", Status: "open", IssueType: "task"}}
+
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	svc := NewBeadServiceWithRepo(backend, cli, pub, "muster", true)
+
+	if _, err := svc.Create(context.Background(), CreateBeadInput{Title: "T", Type: core.TypeTask, Priority: 2}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.Patch(context.Background(), "mp-aaa", PatchBeadInput{Title: strPtr("T2")}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	if len(frames) != 2 {
+		t.Fatalf("want 2 frames, got %d: %+v", len(frames), frames)
+	}
+	if frames[0].Type != ws.EventBeadCreated || frames[0].Bead == nil {
+		t.Errorf("frame[0] = %+v, want bead.created with Bead", frames[0])
+	}
+	if frames[1].Type != ws.EventBeadUpdated || frames[1].Bead == nil {
+		t.Errorf("frame[1] = %+v, want bead.updated with Bead", frames[1])
+	}
+}
+
+func TestPublishOnWrite_EmbeddedModeSilent(t *testing.T) {
+	backend := store.NewMemoryBackend(nil)
+	cli := fakeCLI{iss: store.Issue{ID: "mp-aaa", Title: "T", Status: "open", IssueType: "task"}}
+
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	// publishOnWrite=false → watcher is the WS source, service must not publish.
+	svc := NewBeadServiceWithRepo(backend, cli, pub, "muster", false)
+
+	if _, err := svc.Create(context.Background(), CreateBeadInput{Title: "T", Type: core.TypeTask, Priority: 2}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if len(frames) != 0 {
+		t.Errorf("embedded mode must not publish on write, got %d frames", len(frames))
+	}
+}
+
+func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool    { return &b }
+func intPtr(i int) *int       { return &i }
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOf(s, substr) >= 0)
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }

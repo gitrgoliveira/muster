@@ -1,6 +1,6 @@
 # Pre-Implementation Review
 
-**Feature**: M0 — Skeleton (musterd binary + in-memory API + WS)
+**Feature**: M0 — Skeleton (muster binary + in-memory API + WS)
 **Artifacts reviewed**: spec.md, plan.md, tasks.md, data-model.md, contracts/rest-api.md, contracts/ws-events.md
 **Review model**: claude-sonnet-4-6
 **Date**: 2026-05-22

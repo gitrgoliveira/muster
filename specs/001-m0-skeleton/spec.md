@@ -1,4 +1,4 @@
-# Feature Specification: M0 — Skeleton (musterd binary + in-memory API + WS)
+# Feature Specification: M0 — Skeleton (muster binary + in-memory API + WS)
 
 **Feature Branch**: `001-m0-skeleton`
 
@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: Implement spec.md §20 M0: single Go binary `musterd` that binds `127.0.0.1:7766`, serves the embedded prototype UI, exposes `GET /api/v1/beads` returning in-memory seed data, and pushes optimistic mutations via WS at `/api/v1/stream`.
+**Input**: Implement spec.md §20 M0: single Go binary `muster` that binds `127.0.0.1:7766`, serves the embedded prototype UI, exposes `GET /api/v1/beads` returning in-memory seed data, and pushes optimistic mutations via WS at `/api/v1/stream`.
 
 **Canonical Sources**:
 - `handoff/spec.md` §20 (milestone definition)
@@ -22,7 +22,7 @@
 - Q: What is the Go module name? → A: `github.com/gitrgoliveira/muster` — the project owner's GitHub org is `gitrgoliveira`.
 - Q: Does `/move` enforce column transition constraints? → A: Unrestricted in M0 — any valid column name accepted; lifecycle gating deferred to M1+.
 - Q: Should M0 WS hub implement `seq` counter + `?since=` replay buffer? → A: No — deferred to M1. M0 hub broadcasts events only; disconnected clients re-fetch via `GET /api/v1/beads`.
-- Q: What logging approach for `musterd serve`? → A: `log/slog` text format to stderr; startup banner (port, build, schemaVersion) printed to stdout.
+- Q: What logging approach for `muster serve`? → A: `log/slog` text format to stderr; startup banner (port, build, schemaVersion) printed to stdout.
 
 ### Session 2026-05-22 (round 2 — conflict reconciliation)
 
@@ -53,7 +53,7 @@ Default-resolved (the rest of the P1 list — sensible defaults applied without 
   - `FileChange.Status` → `"A" | "M" | "D"` (typed as `core.FileStatus`).
 - SC-002 latency budget → **p95 ≤ 50 ms** over 100 sequential requests on a warm server (after at least 5 warm-up requests).
 - SC-005 latency budget → **p95 ≤ 100 ms** measured from the REST 2xx response write to the WS frame received by a connected client. Sample of 50 mutations.
-- FR-001 acceptance → `file ./musterd` reports a Mach-O / ELF binary; running `./musterd --version` (or `--help`) emits the build banner. Embedded UI is served at `/` after the binary is moved to a different directory (proves self-containment).
+- FR-001 acceptance → `file ./muster` reports a Mach-O / ELF binary; running `./muster --version` (or `--help`) emits the build banner. Embedded UI is served at `/` after the binary is moved to a different directory (proves self-containment).
 - FR-015 acceptance → `curl -sf http://localhost:7766/api/v1/healthz | jq '.ok'` returns `true`.
 - FR-017 acceptance → for every endpoint defined in `contracts/rest-api.md`, `curl -i ... | grep -i 'x-request-id:'` returns one header. When supplied on request, the value is echoed; when absent, a fresh UUIDv4 is generated.
 - FR-020 acceptance → `go.mod` lists the four pinned dependencies at the versions in `research.md §Decision 9`.
@@ -61,17 +61,17 @@ Default-resolved (the rest of the P1 list — sensible defaults applied without 
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Start musterd and view the UI (Priority: P1)
+### User Story 1 - Start muster and view the UI (Priority: P1)
 
-A developer clones the repo, runs `go run ./cmd/musterd serve`, and opens `http://localhost:7766` in their browser. The embedded prototype UI (Muster.html + styles.css + JSX files) loads and renders the Kanban board with seed data pre-populated.
+A developer clones the repo, runs `go run ./cmd/muster serve`, and opens `http://localhost:7766` in their browser. The embedded prototype UI (Muster.html + styles.css + JSX files) loads and renders the Kanban board with seed data pre-populated.
 
 **Why this priority**: Without serving the UI, nothing else matters. This proves the binary works.
 
-**Independent Test**: Run `musterd serve`, open `http://localhost:7766/`, confirm the page loads with the prototype HTML and CSS.
+**Independent Test**: Run `muster serve`, open `http://localhost:7766/`, confirm the page loads with the prototype HTML and CSS.
 
 **Acceptance Scenarios**:
 
-1. **Given** the binary is built, **When** the user runs `musterd serve`, **Then** the server binds to `127.0.0.1:7766` and logs a startup message.
+1. **Given** the binary is built, **When** the user runs `muster serve`, **Then** the server binds to `127.0.0.1:7766` and logs a startup message.
 2. **Given** the server is running, **When** the user opens `http://localhost:7766/`, **Then** `Muster.html` is served along with all its static assets (`styles.css`, `*.jsx`, font imports).
 3. **Given** the server is running, **When** the user opens `http://localhost:7766/` in a browser, **Then** the prototype renders identically to serving the files via `python3 -m http.server`.
 
@@ -229,7 +229,7 @@ The UI (or `curl`) calls `GET /api/v1/beads` and receives a JSON array of all se
 
 ### Functional Requirements
 
-- **FR-001**: System MUST serve a single Go binary (`musterd`) with the UI embedded via `go:embed`.
+- **FR-001**: System MUST serve a single Go binary (`muster`) with the UI embedded via `go:embed`.
 - **FR-002**: System MUST bind to `127.0.0.1:7766` by default (configurable via `--addr` flag).
 - **FR-003**: System MUST serve the prototype files (`Muster.html`, `styles.css`, `*.jsx`) as static assets at the root path.
 - **FR-004**: System MUST expose `GET /api/v1/beads` returning in-memory bead data matching the `Bead` shape from `spec.md §3.1`.
@@ -261,7 +261,7 @@ The UI (or `curl`) calls `GET /api/v1/beads` and receives a JSON array of all se
 
 ### Measurable Outcomes
 
-- **SC-001**: `musterd serve` starts and binds within 2 seconds.
+- **SC-001**: `muster serve` starts and binds within 2 seconds.
 - **SC-002**: `GET /api/v1/beads` returns 14 beads (matching seed data count) with <50ms latency.
 - **SC-003**: The prototype UI loads at `http://localhost:7766/` and renders the board with seed data.
 - **SC-004**: A WS client receives a `hello` event within 1 second of connection.
@@ -273,7 +273,7 @@ The UI (or `curl`) calls `GET /api/v1/beads` and receives a JSON array of all se
 ## Assumptions
 
 - Go 1.26+ is installed on the developer's machine.
-- Logging uses `log/slog` with text handler to stderr. Startup prints a human-readable banner to stdout: `musterd listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)`. JSON format and configurable log level are deferred to M1.
+- Logging uses `log/slog` with text handler to stderr. Startup prints a human-readable banner to stdout: `muster listening on http://127.0.0.1:7766 (build=dev schemaVersion=1)`. JSON format and configurable log level are deferred to M1.
 - No external database is needed for M0 — all data is in-memory and lost on restart.
 - The UI prototype files are embedded as-is (Babel-in-browser); no build step for the UI in M0.
 - No authentication or CORS restrictions for M0 (localhost only).
@@ -286,7 +286,7 @@ The UI (or `curl`) calls `GET /api/v1/beads` and receives a JSON array of all se
 ### Module Layout
 
 ```
-cmd/musterd/             main.go, --addr flag, go:embed ui/*
+cmd/muster/             main.go, --addr flag, go:embed ui/*
 
 internal/
   core/                  pure domain types — Bead, Step, SubBead, HistoryEvent, enums, ID gen, validation

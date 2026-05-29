@@ -72,5 +72,5 @@ _Add your project-specific conventions here_
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan at:
-specs/001-m0-skeleton/plan.md
+specs/002-m1-beads-backed/plan.md
 <!-- SPECKIT END -->

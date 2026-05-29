@@ -1,11 +1,11 @@
 # Research: M0 — Skeleton
 
-**Feature**: M0 — Skeleton (musterd binary + in-memory API + WS)
+**Feature**: M0 — Skeleton (muster binary + in-memory API + WS)
 **Date**: 2026-05-22
 
 ## Decision 1: go:embed strategy for prototype UI files
 
-**Decision**: Use `//go:embed ui/*` in `cmd/musterd/embed.go`. The `ui/` directory at the repo root is a verbatim copy of `prototype/` (all 12 files: Muster.html, styles.css, 10 JSX files). Use `fs.Sub(embeddedFS, "ui")` to strip the `ui/` prefix before serving with `http.FileServer`.
+**Decision**: Use `//go:embed ui/*` in `cmd/muster/embed.go`. The `ui/` directory at the repo root is a verbatim copy of `prototype/` (all 12 files: Muster.html, styles.css, 10 JSX files). Use `fs.Sub(embeddedFS, "ui")` to strip the `ui/` prefix before serving with `http.FileServer`.
 
 **Rationale**: `go:embed` with a wildcard embeds all files in the directory without needing to list them. `fs.Sub` allows serving at `/` rather than `/ui/`. The prototype uses bare relative `src=` paths (e.g., `src="data.jsx"`) so the server must serve files at root-level paths.
 
