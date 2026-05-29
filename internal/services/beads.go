@@ -76,8 +76,9 @@ type MoveInput struct {
 
 // DispatchInput carries the validated dispatch parameters.
 type DispatchInput struct {
-	Agent core.AgentID
-	Mode  core.Mode
+	Agent          core.AgentID
+	Mode           core.Mode
+	PermissionMode core.PermissionMode // NEW (FR-021); validated/allow-listed
 }
 
 // CommentInput carries the validated comment parameters.
@@ -86,12 +87,33 @@ type CommentInput struct {
 	Note  string
 }
 
+// OrchestratorDispatcher is the interface BeadService uses to launch agent runs.
+// The real implementation is *orchestrator.Orchestrator; tests may substitute a fake.
+// This interface is defined here (not in orchestrator) to avoid import cycles.
+type OrchestratorDispatcher interface {
+	// Dispatch launches an agent run for the given bead, returning the active bead.
+	// Implementations return ErrRunAlreadyActive (maps to 409), ErrUnmappedPrefix
+	// (maps to 422), or ErrAdapterNotFound / ErrAdapterNotInstalled (maps to 501/422).
+	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (*core.Bead, error)
+}
+
+// OrchestratorDispatchRequest is the input for OrchestratorDispatcher.Dispatch.
+type OrchestratorDispatchRequest struct {
+	BeadID         string
+	BeadTitle      string
+	BeadDesc       string
+	Agent          core.AgentID
+	Mode           core.Mode
+	PermissionMode core.PermissionMode
+}
+
 // BeadService implements business logic on top of the store.
 type BeadService struct {
-	backend store.Backend
-	cli     CLIRunner // may be nil; writes return CodeCLIMissing when nil
-	repo    string
-	publish Publisher
+	backend      store.Backend
+	cli          CLIRunner            // may be nil; writes return CodeCLIMissing when nil
+	orchestrator OrchestratorDispatcher // may be nil; dispatch returns CodeCLIMissing when nil
+	repo         string
+	publish      Publisher
 	// publishOnWrite broadcasts a WS frame after each successful CLI write.
 	// Enabled in remote mode (no file watcher); embedded mode leaves it false
 	// so the watcher remains the single WS source and writes aren't double-announced.
@@ -108,6 +130,14 @@ func NewBeadService(backend store.Backend, cli CLIRunner, pub Publisher) *BeadSe
 // publishOnWrite should be true in remote mode (where no watcher runs).
 func NewBeadServiceWithRepo(backend store.Backend, cli CLIRunner, pub Publisher, repo string, publishOnWrite bool) *BeadService {
 	return &BeadService{backend: backend, cli: cli, repo: repo, publish: pub, publishOnWrite: publishOnWrite}
+}
+
+// WithOrchestrator returns a new BeadService with an orchestrator dispatcher
+// attached. The orchestrator is used by Dispatch when present.
+func (svc *BeadService) WithOrchestrator(o OrchestratorDispatcher) *BeadService {
+	svc2 := *svc
+	svc2.orchestrator = o
+	return &svc2
 }
 
 // publishWrite broadcasts a write event when publish-on-write is enabled.
@@ -371,7 +401,9 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 	return &b, nil
 }
 
-// Dispatch transitions a bead to running via the CLI.
+// Dispatch transitions a bead to running.
+// When an orchestrator is wired in, it delegates to the orchestrator to launch
+// a real agent run; otherwise it falls back to the legacy bd-CLI path (stub).
 func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchInput) (*core.Bead, error) {
 	if !input.Agent.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid agent"}
@@ -379,6 +411,29 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 	if !input.Mode.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid mode"}
 	}
+	if input.PermissionMode != "" && !input.PermissionMode.Valid() {
+		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid permissionMode"}
+	}
+
+	// If an orchestrator is available, delegate real dispatch to it.
+	if svc.orchestrator != nil {
+		// Get the bead first to obtain title/desc for the prompt.
+		bead, err := svc.GetBead(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		req := OrchestratorDispatchRequest{
+			BeadID:         id,
+			BeadTitle:      bead.Title,
+			BeadDesc:       bead.Desc,
+			Agent:          input.Agent,
+			Mode:           input.Mode,
+			PermissionMode: input.PermissionMode,
+		}
+		return svc.orchestrator.Dispatch(ctx, req)
+	}
+
+	// Legacy stub path: just move the bead to running via bd CLI.
 	if err := svc.requireCLI(); err != nil {
 		return nil, err
 	}

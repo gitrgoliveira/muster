@@ -145,3 +145,20 @@ func TestFileStatus_Valid(t *testing.T) {
 		t.Error(`FileStatus("unknown").Valid() = true, want false`)
 	}
 }
+
+func TestPermissionMode_Valid(t *testing.T) {
+	valid := []PermissionMode{
+		PermDefault, PermAcceptEdits, PermDontAsk, PermBypassPermissions, PermPlan, PermAuto,
+	}
+	for _, v := range valid {
+		if !v.Valid() {
+			t.Errorf("PermissionMode(%q).Valid() = false, want true", v)
+		}
+	}
+	invalid := []PermissionMode{"", "unknown", "ACCEPT_EDITS", "bypass"}
+	for _, v := range invalid {
+		if v.Valid() {
+			t.Errorf("PermissionMode(%q).Valid() = true, want false", v)
+		}
+	}
+}
