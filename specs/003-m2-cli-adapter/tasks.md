@@ -19,10 +19,10 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-- [ ] T001 Create package skeletons with `doc.go` for `internal/adapter/`, `internal/adapter/claude/`, `internal/tmux/`, `internal/worktree/`, `internal/orchestrator/`
-- [ ] T002 [P] Add fake `tmux` test binary (argv-recording shell script) under `internal/tmux/testdata/`
-- [ ] T003 [P] Add fake `claude` test binary (canned `auth status --json` + controllable exit) under `internal/adapter/claude/testdata/`
-- [ ] T004 [P] Add a tmpdir git-repo test helper (init + initial commit) in `internal/worktree/testhelp_test.go`
+- [x] T001 Create package skeletons with `doc.go` for `internal/adapter/`, `internal/adapter/claude/`, `internal/tmux/`, `internal/worktree/`, `internal/orchestrator/`
+- [x] T002 [P] Add fake `tmux` test binary (argv-recording shell script) under `internal/tmux/testdata/`
+- [x] T003 [P] Add fake `claude` test binary (canned `auth status --json` + controllable exit) under `internal/adapter/claude/testdata/`
+- [x] T004 [P] Add a tmpdir git-repo test helper (init + initial commit) in `internal/worktree/testhelp_test.go`
 
 ---
 
@@ -30,13 +30,13 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Purpose**: cheap shared seams every story builds on. No user-facing behavior yet. MUST complete before Phase 3+.
 
-- [ ] T005 [P] Add `core.PermissionMode` enum + `Valid()` allow-list (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`plan`/`auto`) with test in `internal/core/enums.go` + `internal/core/enums_test.go`
-- [ ] T006 Parse new flags/env into config: repeatable `--repo prefix=path` → `RepoMap`, `--worktrees-dir`, `--run-timeout`, `--default-permission-mode` (`MUSTER_*` env), with tests in `internal/config/`
-- [ ] T007 [P] Add WS event types `runlog.line`, `tmux.session.opened`, `tmux.session.closed` and `Frame` fields (`BeadID`,`StepIdx`,`Seq`,`Data`,`Session`,`ExitCode`) in `internal/ws/event.go` (additive; keep M1 frames intact)
-- [ ] T008 Define `Adapter` interface + `RunEvent`/`DetectResult`/`Mode`/`Spec`/`QuotaSource` + `Registry`, with interface/registry tests in `internal/adapter/adapter.go`, `internal/adapter/registry.go`, `internal/adapter/adapter_test.go`
-- [ ] T009 [P] Define `tmux.Manager` interface + `Session` type + `name.go` encode/parse (`muster/<bead>/<step>/<loop>`) with tests in `internal/tmux/manager.go`, `internal/tmux/name.go`, `internal/tmux/name_test.go`
-- [ ] T010 Implement orchestrator `Run` registry (one-active-run-per-bead, `sync.RWMutex`) + skeleton `Orchestrator` type with test in `internal/orchestrator/orchestrator.go`, `internal/orchestrator/run_test.go`
-- [ ] T011 Inject `Orchestrator` dependency into `services.BeadService` (new constructor param; nil-safe) keeping all M1 tests green, in `internal/services/beads.go`
+- [x] T005 [P] Add `core.PermissionMode` enum + `Valid()` allow-list (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`plan`/`auto`) with test in `internal/core/enums.go` + `internal/core/enums_test.go`
+- [x] T006 Parse new flags/env into config: repeatable `--repo prefix=path` → `RepoMap`, `--worktrees-dir`, `--run-timeout`, `--default-permission-mode` (`MUSTER_*` env), with tests in `internal/config/`
+- [x] T007 [P] Add WS event types `runlog.line`, `tmux.session.opened`, `tmux.session.closed` and `Frame` fields (`BeadID`,`StepIdx`,`Seq`,`Data`,`Session`,`ExitCode`) in `internal/ws/event.go` (additive; keep M1 frames intact)
+- [x] T008 Define `Adapter` interface + `RunEvent`/`DetectResult`/`Mode`/`Spec`/`QuotaSource` + `Registry`, with interface/registry tests in `internal/adapter/adapter.go`, `internal/adapter/registry.go`, `internal/adapter/adapter_test.go`
+- [x] T009 [P] Define `tmux.Manager` interface + `Session` type + `name.go` encode/parse (`muster/<bead>/<step>/<loop>`) with tests in `internal/tmux/manager.go`, `internal/tmux/name.go`, `internal/tmux/name_test.go`
+- [x] T010 Implement orchestrator `Run` registry (one-active-run-per-bead, `sync.RWMutex`) + skeleton `Orchestrator` type with test in `internal/orchestrator/orchestrator.go`, `internal/orchestrator/run_test.go`
+- [x] T011 Inject `Orchestrator` dependency into `services.BeadService` (new constructor param; nil-safe) keeping all M1 tests green, in `internal/services/beads.go`
 
 ---
 
@@ -44,8 +44,8 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Goal**: an agent runs in its own git worktree, never the main checkout. **Independent test**: two beads → two distinct worktrees/branches; edits in one are invisible in the other and in the main checkout; non-git repo errors cleanly.
 
-- [ ] T012 [US2] Test `worktree.Ensure` create + reuse + non-git-repo error + two-bead isolation against a real git tmpdir, in `internal/worktree/worktree_test.go`
-- [ ] T013 [US2] Implement `worktree.Ensure(worktreesDir, repoPath, beadID)` → `git worktree add -b muster/<beadID> <path>` (reuse existing) in `internal/worktree/worktree.go`
+- [x] T012 [US2] Test `worktree.Ensure` create + reuse + non-git-repo error + two-bead isolation against a real git tmpdir, in `internal/worktree/worktree_test.go`
+- [x] T013 [US2] Implement `worktree.Ensure(worktreesDir, repoPath, beadID)` → `git worktree add -b muster/<beadID> <path>` (reuse existing) in `internal/worktree/worktree.go`
 - [ ] T014 [US2] Resolve `--worktrees-dir` from config and pass into the orchestrator; default to a platform temp/muster path, in `internal/orchestrator/orchestrator.go` + `cmd/muster/main.go`
 
 **Checkpoint**: worktrees can be created/reused in isolation, exercised by tests.
