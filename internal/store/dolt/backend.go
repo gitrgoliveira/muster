@@ -39,10 +39,7 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 	q, args := buildListQuery(f)
 	rows, err := b.db.QueryContext(ctx, q, args...)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
+		return nil, mapQueryErr(err)
 	}
 	defer rows.Close() //nolint:errcheck
 
@@ -50,7 +47,7 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 	for rows.Next() {
 		var iss store.Issue
 		if err := scanIntoIssue(rows, &iss); err != nil {
-			return nil, err
+			return nil, mapQueryErr(err)
 		}
 		if f.TruncateDesc > 0 && len(iss.Description) > f.TruncateDesc {
 			iss.Description = iss.Description[:f.TruncateDesc]
@@ -60,7 +57,23 @@ func (b *Backend) List(ctx context.Context, f store.Filter) ([]store.Issue, erro
 			break
 		}
 	}
-	return issues, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, mapQueryErr(err)
+	}
+	return issues, nil
+}
+
+// mapQueryErr classifies a SQL error: context cancellation/deadline pass through
+// unwrapped (request cancellation is not a backend outage); any other error is
+// treated as an availability failure wrapping store.ErrStoreUnavailable.
+func mapQueryErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
 }
 
 // Get returns the issue with the given ID, or store.ErrNotFound.
@@ -77,10 +90,7 @@ func (b *Backend) Get(ctx context.Context, id string) (*store.Issue, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%w: %v", store.ErrStoreUnavailable, err)
+		return nil, mapQueryErr(err)
 	}
 	return &iss, nil
 }

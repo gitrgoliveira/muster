@@ -50,6 +50,7 @@ Body is sparse. muster composes the flags for the supplied fields and runs ONE `
 |---|---|
 | `title` | `--title=<v>` |
 | `desc` / `description` | `--description=<v>` |
+| `type` | `--type=<v>` |
 | `priority` | `--priority=<0-4>` (validate 0..4 in muster before invoking) |
 | `assignee` | `--assignee=<v>` |
 | `column` | `--status=<v>` (column mapped to a beads status via `columnToStatuses`) |
@@ -89,6 +90,10 @@ If `bd` produces no JSON or invalid JSON, return `500 INTERNAL`.
 | `scheduled` | `bd update <id> --status=open` |
 | `backlog` | `bd update <id> --status=open` |
 
+The `bd` commands above are shown conceptually with `<id>` inline; the actual invocation follows the
+argv-safety form — flags first, then `--`, then the positional `<id>` (e.g. `bd update --json
+--dolt-auto-commit=on --status=open -- <id>`).
+
 `beforeID` is **ignored** in M1 (column reordering not supported by `bd` v1.0). muster still
 returns 200 OK so the optimistic UI does not break.
 
@@ -97,7 +102,7 @@ returns 200 OK so the optimistic UI does not break.
 ### `POST /api/v1/beads/{id}/dispatch`
 
 ```
-bd update <id> --claim
+bd update --json --dolt-auto-commit=on --claim -- <id>
 ```
 
 History events (`claimed`, `started`) are appended by `bd` itself. muster reads the updated issue
@@ -108,7 +113,7 @@ and returns it.
 ### `POST /api/v1/beads/{id}/comments`
 
 ```
-bd update --json --dolt-auto-commit=on <id> --append-notes=<text>
+bd update --json --dolt-auto-commit=on --append-notes=<text> -- <id>
 ```
 
 **CRITICAL**: Use `--append-notes` (additive — verified empirically) and NOT `--notes` (destructive
