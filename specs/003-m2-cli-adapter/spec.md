@@ -275,7 +275,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 
 ### Constitution / Gates Note
 
-The repo's `.specify/memory/constitution.md` is still an unfilled template; M1's "Constitution Check" gates (single binary, embedded UI, handlers separated from logic, no breaking REST/WS changes) derive from `prototype/handoff/spec.md`. M2 preserves all of them: still one binary, still `go:embed` UI, agent orchestration lives behind the new `adapter`/`tmux` packages, and the REST/WS surface is extended additively.
+The repo's `.specify/memory/constitution.md` was ratified (v1.0.0, 2026-05-29) during this milestone, encoding the de-facto M0/M1 principles (single binary, beads-as-source-of-truth, layered/thin-handlers, test-first, additive surface, no-credential-handling, user-controlled autonomy). M2 preserves all of them: still one binary, still `go:embed` UI, agent orchestration lives behind the new `adapter`/`tmux` packages, and the REST/WS surface is extended additively. See plan.md's Constitution Check.
 
 ---
 

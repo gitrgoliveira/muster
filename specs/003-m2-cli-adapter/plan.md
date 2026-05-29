@@ -45,20 +45,19 @@ M2 makes a dispatched bead *execute*. `POST /api/v1/beads/{id}/dispatch` (a no-o
 
 ## Constitution Check
 
-The repo `.specify/memory/constitution.md` is an **unfilled template** (placeholders only); there are no ratified principles to gate against. The operative gates are inherited from `prototype/handoff/spec.md` and carried from M1. M2 is evaluated against those:
+Checked against the ratified `.specify/memory/constitution.md` (v1.0.0, 2026-05-29 — drafted during this milestone from the de-facto M0/M1 principles). M2 passes every principle:
 
-| Gate | Status | Notes |
+| Principle | Status | Notes |
 |---|---|---|
-| Single binary | PASS | `cmd/muster/` still one binary; tmux/git/claude are external runtime deps, not linked |
-| No DB muster owns | PASS | Runlog transient; worktrees are git-managed; beads DB still source of truth |
-| Embedded UI | PASS | `go:embed ui/*` unchanged (UI terminal-rendering work is JSX, still embedded) |
-| Handlers separated from business logic | PASS | New orchestration lives in `internal/adapter`, `internal/tmux`, `internal/worktree`, `internal/orchestrator`; handlers stay thin |
-| No breaking REST/WS changes | PASS | New endpoints + WS event types are additive; M1 surface untouched (FR-019) |
-| Tests-first per layer | PASS | TDD ordering enforced in tasks; coverage targets below |
-| Adapter-agnostic transport | PASS | tmux transport is generic; `claude` is the only adapter but the interface admits gemini/codex/opencode (M5) |
-| Security: no credential handling | PASS | Detect-only auth (FR-016); autonomy user-supplied (FR-021) |
+| I. Single binary, self-contained | PASS | `cmd/muster/` still one binary; tmux/git/claude are external runtime deps, probed not linked; **no new go.mod entries** |
+| II. Beads is the source of truth | PASS | Runlog transient; worktrees git-managed; issue state still via the `bd` write path. muster owns no new durable state |
+| III. Layered architecture, thin handlers | PASS | Orchestration is its own vertical (`adapter`/`tmux`/`worktree`/`orchestrator`); handlers parse→delegate→render |
+| IV. Test-first, per-layer coverage | PASS | TDD ordering + per-package coverage gates below; `-race` clean; fake tmux/claude + real-tmux integration test |
+| V. Additive, backward-compatible surface | PASS | New endpoints + WS event types are additive; M1 surface untouched (FR-019) |
+| Security & orchestration constraints | PASS | No credential handling (FR-016); user-controlled autonomy, never defaulted (FR-021); adapter-agnostic transport; per-bead worktree isolation |
+| Spec-driven, verify-by-spike | PASS | spec→plan→tasks followed; the 2026-05-29 spike pinned the claude/tmux contracts before this plan |
 
-> **Action item (non-blocking)**: the constitution template should be filled (separate chore) so future milestones gate against ratified text rather than the handoff doc. Flagged, not done here.
+> The constitution was the unfilled template at the start of this milestone; it is now ratified (v1.0.0). Future milestones gate against it directly.
 
 **Coverage targets (CI)** — extend M1's gates:
 - `internal/adapter/` ≥ 80%
