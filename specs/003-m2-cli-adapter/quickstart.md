@@ -64,6 +64,16 @@ kill <muster-pid> ; ./muster serve --beads-dir … --repo mp=…
 ```
 On startup muster lists `muster/*` tmux sessions, re-associates `mp-abc`/step 0, marks it `running`, and resumes `runlog.line` streaming — the agent never stopped.
 
+## 6. Automated end-to-end test
+
+The M2 implementation ships an automated e2e test that exercises this exact flow against your real claude and tmux:
+
+```bash
+make test-e2e
+```
+
+**Requirements**: `claude` installed and logged in (Max plan) + `tmux` ≥ 3.2. The test skips gracefully if either is missing. It uses a trivial one-word prompt to minimize usage. Uses Max plan usage allowance (not per-call billing).
+
 ## Notes / current limits (by design in M2)
 
 - One active run per bead (`409` on duplicate dispatch).
@@ -71,3 +81,6 @@ On startup muster lists `muster/*` tmux sessions, re-associates `mp-abc`/step 0,
 - Multi-day/durable runlog history is **not** kept (M9); catch-up works only while the session lives.
 - Worktrees are not garbage-collected (M9).
 - Without tmux, the agent still runs (direct exec) and streams, but attach/send are unavailable.
+- The `--repo` flag (repeatable) and `MUSTER_REPO` env map bead-ID prefixes to repo paths.
+- `--worktrees-dir` sets the per-bead worktree root (default: `~/.muster/worktrees`).
+- `tmux` must be on the user's default socket for `tmux attach -t muster/<bead>/0/0` to work.

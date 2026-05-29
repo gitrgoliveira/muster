@@ -13,6 +13,11 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// RunCounter is implemented by the orchestrator to report active run count.
+type RunCounter interface {
+	RunCount() int
+}
+
 // StatusConfig carries the configuration captured at startup for the status endpoint.
 type StatusConfig struct {
 	BeadsVersion  string
@@ -24,6 +29,12 @@ type StatusConfig struct {
 	ProjectID     string
 	SchemaVersion int
 	Pinger        Pinger
+
+	// M2 additions.
+	TmuxAvailable bool
+	TmuxVersion   string
+	Adapters      []AdapterInfo
+	RunCounter    RunCounter // may be nil
 }
 
 // HealthzHandler handles GET /api/v1/healthz.
@@ -48,6 +59,11 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			schemaVersion = 1
 		}
 
+		runningCount := 0
+		if cfg.RunCounter != nil {
+			runningCount = cfg.RunCounter.RunCount()
+		}
+
 		resp := OrchestratorStatusResponse{
 			Build:         "dev",
 			SchemaVersion: schemaVersion,
@@ -60,6 +76,11 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			ReadSource:    cfg.ReadSource,
 			BdCLI:         cfg.BdCLI,
 			ProjectID:     cfg.ProjectID,
+			// M2 additions.
+			TmuxAvailable: cfg.TmuxAvailable,
+			TmuxVersion:   cfg.TmuxVersion,
+			RunningCount:  runningCount,
+			Adapters:      cfg.Adapters,
 		}
 		render.WriteJSON(w, http.StatusOK, resp)
 	}

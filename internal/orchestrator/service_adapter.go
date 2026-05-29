@@ -35,3 +35,11 @@ type serviceDispatcherAdapter struct {
 func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (*core.Bead, error) {
 	return a.o.DispatchForService(ctx, req)
 }
+
+// AsSessionAttacher returns a services.SessionAttacher backed by this Orchestrator.
+func (o *Orchestrator) AsSessionAttacher() services.SessionAttacher {
+	return o
+}
+
+// Verify Orchestrator implements services.SessionAttacher.
+var _ services.SessionAttacher = (*Orchestrator)(nil)

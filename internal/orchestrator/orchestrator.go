@@ -79,6 +79,7 @@ type Orchestrator struct {
 	worktreesDir    string
 	defaultPermMode core.PermissionMode
 	publish         Publisher
+	runTimeout      time.Duration // 0 = no timeout
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -103,6 +104,7 @@ type Config struct {
 	WorktreesDir    string
 	DefaultPermMode core.PermissionMode
 	Publish         Publisher
+	RunTimeout      time.Duration // 0 = no timeout (FR-017: opt-in only)
 }
 
 // New creates a new Orchestrator.
@@ -115,6 +117,7 @@ func New(cfg Config) *Orchestrator {
 		worktreesDir:    cfg.WorktreesDir,
 		defaultPermMode: cfg.DefaultPermMode,
 		publish:         cfg.Publish,
+		runTimeout:      cfg.RunTimeout,
 	}
 }
 
@@ -183,6 +186,20 @@ func (e *PermModeError) Error() string {
 
 // promptFileName is the filename of the prompt file within the worktree.
 const promptFileName = ".muster-prompt-0.txt"
+
+// isFallbackTransport returns true if the transport is a FallbackManager.
+// Used to emit a warning when an interactive permission mode is used without tmux.
+func isFallbackTransport(t tmux.Manager) bool {
+	_, ok := t.(*tmux.FallbackManager)
+	return ok
+}
+
+// promptingModes are permission modes that require user interaction (attach/send).
+// When using the fallback transport (no tmux), these modes work but attach/send
+// will be unavailable. FR-021 requires muster to warn the user.
+var promptingModes = map[core.PermissionMode]bool{
+	core.PermDefault: true, // default may prompt
+}
 
 // Dispatch launches an agent run for the given bead. It:
 //  1. Validates inputs and checks for duplicate run.
@@ -337,14 +354,38 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 
 	const pollInterval = 500 * time.Millisecond
 
+	// Apply run timeout if configured (FR-017: opt-in only).
+	watchCtx := ctx
+	if o.runTimeout > 0 {
+		var cancel context.CancelFunc
+		watchCtx, cancel = context.WithTimeout(ctx, o.runTimeout)
+		defer cancel()
+	}
+
 	for {
 		select {
-		case <-ctx.Done():
-			// Cancelled (e.g., graceful shutdown or timeout).
+		case <-watchCtx.Done():
+			// Cancelled due to timeout or graceful shutdown.
+			// Kill the session and mark as cancelled.
+			if run.Session != "" {
+				_ = o.transport.Kill(run.Session)
+			}
 			o.mu.Lock()
-			run.State = core.StepFailed
+			run.State = core.StepFailed // cancelled/timeout → failed
 			run.EndedAt = time.Now()
 			o.mu.Unlock()
+
+			// Emit closed event.
+			if o.publish != nil {
+				ec := -1
+				o.publish(ws.Frame{
+					Type:     ws.EventTmuxClosed,
+					BeadID:   run.BeadID,
+					StepIdx:  run.StepIdx,
+					Session:  run.Session,
+					ExitCode: &ec,
+				})
+			}
 			return
 		case <-time.After(pollInterval):
 		}

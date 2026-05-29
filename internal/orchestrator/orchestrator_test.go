@@ -287,3 +287,61 @@ func TestDispatch_NoPermissionMode_Error(t *testing.T) {
 		t.Fatal("expected error when no permissionMode, got nil")
 	}
 }
+
+func TestGetAttach_NotRunning(t *testing.T) {
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{},
+		WorktreesDir: t.TempDir(),
+	})
+	resp, err := o.GetAttach("mp-abc", 0)
+	if err != nil {
+		t.Fatalf("GetAttach: %v", err)
+	}
+	if resp.Available {
+		t.Error("available should be false when no run active")
+	}
+}
+
+func TestGetAttach_NonZeroIdx(t *testing.T) {
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{},
+		WorktreesDir: t.TempDir(),
+	})
+	resp, err := o.GetAttach("mp-abc", 1)
+	if err != nil {
+		t.Fatalf("GetAttach: %v", err)
+	}
+	if resp.Available {
+		t.Error("available should be false for non-zero step idx")
+	}
+}
+
+func TestSendKeys_NotRunning(t *testing.T) {
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{},
+		WorktreesDir: t.TempDir(),
+	})
+	err := o.SendKeys("mp-abc", 0, "y\n")
+	if err == nil {
+		t.Error("SendKeys should return error when no run active")
+	}
+}
+
+func TestAsServiceDispatcher_NotNil(t *testing.T) {
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{},
+		WorktreesDir: t.TempDir(),
+	})
+	d := o.AsServiceDispatcher()
+	if d == nil {
+		t.Error("AsServiceDispatcher should not return nil")
+	}
+}

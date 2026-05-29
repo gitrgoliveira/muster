@@ -68,3 +68,19 @@ func TestErrNotSupported(t *testing.T) {
 		t.Errorf("Login want ErrNotSupported got %v", err)
 	}
 }
+
+func TestNewRegistryWithDefaults(t *testing.T) {
+	a1 := &stubAdapter{id: core.AgentClaude}
+	a2 := &stubAdapter{id: core.AgentGemini}
+	reg := adapter.NewRegistryWithDefaults(a1, a2)
+
+	if _, ok := reg.Get(core.AgentClaude); !ok {
+		t.Error("claude should be in registry")
+	}
+	if _, ok := reg.Get(core.AgentGemini); !ok {
+		t.Error("gemini should be in registry")
+	}
+	if len(reg.All()) != 2 {
+		t.Errorf("all want 2 got %d", len(reg.All()))
+	}
+}

@@ -120,8 +120,9 @@ type OrchestratorDispatchRequest struct {
 // BeadService implements business logic on top of the store.
 type BeadService struct {
 	backend      store.Backend
-	cli          CLIRunner            // may be nil; writes return CodeCLIMissing when nil
+	cli          CLIRunner              // may be nil; writes return CodeCLIMissing when nil
 	orchestrator OrchestratorDispatcher // may be nil; dispatch returns CodeCLIMissing when nil
+	attacher     SessionAttacher        // may be nil; attach/send return unavailable when nil
 	repo         string
 	publish      Publisher
 	// publishOnWrite broadcasts a WS frame after each successful CLI write.
@@ -147,6 +148,14 @@ func NewBeadServiceWithRepo(backend store.Backend, cli CLIRunner, pub Publisher,
 func (svc *BeadService) WithOrchestrator(o OrchestratorDispatcher) *BeadService {
 	svc2 := *svc
 	svc2.orchestrator = o
+	return &svc2
+}
+
+// WithAttacher returns a new BeadService with a session attacher attached.
+// The attacher is used by GetAttach/SendKeys when present.
+func (svc *BeadService) WithAttacher(a SessionAttacher) *BeadService {
+	svc2 := *svc
+	svc2.attacher = a
 	return &svc2
 }
 
@@ -506,25 +515,36 @@ type AttachResponse struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
+// SessionAttacher is the interface BeadService uses to get attach info.
+// Implemented by the orchestrator.
+type SessionAttacher interface {
+	GetAttach(beadID string, stepIdx int) (*AttachResponse, error)
+	SendKeys(beadID string, stepIdx int, keys string) error
+}
+
 // GetAttach returns attachment info for a running step.
-// Implemented by the orchestrator layer in US3; this stub returns available:false
-// until the orchestrator is wired in.
+// Delegates to the orchestrator if available.
 func (svc *BeadService) GetAttach(ctx context.Context, beadID string, stepIdx int) (*AttachResponse, error) {
 	// Validate bead exists.
 	_, err := svc.GetBead(ctx, beadID)
 	if err != nil {
 		return nil, err
 	}
-	// Stub: orchestrator attach is implemented in US3.
+	if svc.attacher != nil {
+		return svc.attacher.GetAttach(beadID, stepIdx)
+	}
+	// No orchestrator: return available:false.
 	return &AttachResponse{Available: false, Reason: "attach not available"}, nil
 }
 
 // SendKeys forwards keystrokes to a running step's tmux pane.
-// Stub: implemented in US3.
 func (svc *BeadService) SendKeys(ctx context.Context, beadID string, stepIdx int, keys string) error {
 	_, err := svc.GetBead(ctx, beadID)
 	if err != nil {
 		return err
+	}
+	if svc.attacher != nil {
+		return svc.attacher.SendKeys(beadID, stepIdx, keys)
 	}
 	return &ServiceError{Code: CodeCLIUnavailable, Message: "send not available"}
 }

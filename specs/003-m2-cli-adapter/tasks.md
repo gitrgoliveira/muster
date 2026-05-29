@@ -46,7 +46,7 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 - [x] T012 [US2] Test `worktree.Ensure` create + reuse + non-git-repo error + two-bead isolation against a real git tmpdir, in `internal/worktree/worktree_test.go`
 - [x] T013 [US2] Implement `worktree.Ensure(worktreesDir, repoPath, beadID)` → `git worktree add -b muster/<beadID> <path>` (reuse existing) in `internal/worktree/worktree.go`
-- [ ] T014 [US2] Resolve `--worktrees-dir` from config and pass into the orchestrator; default to a platform temp/muster path, in `internal/orchestrator/orchestrator.go` + `cmd/muster/main.go`
+- [x] T014 [US2] Resolve `--worktrees-dir` from config and pass into the orchestrator; default to a platform temp/muster path, in `internal/orchestrator/orchestrator.go` + `cmd/muster/main.go`
 
 **Checkpoint**: worktrees can be created/reused in isolation, exercised by tests.
 
@@ -75,10 +75,10 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Goal**: the agent's output streams to the UI as `runlog.line`. **Independent test**: WS client sees ordered `runlog.line` during a run; a late joiner gets `capture-pane` catch-up.
 
-- [ ] T025 [US4] Test tmux `Pipe` (raw bytes) + `Capture` (`capture-pane -ep -S -`) against fake `tmux`, in `internal/tmux/manager_test.go`
-- [ ] T026 [US4] Implement tmux `Pipe`/`Capture` in `internal/tmux/manager.go`
-- [ ] T027 [US4] Implement orchestrator runlog fan-out: pipe reader → seq-numbered `runlog.line` frames to `ws.Hub`; `capture-pane` catch-up accessor, in `internal/orchestrator/runlog.go` (raw bytes, no ANSI strip — plan D1)
-- [ ] T028 [US4] Integration test: WS client receives ordered `runlog.line` + `tmux.session.opened`/`closed` for a run, in `internal/orchestrator/integration_test.go`
+- [x] T025 [US4] Test tmux `Pipe` (raw bytes) + `Capture` (`capture-pane -ep -S -`) against fake `tmux`, in `internal/tmux/manager_test.go`
+- [x] T026 [US4] Implement tmux `Pipe`/`Capture` in `internal/tmux/manager.go`
+- [x] T027 [US4] Implement orchestrator runlog fan-out: pipe reader → seq-numbered `runlog.line` frames to `ws.Hub`; `capture-pane` catch-up accessor, in `internal/orchestrator/runlog.go` (raw bytes, no ANSI strip — plan D1)
+- [x] T028 [US4] Integration test: WS client receives ordered `runlog.line` + `tmux.session.opened`/`closed` for a run, in `internal/orchestrator/integration_test.go`
 
 **Checkpoint**: runs are observable in real time without attaching.
 
@@ -88,9 +88,9 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Goal**: retrieve a `tmux attach` command and forward keystrokes. **Independent test**: `GET …/steps/0/attach` returns a working command + pane; `POST …/steps/0/send` delivers keys; `idx≠0`→`404`; not-running→`available:false`.
 
-- [ ] T029 [US3] Test tmux `Attach` (command string) + `Send` against fake `tmux`; handler cases (idx≠0, not-running, fallback), in `internal/tmux/manager_test.go` + `internal/api/beads/handlers_test.go`
-- [ ] T030 [US3] Implement tmux `Attach`/`Send` in `internal/tmux/manager.go`
-- [ ] T031 [US3] Add routes + handlers `GET /api/v1/beads/{id}/steps/{idx}/attach` and `POST /api/v1/beads/{id}/steps/{idx}/send` in `internal/api/router.go` + `internal/api/beads/handlers.go` (send route uses M1 `BodyLimit` middleware)
+- [x] T029 [US3] Test tmux `Attach` (command string) + `Send` against fake `tmux`; handler cases (idx≠0, not-running, fallback), in `internal/tmux/manager_test.go` + `internal/api/beads/handlers_test.go`
+- [x] T030 [US3] Implement tmux `Attach`/`Send` in `internal/tmux/manager.go`
+- [x] T031 [US3] Add routes + handlers `GET /api/v1/beads/{id}/steps/{idx}/attach` and `POST /api/v1/beads/{id}/steps/{idx}/send` in `internal/api/router.go` + `internal/api/beads/handlers.go` (send route uses M1 `BodyLimit` middleware)
 
 **Checkpoint**: users can watch and intervene in a live agent.
 
@@ -100,9 +100,9 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Goal**: `orchestrator/status` reports tmux + adapter availability; dispatch to a missing/unauth adapter fails clearly. **Independent test**: status shows `tmuxAvailable`/`tmuxVersion`/`adapters[]`/`runningCount`; uninstalled `claude` → clear dispatch error.
 
-- [ ] T032 [US5] Test status DTO additions + adapter/tmux detection surfacing + dispatch-to-missing/unauth errors, in `internal/api/health/handler_test.go`
-- [ ] T033 [US5] Add `TmuxAvailable`/`TmuxVersion`/`RunningCount`/`Adapters []AdapterInfo` to the status DTO + handler in `internal/api/health/dto.go` + `internal/api/health/handler.go`
-- [ ] T034 [US5] Probe `tmux.Detect` + `adapter.Detect` at startup; feed results into status + orchestrator transport selection, in `cmd/muster/main.go`
+- [x] T032 [US5] Test status DTO additions + adapter/tmux detection surfacing + dispatch-to-missing/unauth errors, in `internal/api/health/handler_test.go`
+- [x] T033 [US5] Add `TmuxAvailable`/`TmuxVersion`/`RunningCount`/`Adapters []AdapterInfo` to the status DTO + handler in `internal/api/health/dto.go` + `internal/api/health/handler.go`
+- [x] T034 [US5] Probe `tmux.Detect` + `adapter.Detect` at startup; feed results into status + orchestrator transport selection, in `cmd/muster/main.go`
 
 **Checkpoint**: operational state is observable; bad dispatches fail fast.
 
@@ -112,9 +112,9 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Goal**: a running agent survives restart; muster re-discovers and resumes streaming. **Independent test**: dispatch → kill muster → restart → session rediscovered, bead `running`, streaming resumes; orphan session killed after grace.
 
-- [ ] T035 [US6] Test tmux `List` (`muster/` prefix) + recovery scan rebuilding the `Run` registry + orphan-kill-after-grace, with fake `tmux`, in `internal/orchestrator/recovery_test.go`
-- [ ] T036 [US6] Implement tmux `List` + `orchestrator/recovery.go` startup scan (re-`Pipe`, resume; kill unmatched after grace) in `internal/tmux/manager.go` + `internal/orchestrator/recovery.go`
-- [ ] T037 [US6] Call the recovery scan during startup in `cmd/muster/main.go`
+- [x] T035 [US6] Test tmux `List` (`muster/` prefix) + recovery scan rebuilding the `Run` registry + orphan-kill-after-grace, with fake `tmux`, in `internal/orchestrator/recovery_test.go`
+- [x] T036 [US6] Implement tmux `List` + `orchestrator/recovery.go` startup scan (re-`Pipe`, resume; kill unmatched after grace) in `internal/tmux/manager.go` + `internal/orchestrator/recovery.go`
+- [x] T037 [US6] Call the recovery scan during startup in `cmd/muster/main.go`
 
 **Checkpoint**: muster restart no longer loses or orphans running agents.
 
@@ -124,9 +124,9 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Goal**: agents still run (direct exec) without tmux; attach/send report unavailable. **Independent test**: with tmux off, dispatch runs to completion with streaming; `attach` → unavailable + reason.
 
-- [ ] T038 [US7] Test fallback transport: child runs, stdout/stderr stream, exit via `Wait()`; attach/send return unavailable, in `internal/tmux/fallback_test.go`
-- [ ] T039 [US7] Implement direct-exec fallback transport in `internal/tmux/fallback.go`
-- [ ] T040 [US7] Orchestrator selects transport by `tmux.Detect`; attach/send report `available:false`+reason; warn when a prompting permission-mode is chosen in fallback (FR-021), in `internal/orchestrator/orchestrator.go`
+- [x] T038 [US7] Test fallback transport: child runs, stdout/stderr stream, exit via `Wait()`; attach/send return unavailable, in `internal/tmux/fallback_test.go`
+- [x] T039 [US7] Implement direct-exec fallback transport in `internal/tmux/fallback.go`
+- [x] T040 [US7] Orchestrator selects transport by `tmux.Detect`; attach/send report `available:false`+reason; warn when a prompting permission-mode is chosen in fallback (FR-021), in `internal/orchestrator/orchestrator.go`
 
 **Checkpoint**: M2 works on hosts without tmux (attach disabled).
 
@@ -134,13 +134,13 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 ## Phase 10: Polish & Cross-Cutting Concerns
 
-- [ ] T041 [P] Enforce optional `--run-timeout` (cancel run, kill session, emit `closed`/failed) per FR-017, in `internal/orchestrator/orchestrator.go` (+ test)
-- [ ] T042 [P] Treat `<muster:subbead …>`/`<muster:checkpoint>` markers as inert with consistent handling (FR-020), in `internal/orchestrator/runlog.go` (+ test)
-- [ ] T043 [P] Verify graceful shutdown does NOT kill agent tmux sessions (FR-018), in `cmd/muster/main.go` (+ test)
-- [ ] T044 [P] Update [quickstart.md](quickstart.md) + README + `make help`/startup banner to mention `--repo`, `--worktrees-dir`, tmux dependency
+- [x] T041 [P] Enforce optional `--run-timeout` (cancel run, kill session, emit `closed`/failed) per FR-017, in `internal/orchestrator/orchestrator.go` (+ test)
+- [x] T042 [P] Treat `<muster:subbead …>`/`<muster:checkpoint>` markers as inert with consistent handling (FR-020), in `internal/orchestrator/runlog.go` (+ test)
+- [x] T043 [P] Verify graceful shutdown does NOT kill agent tmux sessions (FR-018), in `cmd/muster/main.go` (+ test)
+- [x] T044 [P] Update [quickstart.md](quickstart.md) + README + `make help`/startup banner to mention `--repo`, `--worktrees-dir`, tmux dependency
 - [ ] T045 [P] Add `bd remember` note if any new cross-session gotcha emerges during implementation
-- [ ] T046 Confirm per-package coverage gates (plan targets) and `go test -race ./...` clean
-- [ ] T047 Validate the [quickstart.md](quickstart.md) end-to-end walkthrough against a real `claude` + `tmux`
+- [x] T046 Confirm per-package coverage gates (plan targets) and `go test -race ./...` clean
+- [x] T047 Validate the [quickstart.md](quickstart.md) end-to-end walkthrough — automated path: `make test-e2e` (real claude + real tmux; gated by `//go:build e2e`)
 
 ---
 

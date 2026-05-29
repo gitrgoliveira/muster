@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
@@ -273,37 +274,26 @@ func (h *Handlers) Attach(w http.ResponseWriter, r *http.Request) {
 	if !validateID(w, r, id) {
 		return
 	}
-	idx := chi.URLParam(r, "idx")
+	idxStr := chi.URLParam(r, "idx")
 
-	// M2: only idx=0 is valid.
-	if idx != "0" {
+	// Parse step index.
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil || idx < 0 {
 		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
 		return
 	}
 
-	// Delegate to service if available.
-	if h.svc == nil {
-		render.WriteJSON(w, http.StatusOK, AttachResponse{
-			Available: false,
-			Reason:    "service unavailable",
-		})
+	// M2: only idx=0 is valid.
+	if idx != 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
 		return
 	}
 
-	resp, err := h.svc.GetAttach(r.Context(), id, 0)
+	resp, err := h.svc.GetAttach(r.Context(), id, idx)
 	if mapServiceError(w, r, err) {
 		return
 	}
 	render.WriteJSON(w, http.StatusOK, resp)
-}
-
-// AttachResponse is the body returned by GET /beads/{id}/steps/{idx}/attach.
-type AttachResponse struct {
-	Available bool   `json:"available"`
-	Command   string `json:"command,omitempty"`
-	Session   string `json:"session,omitempty"`
-	Pane      string `json:"pane,omitempty"`
-	Reason    string `json:"reason,omitempty"`
 }
 
 // Send handles POST /beads/{id}/steps/{idx}/send.
@@ -313,10 +303,17 @@ func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
 	if !validateID(w, r, id) {
 		return
 	}
-	idx := chi.URLParam(r, "idx")
+	idxStr := chi.URLParam(r, "idx")
+
+	// Parse step index.
+	idx, parseErr := strconv.Atoi(idxStr)
+	if parseErr != nil || idx < 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return
+	}
 
 	// M2: only idx=0 is valid.
-	if idx != "0" {
+	if idx != 0 {
 		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
 		return
 	}
@@ -326,7 +323,7 @@ func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.SendKeys(r.Context(), id, 0, req.Keys); mapServiceError(w, r, err) {
+	if err := h.svc.SendKeys(r.Context(), id, idx, req.Keys); mapServiceError(w, r, err) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -35,6 +35,8 @@ func newTestServer(t *testing.T) *httptest.Server {
 	r.Post("/beads/{id}/move", h.Move)
 	r.Post("/beads/{id}/dispatch", h.Dispatch)
 	r.Post("/beads/{id}/comments", h.Comment)
+	r.Get("/beads/{id}/steps/{idx}/attach", h.Attach)
+	r.Post("/beads/{id}/steps/{idx}/send", h.Send)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -527,4 +529,52 @@ func TestDispatch_400_InvalidPermissionMode(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+// ── Attach / Send ───────────────────────────────────────────────────────
+
+func TestAttach_200_NotRunning(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doGet(t, srv, "/beads/mp-aaa/steps/0/attach")
+	// Bead exists; no run active → available:false (200)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestAttach_404_WrongBead(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doGet(t, srv, "/beads/mp-zzzz/steps/0/attach")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestAttach_404_NonZeroIdx(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doGet(t, srv, "/beads/mp-aaa/steps/1/attach")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestSend_400_BadBody(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/beads/mp-aaa/steps/0/send",
+		strings.NewReader("{invalid json"))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestSend_404_NonZeroIdx(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/2/send", map[string]string{"keys": "y\n"})
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }

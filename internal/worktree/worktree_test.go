@@ -86,6 +86,35 @@ func TestEnsure_NonGitRepoError(t *testing.T) {
 	}
 }
 
+func TestEnsure_ManuallyDeletedWorktree(t *testing.T) {
+	// If the branch exists but the worktree directory was manually deleted,
+	// Ensure should recreate it on the existing branch.
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+
+	// First ensure creates the worktree.
+	wt1, err := Ensure(worktreesDir, repoPath, "mp-regen")
+	if err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+
+	// Manually remove the worktree directory (simulating cleanup or crash).
+	if err := os.RemoveAll(wt1.Path); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	// Remove git worktree tracking via prune.
+	runGitCmd(t, repoPath, "worktree", "prune")
+
+	// Second ensure should recreate the worktree on the existing branch.
+	wt2, err := Ensure(worktreesDir, repoPath, "mp-regen")
+	if err != nil {
+		t.Fatalf("second Ensure after manual remove: %v", err)
+	}
+	if _, err := os.Stat(wt2.Path); err != nil {
+		t.Errorf("worktree should exist after re-creation: %v", err)
+	}
+}
+
 func TestEnsure_TwoBeadIsolation(t *testing.T) {
 	repoPath := initGitRepo(t)
 	worktreesDir := t.TempDir()

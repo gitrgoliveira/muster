@@ -1,7 +1,7 @@
 BINARY := bin/muster
 PKG    := ./cmd/muster/
 
-.PHONY: build test run ui-copy cover cover-check lint clean
+.PHONY: build test test-e2e run ui-copy cover cover-check lint clean help
 
 build:
 	go build -o $(BINARY) $(PKG)
@@ -32,6 +32,10 @@ cover-check: cover
 	    thresholds["github.com/gitrgoliveira/muster/internal/api/beads"] = 70; \
 	    thresholds["github.com/gitrgoliveira/muster/internal/api/stream"] = 70; \
 	    thresholds["github.com/gitrgoliveira/muster/internal/api/health"] = 70; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/adapter"] = 80; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/tmux"] = 75; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/worktree"] = 85; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/orchestrator"] = 80; \
 	    fail = 0; \
 	  } \
 	  /total:/ { \
@@ -49,3 +53,21 @@ lint:
 
 clean:
 	rm -rf bin/ cover.out
+
+## test-e2e: Run the real end-to-end M2 flow (requires: claude logged in + tmux installed).
+##   Uses real claude (Max plan usage, not per-call billing) and real tmux.
+##   Skips gracefully if either is unavailable.
+test-e2e:
+	go test -tags=e2e -run TestE2E -count=1 -v -timeout 120s ./internal/orchestrator/
+
+help:
+	@echo "Available targets:"
+	@echo "  build        - Build the muster binary"
+	@echo "  test         - Run unit/integration tests (fakes only; no real claude/network)"
+	@echo "  test-e2e     - Run real end-to-end M2 test (needs: claude logged in + tmux)"
+	@echo "                 Uses Max plan usage allowance. Skips if unavailable."
+	@echo "  cover        - Generate and print test coverage"
+	@echo "  cover-check  - Run coverage and enforce per-package gates"
+	@echo "  run          - Start muster serve locally"
+	@echo "  lint         - Run gofmt, go vet, golangci-lint"
+	@echo "  clean        - Remove build artifacts"
