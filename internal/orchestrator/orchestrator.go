@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -194,11 +195,12 @@ func isFallbackTransport(t tmux.Manager) bool {
 	return ok
 }
 
-// promptingModes are permission modes that require user interaction (attach/send).
-// When using the fallback transport (no tmux), these modes work but attach/send
-// will be unavailable. FR-021 requires muster to warn the user.
+// promptingModes are permission modes that may block on a user prompt.
+// Under the fallback transport (no tmux) there is no attachable session to
+// answer such prompts, so the run can hang. FR-021 requires muster to warn.
 var promptingModes = map[core.PermissionMode]bool{
-	core.PermDefault: true, // default may prompt
+	core.PermDefault:     true, // prompts for most actions
+	core.PermAcceptEdits: true, // prompts for non-edit actions
 }
 
 // Dispatch launches an agent run for the given bead. It:
@@ -217,6 +219,13 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	pm, err := o.resolvePermMode(req.PermissionMode)
 	if err != nil {
 		return nil, err
+	}
+
+	// FR-021: under the tmux-absent fallback there is no attachable session to
+	// answer prompts, so a prompting permission mode can hang. Warn, don't block.
+	if isFallbackTransport(o.transport) && promptingModes[pm] {
+		slog.Warn("dispatching with a prompting permission mode without tmux; no attachable session to answer prompts — the run may hang",
+			"bead", req.BeadID, "permissionMode", pm)
 	}
 
 	// Check for duplicate run.

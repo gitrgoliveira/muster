@@ -2,16 +2,11 @@ package orchestrator
 
 import (
 	"context"
-	"time"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/tmux"
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
-
-// defaultOrphanGrace is how long to wait before killing a session with no
-// corresponding bead in the run registry after restart.
-const defaultOrphanGrace = 30 * time.Second
 
 // RecoverSessions scans existing muster tmux sessions and re-attaches streaming
 // for those that correspond to active runs. Sessions with no matching bead are
@@ -26,11 +21,16 @@ func (o *Orchestrator) RecoverSessions(ctx context.Context) {
 	}
 
 	for _, sess := range sessions {
-		o.recoverSession(ctx, sess)
+		// Allow aborting a long scan, but a recovered run's own lifetime is NOT
+		// tied to this ctx (see recoverSession) — runs must survive shutdown.
+		if ctx.Err() != nil {
+			return
+		}
+		o.recoverSession(sess)
 	}
 }
 
-func (o *Orchestrator) recoverSession(ctx context.Context, sess tmux.Session) {
+func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	beadID := sess.BeadID
 	sessionName := sess.Name
 
@@ -56,8 +56,11 @@ func (o *Orchestrator) recoverSession(ctx context.Context, sess tmux.Session) {
 		return
 	}
 
-	// Recreate a Run for this session and resume streaming.
-	runCtx, runCancel := context.WithCancel(ctx)
+	// Recreate a Run for this session and resume streaming. Root the run in
+	// Background (NOT the recovery scan ctx) so it survives muster shutdown,
+	// exactly like Dispatch does (FR-018). Explicit cancellation is still
+	// possible via run.cancel.
+	runCtx, runCancel := context.WithCancel(context.Background())
 	run := &Run{
 		BeadID:    beadID,
 		StepIdx:   sess.StepIdx,
@@ -97,22 +100,4 @@ func (o *Orchestrator) recoverSession(ctx context.Context, sess tmux.Session) {
 	}
 
 	_ = code // used to check dead above
-}
-
-// killOrphanAfterGrace kills a tmux session after a grace period if it still
-// has no corresponding run. Used for sessions discovered at startup that
-// belong to no known bead.
-func (o *Orchestrator) killOrphanAfterGrace(ctx context.Context, sess tmux.Session, grace time.Duration) {
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(grace):
-	}
-
-	o.mu.RLock()
-	existing := o.runs[sess.BeadID]
-	o.mu.RUnlock()
-	if existing == nil {
-		_ = o.transport.Kill(sess.Name)
-	}
 }

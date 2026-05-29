@@ -88,9 +88,9 @@ func TestGracefulShutdown_DoesNotKillAgentSessions(t *testing.T) {
 	// Wait briefly to ensure any graceful shutdown processing completes.
 	time.Sleep(200 * time.Millisecond)
 
-	// FR-018 verified: the watchRun context is derived from Background, so
-	// the server shutdown context cancel does not propagate to kill sessions.
-	// (The session may eventually be killed when the pane dies naturally,
-	//  but NOT from the server shutdown signal.)
-	t.Log("FR-018: graceful shutdown verified — server context does not kill tmux sessions")
+	// FR-018: the watchRun context is derived from Background, so the server
+	// shutdown context cancel must NOT propagate to kill the agent session.
+	if n := transport.killCount(); n != 0 {
+		t.Errorf("FR-018 violated: %d Kill call(s) after shutdown (%v); agent sessions must survive", n, transport.killNames)
+	}
 }

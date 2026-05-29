@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -195,10 +196,8 @@ func main() {
 	detectCancel()
 
 	// Build orchestrator.
-	orcMap := orchestrator.RepoMap{}
-	for k, v := range repoMap {
-		orcMap[k] = v
-	}
+	orcMap := make(orchestrator.RepoMap, len(repoMap))
+	maps.Copy(orcMap, repoMap)
 	orc := orchestrator.New(orchestrator.Config{
 		Adapters:        reg,
 		Transport:       transport,

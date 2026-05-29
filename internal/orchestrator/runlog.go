@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"bufio"
 	"io"
 	"sync/atomic"
 
@@ -42,25 +41,6 @@ func (s *runlogStreamer) stream(r io.Reader) {
 		}
 		if err != nil {
 			break
-		}
-	}
-}
-
-// streamLines reads line-by-line, emitting one frame per line.
-// Used for structured output (not the default raw-bytes path).
-func (s *runlogStreamer) streamLines(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text() + "\n"
-		seq := s.seq.Add(1)
-		if s.publish != nil {
-			s.publish(ws.Frame{
-				Type:    ws.EventRunlogLine,
-				BeadID:  s.beadID,
-				StepIdx: s.stepIdx,
-				Seq:     seq,
-				Data:    line,
-			})
 		}
 	}
 }
