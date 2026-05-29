@@ -17,6 +17,16 @@ func NewRegistry() *Registry {
 	return &Registry{adapters: make(map[core.AgentID]Adapter)}
 }
 
+// NewRegistryWithDefaults creates a Registry with the standard M2 adapters registered.
+// The caller provides the adapters to register (keeps this package free of adapter/claude import).
+func NewRegistryWithDefaults(adapters ...Adapter) *Registry {
+	r := NewRegistry()
+	for _, a := range adapters {
+		r.Register(a)
+	}
+	return r
+}
+
 // Register adds an adapter to the registry. Panics on duplicate ID
 // (registrations happen at startup and duplicates are a programming error).
 func (r *Registry) Register(a Adapter) {

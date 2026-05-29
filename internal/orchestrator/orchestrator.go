@@ -3,12 +3,16 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/adapter"
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/tmux"
+	"github.com/gitrgoliveira/muster/internal/worktree"
+	"github.com/gitrgoliveira/muster/internal/ws"
 )
 
 // ErrRunAlreadyActive is returned by Dispatch when a run is already active for
@@ -62,7 +66,7 @@ type DispatchRequest struct {
 }
 
 // Publisher is a function that broadcasts a WS frame to connected clients.
-type Publisher func(frame interface{})
+type Publisher func(frame ws.Frame)
 
 // Orchestrator manages agent run lifecycle.
 type Orchestrator struct {
@@ -127,11 +131,18 @@ func (o *Orchestrator) RunCount() int {
 	return count
 }
 
-// GetRun returns the Run for a beadID, or nil if not found.
+// GetRun returns a snapshot copy of the Run for a beadID, or nil if not found.
+// Callers get a stable copy that can be read without further locking.
 func (o *Orchestrator) GetRun(beadID string) *Run {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.runs[beadID]
+	r := o.runs[beadID]
+	if r == nil {
+		return nil
+	}
+	// Return a copy to prevent data races on individual field reads.
+	copy := *r
+	return &copy
 }
 
 // registerRun adds a run to the registry. Must be called with write lock held.
@@ -168,4 +179,208 @@ type PermModeError struct {
 
 func (e *PermModeError) Error() string {
 	return "invalid permissionMode: " + string(e.Mode)
+}
+
+// promptFileName is the filename of the prompt file within the worktree.
+const promptFileName = ".muster-prompt-0.txt"
+
+// Dispatch launches an agent run for the given bead. It:
+//  1. Validates inputs and checks for duplicate run.
+//  2. Resolves the repo from the RepoMap.
+//  3. Ensures the per-bead worktree exists.
+//  4. Writes the assembled prompt to <worktree>/.muster-prompt-0.txt.
+//  5. Calls adapter.Invoke to get the Spec.
+//  6. Spawns the tmux session.
+//  7. Registers the Run and starts the exit-watcher goroutine.
+//  8. Emits tmux.session.opened.
+//
+// Returns a stub *core.Bead with updated column (the caller publishes bead.updated).
+func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core.Bead, error) {
+	// Resolve permission mode.
+	pm, err := o.resolvePermMode(req.PermissionMode)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for duplicate run.
+	o.mu.Lock()
+	if existing, ok := o.runs[req.BeadID]; ok && existing.State == core.StepActive {
+		o.mu.Unlock()
+		return nil, ErrRunAlreadyActive
+	}
+	o.mu.Unlock()
+
+	// Resolve adapter.
+	if o.adapters == nil {
+		return nil, ErrAdapterNotFound
+	}
+	adp, ok := o.adapters.Get(req.Agent)
+	if !ok {
+		return nil, ErrAdapterNotFound
+	}
+
+	// Detect adapter (installed + logged in).
+	detectResult, err := adp.Detect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("adapter detect: %w", err)
+	}
+	if !detectResult.Installed {
+		return nil, ErrAdapterNotInstalled
+	}
+	if !detectResult.LoggedIn {
+		return nil, ErrAdapterNotLoggedIn
+	}
+
+	// Resolve repo.
+	repoPath, err := o.repoMap.Resolve(req.BeadID)
+	if err != nil {
+		return nil, err // ErrUnmappedPrefix
+	}
+
+	// Ensure worktree.
+	wt, err := worktree.Ensure(o.worktreesDir, repoPath, req.BeadID)
+	if err != nil {
+		return nil, fmt.Errorf("worktree: %w", err)
+	}
+
+	// Write prompt file.
+	promptPath := wt.Path + "/" + promptFileName
+	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
+	if err := os.WriteFile(promptPath, []byte(prompt), 0644); err != nil {
+		return nil, fmt.Errorf("write prompt: %w", err)
+	}
+
+	// Invoke adapter to get the Spec.
+	spec, err := adp.Invoke(ctx, adapter.InvokeReq{
+		Bead:           core.Bead{ID: req.BeadID, Title: req.BeadTitle, Desc: req.BeadDesc},
+		Mode:           req.Mode,
+		PermissionMode: pm,
+		Worktree:       wt.Path,
+		PromptFile:     promptPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("adapter invoke: %w", err)
+	}
+
+	// Spawn tmux session.
+	sessionName := tmux.SessionName(req.BeadID, 0, 0)
+	sess, err := o.transport.Spawn(sessionName, spec.Cwd, spec.Env, spec.Argv)
+	if err != nil {
+		return nil, fmt.Errorf("tmux spawn: %w", err)
+	}
+
+	// Register run.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	run := &Run{
+		BeadID:         req.BeadID,
+		StepIdx:        0,
+		Loop:           0,
+		Agent:          req.Agent,
+		Mode:           req.Mode,
+		PermissionMode: pm,
+		Worktree:       wt.Path,
+		Session:        sess.Name,
+		State:          core.StepActive,
+		StartedAt:      time.Now(),
+		cancel:         runCancel,
+	}
+	o.mu.Lock()
+	o.registerRun(run)
+	o.mu.Unlock()
+
+	// Start pipe + exit watcher goroutine.
+	go o.watchRun(runCtx, run)
+
+	// Emit tmux.session.opened.
+	if o.publish != nil {
+		o.publish(ws.Frame{
+			Type:    ws.EventTmuxOpened,
+			BeadID:  req.BeadID,
+			StepIdx: 0,
+			Session: sess.Name,
+		})
+	}
+
+	// Return a stub bead to signal the caller that the run is active.
+	bead := &core.Bead{
+		ID:     req.BeadID,
+		Title:  req.BeadTitle,
+		Desc:   req.BeadDesc,
+		Column: core.ColRunning,
+	}
+	return bead, nil
+}
+
+// watchRun monitors a run for exit via DeadStatus polling, then transitions
+// the bead and emits tmux.session.closed.
+func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
+	defer func() {
+		if run.cancel != nil {
+			run.cancel()
+		}
+	}()
+
+	const pollInterval = 500 * time.Millisecond
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Cancelled (e.g., graceful shutdown or timeout).
+			o.mu.Lock()
+			run.State = core.StepFailed
+			run.EndedAt = time.Now()
+			o.mu.Unlock()
+			return
+		case <-time.After(pollInterval):
+		}
+
+		code, dead, err := o.transport.DeadStatus(run.Session)
+		if err != nil {
+			// Session may have been killed externally; treat as done.
+			o.finishRun(run, 0, false)
+			return
+		}
+		if dead {
+			o.finishRun(run, code, code == 0)
+			return
+		}
+	}
+}
+
+// finishRun transitions a run to done/failed, emits closed WS event, and kills the session.
+func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
+	state := core.StepDone
+	if !success {
+		state = core.StepFailed
+	}
+
+	o.mu.Lock()
+	run.State = state
+	run.ExitCode = exitCode
+	run.EndedAt = time.Now()
+	o.mu.Unlock()
+
+	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
+	_ = o.transport.Kill(run.Session)
+
+	// Emit tmux.session.closed.
+	if o.publish != nil {
+		ec := exitCode
+		o.publish(ws.Frame{
+			Type:     ws.EventTmuxClosed,
+			BeadID:   run.BeadID,
+			StepIdx:  run.StepIdx,
+			Session:  run.Session,
+			ExitCode: &ec,
+		})
+	}
+}
+
+// buildPrompt assembles the bead title and description into a prompt string.
+func buildPrompt(title, desc string) string {
+	prompt := "# " + title + "\n\n"
+	if desc != "" {
+		prompt += desc + "\n"
+	}
+	return prompt
 }

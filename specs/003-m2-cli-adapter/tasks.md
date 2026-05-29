@@ -56,16 +56,16 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 **Goal**: `POST /dispatch` makes the agent actually run. **Depends on**: Phase 2 + US2. **Independent test**: dispatch `mp-abc` → a `claude` process runs in `muster/mp-abc` worktree, bead is `running`, `tmux.session.opened` fires; on exit the bead reaches `review`/failed.
 
-- [ ] T015 [US1] Test claude adapter `Detect` (parse `claude auth status --json`), `Modes` (plan→`--permission-mode plan`; agent→`--permission-mode <pm>`), `Invoke` Spec, `Login`=ErrNotSupported — using fake `claude`, in `internal/adapter/claude/claude_test.go`
-- [ ] T016 [US1] Implement claude adapter per [contracts/claude-adapter.md](contracts/claude-adapter.md) in `internal/adapter/claude/claude.go`; register it in `internal/adapter/registry.go`
-- [ ] T017 [US1] Test tmux `Spawn` (default socket, `remain-on-exit on`) + `DeadStatus` (`#{pane_dead_status}`) + `Kill` against fake `tmux`, in `internal/tmux/manager_test.go`
-- [ ] T018 [US1] Implement tmux `Detect`/`Spawn`/`DeadStatus`/`Kill` in `internal/tmux/manager.go`
-- [ ] T019 [US1] Test orchestrator `Dispatch` happy path + `409` duplicate-run + `422` unmapped-prefix + permission-mode resolution (request→default→error), with fakes, in `internal/orchestrator/orchestrator_test.go`
-- [ ] T020 [US1] Implement `Orchestrator.Dispatch`: resolve repo (`repomap`) → `worktree.Ensure` → write `<worktree>/.muster-prompt-0.txt` (bead Title+Desc) → `adapter.Invoke` → `tmux.Spawn` → register `Run` → goroutine watches exit (`DeadStatus`) → transition bead (`review`/failed) → emit `tmux.session.opened`/`closed`, in `internal/orchestrator/orchestrator.go`
-- [ ] T021 [US1] Implement `repomap.Resolve(beadID)` (prefix before first `-`) + permission-mode allow-list/default resolution in `internal/orchestrator/repomap.go` (+ test)
-- [ ] T022 [US1] Test dispatch handler: `202` running, `409` duplicate, `422` unmapped/unknown agent-mode-perm, `501` adapter-missing, unauth → actionable message, in `internal/api/beads/handlers_test.go`
-- [ ] T023 [US1] Wire `services.Dispatch` → `Orchestrator.Dispatch`; implement real `handlers.Dispatch` body (validate agent+mode+`permissionMode`) in `internal/services/beads.go` + `internal/api/beads/handlers.go`
-- [ ] T024 [US1] Integration test (skip if no real `tmux`): dispatch → fake `claude` runs in worktree → bead `running` → exit 0 → `review`, in `internal/orchestrator/integration_test.go`
+- [x] T015 [US1] Test claude adapter `Detect` (parse `claude auth status --json`), `Modes` (plan→`--permission-mode plan`; agent→`--permission-mode <pm>`), `Invoke` Spec, `Login`=ErrNotSupported — using fake `claude`, in `internal/adapter/claude/claude_test.go`
+- [x] T016 [US1] Implement claude adapter per [contracts/claude-adapter.md](contracts/claude-adapter.md) in `internal/adapter/claude/claude.go`; register it in `internal/adapter/registry.go`
+- [x] T017 [US1] Test tmux `Spawn` (default socket, `remain-on-exit on`) + `DeadStatus` (`#{pane_dead_status}`) + `Kill` against fake `tmux`, in `internal/tmux/manager_test.go`
+- [x] T018 [US1] Implement tmux `Detect`/`Spawn`/`DeadStatus`/`Kill` in `internal/tmux/manager.go`
+- [x] T019 [US1] Test orchestrator `Dispatch` happy path + `409` duplicate-run + `422` unmapped-prefix + permission-mode resolution (request→default→error), with fakes, in `internal/orchestrator/orchestrator_test.go`
+- [x] T020 [US1] Implement `Orchestrator.Dispatch`: resolve repo (`repomap`) → `worktree.Ensure` → write `<worktree>/.muster-prompt-0.txt` (bead Title+Desc) → `adapter.Invoke` → `tmux.Spawn` → register `Run` → goroutine watches exit (`DeadStatus`) → transition bead (`review`/failed) → emit `tmux.session.opened`/`closed`, in `internal/orchestrator/orchestrator.go`
+- [x] T021 [US1] Implement `repomap.Resolve(beadID)` (prefix before first `-`) + permission-mode allow-list/default resolution in `internal/orchestrator/repomap.go` (+ test)
+- [x] T022 [US1] Test dispatch handler: `202` running, `409` duplicate, `422` unmapped/unknown agent-mode-perm, `501` adapter-missing, unauth → actionable message, in `internal/api/beads/handlers_test.go`
+- [x] T023 [US1] Wire `services.Dispatch` → `Orchestrator.Dispatch`; implement real `handlers.Dispatch` body (validate agent+mode+`permissionMode`) in `internal/services/beads.go` + `internal/api/beads/handlers.go`
+- [x] T024 [US1] Integration test (skip if no real `tmux`): dispatch → fake `claude` runs in worktree → bead `running` → exit 0 → `review`, in `internal/orchestrator/integration_test.go`
 
 **Checkpoint**: MVP — a dispatched bead runs Claude Code in isolation and transitions on exit.
 

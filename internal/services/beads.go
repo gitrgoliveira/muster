@@ -31,6 +31,13 @@ const (
 	CodeCLIValidation  = "BD_CLI_VALIDATION"
 	CodeCLIUnavailable = "BD_CLI_UNAVAILABLE"
 	CodeCLITimeout     = "BD_CLI_TIMEOUT"
+
+	// M2 dispatch codes.
+	CodeRunAlreadyActive   = "RUN_ALREADY_ACTIVE"    // 409
+	CodeUnmappedPrefix     = "UNMAPPED_PREFIX"        // 422
+	CodeAdapterNotFound    = "ADAPTER_NOT_FOUND"      // 501
+	CodeAdapterNotInstalled = "ADAPTER_NOT_INSTALLED" // 501
+	CodeAdapterNotLoggedIn = "ADAPTER_NOT_LOGGED_IN"  // 409 (need to run `claude auth login`)
 )
 
 // ServiceError wraps a validation or state error with a code understood by
@@ -90,14 +97,17 @@ type CommentInput struct {
 // OrchestratorDispatcher is the interface BeadService uses to launch agent runs.
 // The real implementation is *orchestrator.Orchestrator; tests may substitute a fake.
 // This interface is defined here (not in orchestrator) to avoid import cycles.
+// The Dispatch method accepts an OrchestratorDispatchRequest, which mirrors
+// orchestrator.DispatchRequest — kept in sync by the API layer.
 type OrchestratorDispatcher interface {
 	// Dispatch launches an agent run for the given bead, returning the active bead.
-	// Implementations return ErrRunAlreadyActive (maps to 409), ErrUnmappedPrefix
-	// (maps to 422), or ErrAdapterNotFound / ErrAdapterNotInstalled (maps to 501/422).
+	// Implementations return orchestrator sentinel errors (ErrRunAlreadyActive,
+	// ErrUnmappedPrefix, ErrAdapterNotFound, ErrAdapterNotInstalled).
 	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (*core.Bead, error)
 }
 
 // OrchestratorDispatchRequest is the input for OrchestratorDispatcher.Dispatch.
+// Mirrors orchestrator.DispatchRequest; defined here to avoid an import cycle.
 type OrchestratorDispatchRequest struct {
 	BeadID         string
 	BeadTitle      string
@@ -153,6 +163,42 @@ func (svc *BeadService) requireCLI() error {
 		return &ServiceError{Code: CodeCLIMissing, Message: "bd CLI not available"}
 	}
 	return nil
+}
+
+// wrapOrchestratorError maps orchestrator sentinel errors to ServiceErrors.
+// We compare by message string to avoid an import cycle with the orchestrator package.
+// If the error is already a *ServiceError, it is returned as-is.
+func wrapOrchestratorError(err error) *ServiceError {
+	if err == nil {
+		return nil
+	}
+	// Already a ServiceError (e.g. from fakes in tests).
+	if se, ok := err.(*ServiceError); ok {
+		return se
+	}
+	msg := err.Error()
+	switch {
+	case msg == "run already active for bead":
+		return &ServiceError{Code: CodeRunAlreadyActive, Message: msg}
+	case msg == "bead prefix has no repo mapping":
+		return &ServiceError{Code: CodeUnmappedPrefix, Message: msg}
+	case msg == "adapter not registered":
+		return &ServiceError{Code: CodeAdapterNotFound, Message: msg}
+	case msg == "adapter not installed":
+		return &ServiceError{Code: CodeAdapterNotInstalled, Message: msg}
+	case containsStr(msg, "not logged in") || containsStr(msg, "auth login"):
+		return &ServiceError{Code: CodeAdapterNotLoggedIn, Message: msg}
+	case msg == "permissionMode is required (no default configured)":
+		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
+	case containsStr(msg, "invalid permissionMode"):
+		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
+	default:
+		return &ServiceError{Code: CodeInternal, Message: msg}
+	}
+}
+
+func containsStr(s, sub string) bool {
+	return strings.Contains(s, sub)
 }
 
 // wrapCLIError maps *bdshell.CLIError exit codes to service error codes.
@@ -430,7 +476,11 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			Mode:           input.Mode,
 			PermissionMode: input.PermissionMode,
 		}
-		return svc.orchestrator.Dispatch(ctx, req)
+		result, orchErr := svc.orchestrator.Dispatch(ctx, req)
+		if orchErr != nil {
+			return nil, wrapOrchestratorError(orchErr)
+		}
+		return result, nil
 	}
 
 	// Legacy stub path: just move the bead to running via bd CLI.
@@ -445,6 +495,38 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 	b := IssueToBead(&iss, svc.repo)
 	svc.publishWrite(ws.EventBeadUpdated, &b)
 	return &b, nil
+}
+
+// AttachResponse describes a live tmux session for user attachment.
+type AttachResponse struct {
+	Available bool   `json:"available"`
+	Command   string `json:"command,omitempty"`
+	Session   string `json:"session,omitempty"`
+	Pane      string `json:"pane,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// GetAttach returns attachment info for a running step.
+// Implemented by the orchestrator layer in US3; this stub returns available:false
+// until the orchestrator is wired in.
+func (svc *BeadService) GetAttach(ctx context.Context, beadID string, stepIdx int) (*AttachResponse, error) {
+	// Validate bead exists.
+	_, err := svc.GetBead(ctx, beadID)
+	if err != nil {
+		return nil, err
+	}
+	// Stub: orchestrator attach is implemented in US3.
+	return &AttachResponse{Available: false, Reason: "attach not available"}, nil
+}
+
+// SendKeys forwards keystrokes to a running step's tmux pane.
+// Stub: implemented in US3.
+func (svc *BeadService) SendKeys(ctx context.Context, beadID string, stepIdx int, keys string) error {
+	_, err := svc.GetBead(ctx, beadID)
+	if err != nil {
+		return err
+	}
+	return &ServiceError{Code: CodeCLIUnavailable, Message: "send not available"}
 }
 
 // AddComment appends a comment via the CLI.

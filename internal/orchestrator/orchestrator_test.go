@@ -1,0 +1,289 @@
+package orchestrator_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gitrgoliveira/muster/internal/adapter"
+	"github.com/gitrgoliveira/muster/internal/adapter/claude"
+	"github.com/gitrgoliveira/muster/internal/core"
+	"github.com/gitrgoliveira/muster/internal/orchestrator"
+	"github.com/gitrgoliveira/muster/internal/tmux"
+)
+
+// fakeTransport is a minimal tmux.Manager that records calls and returns
+// controllable results.
+type fakeTransport struct {
+	spawnErr       error
+	deadCode       int
+	deadDead       bool
+	deadErr        error
+	spawnedSession *tmux.Session
+
+	killCalled  bool
+	pipeCalled  bool
+	listReturns []tmux.Session
+}
+
+func (f *fakeTransport) Detect() (string, error) { return "3.6b", nil }
+func (f *fakeTransport) Kill(name string) error  { f.killCalled = true; return nil }
+func (f *fakeTransport) Attach(name string) (string, error) {
+	return "tmux attach -t " + name, nil
+}
+func (f *fakeTransport) Send(name, keys string) error       { return nil }
+func (f *fakeTransport) Capture(name string, esc bool) (string, error) { return "", nil }
+func (f *fakeTransport) Pipe(name string) (io.ReadCloser, error) {
+	f.pipeCalled = true
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (f *fakeTransport) List() ([]tmux.Session, error) { return f.listReturns, nil }
+func (f *fakeTransport) DeadStatus(name string) (int, bool, error) {
+	return f.deadCode, f.deadDead, f.deadErr
+}
+func (f *fakeTransport) Spawn(name, cwd string, env, argv []string) (*tmux.Session, error) {
+	if f.spawnErr != nil {
+		return nil, f.spawnErr
+	}
+	sess := &tmux.Session{
+		Name:      name,
+		StartedAt: time.Now(),
+	}
+	f.spawnedSession = sess
+	return sess, nil
+}
+
+// Verify fakeTransport satisfies the Manager interface.
+var _ tmux.Manager = (*fakeTransport)(nil)
+
+// initGitRepo creates a temp git repo with an initial commit.
+func initGitRepo(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("git worktrees not tested on Windows")
+	}
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@test.com")
+	runGit("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test\n"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "init")
+	return dir
+}
+
+// setupFakeClaude puts the fake_claude.sh on PATH.
+func setupFakeClaude(t *testing.T) {
+	t.Helper()
+	scriptPath := filepath.Join("..", "adapter", "claude", "testdata", "fake_claude.sh")
+	abs, err := filepath.Abs(scriptPath)
+	if err != nil {
+		t.Fatalf("abs fake_claude: %v", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		t.Skipf("fake_claude.sh not found at %s: %v", abs, err)
+	}
+	binDir := t.TempDir()
+	dest := filepath.Join(binDir, "claude")
+	if err := os.Symlink(abs, dest); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
+}
+
+func newOrchestratorForTest(t *testing.T, repoPath string) (*orchestrator.Orchestrator, *fakeTransport) {
+	t.Helper()
+	setupFakeClaude(t)
+	transport := &fakeTransport{}
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	worktreesDir := t.TempDir()
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    transport,
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: worktreesDir,
+	})
+	return o, transport
+}
+
+func TestDispatch_HappyPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	o, transport := newOrchestratorForTest(t, repoPath)
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-abc",
+		BeadTitle:      "Test task",
+		BeadDesc:       "Do the thing",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	_, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	if transport.spawnedSession == nil {
+		t.Error("expected transport.Spawn to have been called")
+	}
+
+	run := o.GetRun("mp-abc")
+	if run == nil {
+		t.Fatal("GetRun returned nil after Dispatch")
+	}
+	if run.State != core.StepActive {
+		t.Errorf("run state want active got %q", run.State)
+	}
+}
+
+func TestDispatch_409_DuplicateRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	o, _ := newOrchestratorForTest(t, repoPath)
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-abc",
+		BeadTitle:      "Test",
+		BeadDesc:       "",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	if _, err := o.Dispatch(context.Background(), req); err != nil {
+		t.Fatalf("first Dispatch: %v", err)
+	}
+
+	_, err := o.Dispatch(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for duplicate run, got nil")
+	}
+	if !errors.Is(err, orchestrator.ErrRunAlreadyActive) {
+		t.Errorf("want ErrRunAlreadyActive, got %v", err)
+	}
+}
+
+func TestDispatch_422_UnmappedPrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{}, // no mappings
+		WorktreesDir: t.TempDir(),
+	})
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-abc",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	_, err := o.Dispatch(context.Background(), req)
+	if !errors.Is(err, orchestrator.ErrUnmappedPrefix) {
+		t.Errorf("want ErrUnmappedPrefix, got %v", err)
+	}
+}
+
+func TestDispatch_PermissionModeResolution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	transport := &fakeTransport{}
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermDontAsk,
+	})
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-xyz",
+		BeadTitle:      "Test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // empty → use default
+	}
+
+	_, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Dispatch with default permMode: %v", err)
+	}
+
+	run := o.GetRun("mp-xyz")
+	if run == nil {
+		t.Fatal("GetRun returned nil")
+	}
+	if run.PermissionMode != core.PermDontAsk {
+		t.Errorf("want dontAsk got %q", run.PermissionMode)
+	}
+}
+
+func TestDispatch_NoPermissionMode_Error(t *testing.T) {
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": t.TempDir()},
+		WorktreesDir: t.TempDir(),
+		// No DefaultPermMode
+	})
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-abc",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // empty, no default → error
+	}
+
+	_, err := o.Dispatch(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error when no permissionMode, got nil")
+	}
+}
