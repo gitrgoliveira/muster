@@ -24,12 +24,14 @@ This is the largest conceptual leap in the project so far: M0/M1 were a read/CRU
 
 ## Clarifications
 
-### Session 2026-05-29 (informed-guess defaults — confirm via `/speckit-clarify` if any are wrong)
+### Session 2026-05-29
 
-- Q: Which source repository does a bead's worktree branch from, given beads-central can hold beads from many repos (e.g. `mp-*`)? → A (assumed): A **single source repository** configured at startup via `--repo`/`MUSTER_REPO` (path to a git repo). M2 is single-instance/single-repo, mirroring M1's single-`.beads` model. Per-bead repo routing is **M7 (Repos & routing)**. If `--repo` is unset, dispatch returns a clear error.
-- Q: Does M2 introduce the full plan→build→review step chain, or a single step? → A (assumed): A **single implicit step at index 0** per dispatch. The `/steps/{idx}` endpoints accept only `idx=0` in M2; multi-step chains are deferred (M4/M8). This keeps the step-pointer/loop machinery out of M2.
-- Q: How is the interactive Claude Code login surfaced through a headless daemon? → A (assumed): muster **detects auth state** at adapter `Detect()` and, when unauthenticated, exposes a **`LoginFlow` that runs `claude` interactive login inside an attachable tmux session** the user attaches to (same attach mechanism as a running step). muster never captures or stores credentials.
-- Q: How does muster invoke Claude Code plan vs agent mode? → A (assumed): via documented Claude Code CLI flags resolved from the adapter's `Modes()` table; the **exact flags MUST be pinned by an empirical spike** before implementation (as M1 did in its Phase 7.5 spike), since CLI surface drifts.
+- Q: Which source repository does a bead's worktree branch from, given beads-central can hold beads from many repos (e.g. `mp-*`)? → A: **Per-bead resolution, not a single global repo.** Because bead IDs are project-prefixed (`mp-`, `muster-`), M2 resolves each bead's source repo via a startup-configured **prefix→repo mapping** (e.g. `mp` → `/path/to/bracket-creator`). A bead whose prefix has no mapping cannot be dispatched (clear error). This is a minimal precursor to **M7 (Repos & routing)**, which adds hot-reloadable `/repos` CRUD and the probe flow.
+- Q: How is the interactive Claude Code login surfaced through a headless daemon? → A: **Detect-only; login is out-of-band.** muster detects and reports auth state but does NOT spawn or proxy a login flow. The user runs `claude login` (or `/login`) in their own terminal. This keeps muster's credential surface at zero. (The `Adapter.Login` interface method may return `ErrNotSupported`/not-implemented in M2.)
+- Q: What default per-run wall-clock timeout applies? → A: **Unbounded by default — no timeout.** A per-run timeout is opt-in via `--run-timeout`/`MUSTER_RUN_TIMEOUT`. When unset, a run may execute indefinitely; termination is manual (the user kills the agent via the attached session, or via session kill). This suits long agentic coding runs.
+- Q: Where is the runlog (captured agent output) persisted? → A: **Not persisted by muster in M2.** Output is streamed live from the tmux pane (`pipe-pane`) and caught up via tmux `capture-pane` (works mid-run, on reload, and after a muster restart, since the session survives). muster does NOT read Claude's own transcripts (adapter-specific, not the pane stream) and keeps no durable runlog store. Durable runlog + compaction is **M9**. In the tmux-absent fallback there is no `capture-pane`, so catch-up of earlier output is unavailable (live-from-connect only).
+- Q: Does M2 introduce the full plan→build→review step chain, or a single step? → A: A **single implicit step at index 0** per dispatch. The `/steps/{idx}` endpoints accept only `idx=0` in M2; multi-step chains are deferred (M4/M8). This keeps the step-pointer/loop machinery out of M2.
+- Q: How does muster invoke Claude Code plan vs agent mode? → A: via documented Claude Code CLI flags resolved from the adapter's `Modes()` table; the **exact flags MUST be pinned by an empirical spike** before implementation (as M1 did in its Phase 7.5 spike), since CLI surface drifts.
 - Q: What is the bead's task input to the agent? → A: the bead **Title + Description** (the M1 issue record), written to a temp prompt file in the worktree; the agent reads it via a thin wrapper. No constitution/skill assembly in M2 (that is M6).
 
 ---
@@ -46,9 +48,9 @@ A user calls `POST /api/v1/beads/{id}/dispatch` with `agent: "claude"` and a mod
 
 **Acceptance Scenarios**:
 
-1. **Given** `--repo` points to a valid git repo and `claude` is installed and authenticated, **When** a user dispatches bead `mp-abc` with `agent:"claude"`, **Then** muster creates a worktree (branch `muster/mp-abc`), writes the prompt file, launches Claude Code in it, returns `202 Accepted` with the bead in `running`, and emits `tmux.session.opened`.
+1. **Given** the bead's prefix maps to a valid git repo and `claude` is installed and authenticated, **When** a user dispatches bead `mp-abc` with `agent:"claude"`, **Then** muster resolves the `mp` → repo mapping, creates a worktree (branch `muster/mp-abc`) from that repo, writes the prompt file, launches Claude Code in it, returns `202 Accepted` with the bead in `running`, and emits `tmux.session.opened`.
 2. **Given** a dispatch is in progress for a bead, **When** the same bead is dispatched again, **Then** muster rejects the second dispatch with `409 CONFLICT` (one active run per bead in M2) rather than spawning a duplicate.
-3. **Given** `--repo`/`MUSTER_REPO` is not configured, **When** a user dispatches any bead, **Then** muster returns `400`/`422` with `source repo not configured: set --repo or MUSTER_REPO`.
+3. **Given** the bead's prefix has no configured repo mapping, **When** a user dispatches it, **Then** muster returns `400`/`422` with `no source repo configured for prefix "<prefix>"` and launches nothing.
 4. **Given** the agent finishes with exit code 0, **Then** the step is marked `done` and the bead advances to `review`; **Given** a non-zero exit, **Then** the step is marked `failed` and the bead's status reflects the failure (no automatic retry/loop in M2).
 
 ---
@@ -63,9 +65,9 @@ Each dispatched bead gets its own git worktree so the agent's file changes are i
 
 **Acceptance Scenarios**:
 
-1. **Given** a bead is dispatched and no worktree exists for it, **When** the run starts, **Then** muster runs `git worktree add` to create `<worktrees-root>/<bead-id>` on branch `muster/<bead-id>` from the configured source repo, and the agent's cwd is that path.
+1. **Given** a bead is dispatched and no worktree exists for it, **When** the run starts, **Then** muster runs `git worktree add` to create `<worktrees-root>/<bead-id>` on branch `muster/<bead-id>` from the bead's resolved source repo, and the agent's cwd is that path.
 2. **Given** a worktree for the bead already exists (e.g. a prior run), **When** the bead is dispatched again, **Then** muster reuses the existing worktree rather than failing or creating a duplicate.
-3. **Given** the source repo path is not a git repository, **When** a bead is dispatched, **Then** muster returns a clear error and does not launch the agent.
+3. **Given** the bead's resolved repo path is not a git repository, **When** a bead is dispatched, **Then** muster returns a clear error and does not launch the agent.
 
 ---
 
@@ -88,26 +90,26 @@ While an agent runs, the user can retrieve a `tmux attach` command and connect t
 
 ### User Story 4 — Live runlog streaming over WebSocket (Priority: P2)
 
-The agent's output is captured line-by-line, persisted to an append-only runlog, and broadcast over the existing WebSocket hub so the UI shows output in real time without the user having to attach.
+The agent's pane output is streamed line-by-line over the existing WebSocket hub so the UI shows output in real time without the user having to attach. Catch-up for a client that joins mid-run (or after a page reload) is served by replaying the live tmux pane scrollback (`capture-pane`). muster does not maintain a durable runlog store in M2.
 
-**Why this priority**: The default UI experience for watching an agent is the streamed runlog, not a raw terminal attach. Persistence also enables catch-up after page reload. High value, but the run itself succeeds without it, so P2.
+**Why this priority**: The default UI experience for watching an agent is the streamed output, not a raw terminal attach. High value, but the run itself succeeds without it, so P2.
 
-**Independent Test**: Open a WS connection, dispatch a bead, and observe `runlog.line` events arriving as the agent produces output; after the run, the persisted runlog for that bead/step contains the full output in order.
+**Independent Test**: Open a WS connection, dispatch a bead, and observe `runlog.line` events arriving as the agent produces output; a second client connecting mid-run receives the scrollback-to-date before live lines resume.
 
 **Acceptance Scenarios**:
 
 1. **Given** a WS client is connected and an agent is running, **When** the agent emits output, **Then** the client receives ordered `runlog.line` events tagged with bead id and step index.
 2. **Given** an agent session opens or closes, **Then** `tmux.session.opened` / `tmux.session.closed` events are broadcast.
-3. **Given** a burst of rapid output, **Then** runlog writes are batched (not one disk write per line) while WS ordering is preserved.
-4. **Given** a client connects mid-run or after reload, **Then** it can retrieve the runlog captured so far (catch-up) before live lines resume.
+3. **Given** a burst of rapid output, **Then** streamed `runlog.line` ordering is preserved (no reordering or dropped lines) as long as the session lives.
+4. **Given** a client connects mid-run or after reload (tmux mode), **Then** it can retrieve the pane scrollback so far via `capture-pane` (catch-up) before live lines resume. **Given** the tmux-absent fallback, catch-up of earlier output is unavailable and the client receives live output only from connect time.
 
 ---
 
-### User Story 5 — Detect and authenticate the Claude Code adapter (Priority: P2)
+### User Story 5 — Detect the Claude Code adapter and surface its auth state (Priority: P2)
 
-muster probes for the `claude` CLI (presence, version) and surfaces whether it is authenticated. When it is not, muster provides a login flow. Adapter and tmux availability are reflected in `GET /api/v1/orchestrator/status`.
+muster probes for the `claude` CLI (presence, version) and surfaces whether it is authenticated. When it is not, muster reports an actionable message telling the user to log in out-of-band (`claude login`); muster does not perform or proxy the login. Adapter and tmux availability are reflected in `GET /api/v1/orchestrator/status`.
 
-**Why this priority**: Dispatch (US1) presupposes a detected, authenticated adapter; this story makes that state observable and recoverable. It is P2 because in the common case the user has already logged in via their own terminal and detection is a status read.
+**Why this priority**: Dispatch (US1) presupposes a detected, authenticated adapter; this story makes that state observable. It is P2 because in the common case the user has already logged in via their own terminal and detection is a status read.
 
 **Independent Test**: With `claude` installed, `GET /api/v1/orchestrator/status` reports `tmuxAvailable`, `tmuxVersion`, and that the `claude` adapter is detected with a version. With `claude` absent, status reflects "not detected" and dispatch returns a clear `501`-style error.
 
@@ -115,7 +117,7 @@ muster probes for the `claude` CLI (presence, version) and surfaces whether it i
 
 1. **Given** `claude` is on PATH, **When** muster starts, **Then** `orchestrator/status` includes the adapter id `claude`, its version, `tmuxAvailable`, `tmuxVersion`, and `runningCount`.
 2. **Given** `claude` is not installed or not on PATH, **When** a bead is dispatched to `claude`, **Then** muster returns a clear "adapter not available" error and does not attempt to spawn.
-3. **Given** `claude` is installed but unauthenticated, **When** the user initiates the login flow, **Then** muster starts an attachable interactive `claude` login session and reports auth success/failure; muster never stores credentials itself.
+3. **Given** `claude` is installed but unauthenticated, **When** the user dispatches a bead, **Then** muster reports the unauthenticated state with an actionable message (`claude is not logged in — run \`claude login\` in a terminal`) and does not spawn; muster does not perform or proxy the login itself.
 
 ---
 
@@ -151,7 +153,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 
 ### Edge Cases
 
-- **Agent never produces output / hangs**: a per-run wall-clock timeout (configurable, sane default) cancels the run, marks the step `failed`/`cancelled`, kills the session, and broadcasts closure. M2 documents the default; tunability beyond it is M10.
+- **Agent never produces output / hangs**: with no `--run-timeout` configured (the default), the run is **not** auto-cancelled — the user terminates it manually via the attached session or a session kill. If a timeout is configured, expiry cancels the run, marks the step `failed`/`cancelled`, kills the session, and broadcasts closure. *(Known M2 gap: there is no dispatch-cancel endpoint; manual termination is the only stop path. A cancel endpoint is a candidate follow-up.)*
 - **Prompt file cannot be written** (worktree read-only/full): dispatch fails before spawning, with a clear error; no half-started session.
 - **tmux session name collision** (stale session from a prior run with the same name): the prior session is killed before the new one is spawned (loop-count suffix in the name reserves room for future multi-run).
 - **`send` to a non-CLI / fallback / exited session**: rejected with a clear status, never silently dropped.
@@ -170,21 +172,21 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 
 - **FR-001**: System MUST expose an `Adapter` abstraction with operations to detect availability/version, enumerate supported modes, invoke a run (returning a stream of run events), report a quota source, and initiate login. M2 ships exactly one implementation: `claude`.
 - **FR-002**: System MUST give `POST /api/v1/beads/{id}/dispatch` a real body for `agent:"claude"`: validate agent+mode, create/claim the bead's worktree, assemble the prompt, launch the agent, and transition the bead to a running state. The endpoint MUST return promptly (the run proceeds asynchronously) and MUST reject a concurrent duplicate run for the same bead with `409 CONFLICT`.
-- **FR-003**: System MUST create a per-bead isolated git worktree (`git worktree add` on branch `muster/<bead-id>`) from the configured source repository, reuse an existing one if present, and run the agent with that worktree as its working directory.
-- **FR-004**: System MUST resolve the source repository from `--repo` flag → `MUSTER_REPO` env var; if unset, dispatch MUST fail with a clear, actionable error and MUST NOT launch an agent.
+- **FR-003**: System MUST create a per-bead isolated git worktree (`git worktree add` on branch `muster/<bead-id>`) from the bead's resolved source repository, reuse an existing one if present, and run the agent with that worktree as its working directory.
+- **FR-004**: System MUST resolve a bead's source repository **per bead**, keyed on the bead's ID prefix, via a startup-configured prefix→repo mapping (e.g. `mp` → repo path). If the bead's prefix has no mapping, or the mapped path is not a git repo, dispatch MUST fail with a clear, actionable error and MUST NOT launch an agent. (Full hot-reloadable `/repos` CRUD + probe flow is M7.)
 - **FR-005**: System MUST assemble the agent's task input from the bead's Title and Description, written to a temp prompt file inside the worktree, and deliver it to the agent via a wrapper that reads the file (avoiding shell-escaping hazards). No constitution/skill assembly is in scope (M6).
 - **FR-006**: System MUST resolve the agent invocation (including plan vs agent mode) from the adapter's mode table. The exact `claude` CLI flags MUST be empirically pinned (spike) and recorded in a contract before implementation.
 - **FR-007**: For CLI adapters, System MUST run the agent inside a tmux session named `muster/<bead-id>/<step-idx>/<loop-count>` (M2 always `…/0/0`), using tmux as the canonical transport (spawn, pipe output, attach, send keys, capture, kill, list). System MUST probe a minimum tmux version at startup.
 - **FR-008**: System MUST fall back to a direct child-process transport when tmux is unavailable, preserving runlog/WS streaming; in fallback mode, attach and send MUST report unavailable with a reason.
-- **FR-009**: System MUST capture agent output into an append-only **runlog** keyed by bead id + step index, persisted with batched writes, and ordered.
+- **FR-009**: System MUST capture agent pane output (via tmux `pipe-pane`, or the child's stdout/stderr in fallback) and stream it as ordered `runlog.line` events keyed by bead id + step index. M2 keeps **no durable runlog store**; durable persistence + compaction is M9.
 - **FR-010**: System MUST broadcast new WebSocket event types — `runlog.line`, `tmux.session.opened`, `tmux.session.closed` — in addition to (and without breaking) the M1 `bead.*` events.
 - **FR-011**: System MUST expose `GET /api/v1/beads/{id}/steps/{idx}/attach` returning the tmux attach command and pane info (or attach-unavailable + reason), and `POST /api/v1/beads/{id}/steps/{idx}/send` to forward keystrokes to the live pane. In M2 only `idx=0` is valid.
-- **FR-012**: System MUST support runlog catch-up: a client connecting mid-run or after reload can retrieve the output captured so far for a bead/step before live lines resume.
+- **FR-012**: System MUST support catch-up in tmux mode by replaying pane scrollback via `capture-pane` for a client connecting mid-run or after reload, before live lines resume. In the tmux-absent fallback, catch-up of earlier output is not provided (live-from-connect only) — a documented limitation.
 - **FR-013**: On agent exit, System MUST mark the step `done` (exit 0) or `failed` (non-zero) and transition the bead accordingly (exit 0 → `review`); M2 performs no automatic retry/loop.
 - **FR-014**: On startup, System MUST enumerate surviving `muster/*` tmux sessions, re-associate each with its bead/step, mark running steps `running`, and resume streaming. Sessions with no matching live bead/step MUST be killed after a grace period.
 - **FR-015**: System MUST detect the `claude` adapter (presence + version) and tmux (presence + version) at startup and report `tmuxAvailable`, `tmuxVersion`, the detected adapter(s) with versions, and `runningCount` via `GET /api/v1/orchestrator/status`.
-- **FR-016**: System MUST provide a login flow for `claude` that runs the vendor's interactive login (via an attachable tmux session when tmux is present) and reports success/failure. System MUST NOT capture, persist, or proxy credentials.
-- **FR-017**: System MUST enforce a per-run wall-clock timeout (configurable, with a documented default); on timeout it MUST cancel the run, mark the step failed/cancelled, kill the session, and broadcast closure.
+- **FR-016**: System MUST detect and report the `claude` adapter's authentication state. System MUST NOT perform, proxy, or store credentials for login; when unauthenticated, it returns an actionable message directing the user to run `claude login` out-of-band. (`Adapter.Login` may be a no-op / `ErrNotSupported` in M2.)
+- **FR-017**: System MUST support an **optional** per-run wall-clock timeout via `--run-timeout`/`MUSTER_RUN_TIMEOUT`; the **default is unbounded (no timeout)**. When a timeout is configured and expires, System MUST cancel the run, mark the step failed/cancelled, kill the session, and broadcast closure. With no timeout, run termination is manual (via the attached session or a session kill).
 - **FR-018**: Graceful muster shutdown MUST NOT terminate running agent tmux sessions (they must survive for restart recovery); only muster's streaming/goroutine state drains.
 - **FR-019**: All M1 REST endpoints, the beads store layer, and existing WebSocket `bead.*` event types MUST remain behaviorally unchanged (additive only).
 - **FR-020**: System MUST treat `<muster:subbead …>` and `<muster:checkpoint>` markers as inert in M2 (no sub-bead spawning, no checkpointing); the documented handling (strip vs pass-through) MUST be consistent.
@@ -194,9 +196,10 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 - **Adapter**: an agent integration — identity, detection result (installed?/version/authenticated?), supported modes, an invoke operation yielding run events, a quota source, and a login flow. M2: only `claude`.
 - **Mode**: a named invocation profile for an adapter (e.g. `plan`, `agent`) mapping to a concrete agent invocation.
 - **Run / Step**: one agent invocation for a bead. M2 models a **single step at index 0** per bead. Tracks state (`running`/`done`/`failed`/`cancelled`), exit code, timestamps, and its worktree + session.
-- **Worktree**: a per-bead isolated checkout (`muster/<bead-id>` branch) of the configured source repo; the agent's working directory.
+- **Worktree**: a per-bead isolated checkout (`muster/<bead-id>` branch) of the bead's resolved source repo; the agent's working directory.
+- **Repo mapping**: startup config associating a bead ID prefix (e.g. `mp`) with a source git repo path; the M2 mechanism for per-bead repo resolution (precursor to M7).
 - **Session** (tmux): the live terminal hosting a CLI agent — name `muster/<bead-id>/<step-idx>/<loop-count>`, pane id, bead/step linkage, start time. Absent in fallback mode.
-- **Runlog**: append-only, ordered output for a bead/step, persisted and streamable, supporting catch-up.
+- **Runlog**: the ordered stream of a bead/step's pane output, broadcast as `runlog.line` events. In M2 it is **transient** (not durably stored by muster); catch-up is served from the live tmux pane via `capture-pane`. Durable runlog is M9.
 
 ### What Changes vs M1
 
@@ -205,7 +208,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 | `POST /{id}/dispatch` | stub: shells `bd`, moves the bead | launches the `claude` agent in an isolated worktree |
 | Agent execution | none | Claude Code via tmux (or direct-exec fallback) |
 | Process isolation | none | per-bead git worktree |
-| Output | none | append-only runlog + `runlog.line` WS stream |
+| Output | none | live `runlog.line` WS stream + `capture-pane` catch-up (no durable store; that's M9) |
 | Live interaction | none | `GET …/attach`, `POST …/send` |
 | WS events | `bead.*` | `bead.*` + `runlog.line` + `tmux.session.*` |
 | `orchestrator/status` | M1 fields | + `tmuxAvailable`, `tmuxVersion`, adapter detection, `runningCount` |
@@ -228,23 +231,24 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 - **SC-004**: Two beads dispatched concurrently run in two isolated worktrees; file changes from one are not visible in the other or in the main checkout.
 - **SC-005**: After muster is killed and restarted while an agent runs, the still-running agent is rediscovered and its streaming resumes within **5 seconds** of restart, with no loss of the agent process.
 - **SC-006**: With tmux uninstalled, a dispatched bead still runs to completion with runlog/WS streaming intact, and attach reports unavailable with a clear reason.
-- **SC-007**: On agent exit, the bead reaches `review` (exit 0) or a failed state (non-zero), verifiable via the M1 read endpoints, with the full output retrievable from the runlog.
-- **SC-008**: A dispatch with no configured source repo, or to an unavailable/uninstalled adapter, returns a clear actionable error and never leaves a half-started session or worktree.
+- **SC-007**: On agent exit, the bead reaches `review` (exit 0) or a failed state (non-zero), verifiable via the M1 read endpoints; the agent's output was observable in real time via `runlog.line` (and via `capture-pane` catch-up while the session lived).
+- **SC-008**: A dispatch whose bead prefix has no repo mapping, or to an unavailable/uninstalled/unauthenticated adapter, returns a clear actionable error and never leaves a half-started session or worktree.
 - **SC-009**: `go test -race ./...` passes — no data races in the new streaming/session/runlog paths.
 
 ---
 
 ## Assumptions
 
-- **Single source repo (M2 simplification)**: muster serves beads whose worktrees branch from one configured git repo (`--repo`/`MUSTER_REPO`). Per-bead repo routing across many repos is **M7**. *(High-impact assumption — confirm via `/speckit-clarify`.)*
-- **Single step per bead**: M2 models one implicit step (index 0). The plan→build→review chain, loop-back, and step pointer are **M4/M8**. *(High-impact assumption.)*
-- **Login is detect + attachable interactive session**: muster does not implement or proxy OAuth; it detects auth state and can host the vendor's own interactive login in an attachable session. *(Confirm — affects US5.)*
+- **Per-bead repo via prefix mapping**: each bead's source repo is resolved from its ID prefix through a startup-configured prefix→repo map; M2 supports more than one repo this way. The bead schema is unchanged (resolution is by prefix, not a new bead field). Full `/repos` CRUD + hot reload + probe is **M7**. *(Confirmed 2026-05-29.)*
+- **Single step per bead**: M2 models one implicit step (index 0). The plan→build→review chain, loop-back, and step pointer are **M4/M8**.
+- **Login is detect-only**: muster reports auth state but never performs, proxies, or stores credentials; the user logs in out-of-band via `claude login`. *(Confirmed 2026-05-29.)*
+- **No default run timeout**: runs are unbounded unless `--run-timeout` is set; manual termination only in the no-timeout case. *(Confirmed 2026-05-29.)*
 - **Claude Code CLI flags must be pinned by a spike** before coding (modes, login, non-interactive output), mirroring M1's Phase 7.5 verification discipline — the handoff's `claude --plan` is indicative, not verified.
 - **git worktrees only** in M2; `jj` support and the full `wt.Backend` interface (diff/file-list exposure) are **M3**.
 - **No quota/cost tracking** parsed from agent output in M2 (the `QuotaSource` exists on the interface but may be a no-op for `claude` until M4).
 - **No worktree GC** in M2 (stale worktrees accumulate; cleanup is M9).
 - **`tmux >= 3.2`** is the assumed minimum (per handoff §7.1); the exact floor is confirmed at the spike.
-- **muster owns no new persistent state of its own beyond the runlog**; the runlog's storage location and retention are defined in the plan (candidate: under the beads dir or a muster-local path), but muster still treats the beads DB as the source of truth for issue state.
+- **muster owns no new persistent state of its own**; the runlog is transient (streamed, with `capture-pane` catch-up), and the beads DB remains the source of truth for issue state. Worktrees on disk are managed via git, not a muster store.
 - The bead carries enough identity (id, title, description) from M1 to serve as the agent task with no schema change to the beads store.
 
 ## Technical Context
@@ -253,7 +257,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 
 - `internal/tmux` — tmux session manager (Detect/Spawn/Attach/Pipe/Send/Capture/Kill/List), with the direct-exec fallback.
 - `internal/adapter` — the `Adapter` interface + the `claude` implementation.
-- A **runlog** capture/persistence path feeding both storage and the WS hub.
+- A **runlog** capture/streaming path feeding the WS hub (no durable store in M2).
 - A **minimal worktree** helper (`git worktree add`/reuse) — a thin precursor to M3's `wt.Backend`.
 - New WS event types and the `/steps/{idx}/attach` + `/steps/{idx}/send` endpoints wired into the M1 router.
 - `cmd/muster/main.go` wiring: probe tmux/git/`claude` at startup; parse `--repo`; restart-recovery scan.
@@ -262,9 +266,9 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--repo` | `MUSTER_REPO` | (none) | Path to the source git repo worktrees branch from |
+| `--repo` (repeatable) | `MUSTER_REPO` | (none) | Prefix→repo mapping(s), e.g. `mp=/path/to/bracket-creator`; resolves each bead's source repo by ID prefix |
 | `--worktrees-dir` | `MUSTER_WORKTREES_DIR` | platform temp/muster | Root for per-bead worktrees |
-| `--run-timeout` | `MUSTER_RUN_TIMEOUT` | documented default | Per-run wall-clock cap |
+| `--run-timeout` | `MUSTER_RUN_TIMEOUT` | unbounded (no timeout) | Optional per-run wall-clock cap |
 
 ### Constitution / Gates Note
 
@@ -276,5 +280,6 @@ The repo's `.specify/memory/constitution.md` is still an unfilled template; M1's
 
 - **Builds on M1** (must be complete — it is): beads store, read/write surface, WS hub, `orchestrator/status`.
 - **Pulls forward from M3**: a minimal git-worktree layer (not the full `wt.Backend`).
-- **Explicitly excludes**: M4 dispatcher/scheduler/capacity/idempotency-beyond-one-bead, M5 multi-provider, M6 skills/constitution assembly, M8 sub-beads/policy/loops, M9 GC/observability depth.
+- **Pulls a sliver forward from M7**: a static, startup-configured prefix→repo mapping for per-bead repo resolution (NOT the hot-reloadable `/repos` CRUD, probe flow, or hydration — those remain M7).
+- **Explicitly excludes**: M4 dispatcher/scheduler/capacity/idempotency-beyond-one-bead, M5 multi-provider, M6 skills/constitution assembly, M8 sub-beads/policy/loops, M9 durable runlog + compaction + worktree GC + observability depth.
 - **Pre-implementation spike required**: pin the `claude` CLI surface (modes, login, output streaming) and the tmux version floor before `/speckit-plan` finalizes contracts — the single largest correctness risk in M2.
