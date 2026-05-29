@@ -14,10 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	api "github.com/gitrgoliveira/muster/internal/api"
-	"github.com/gitrgoliveira/muster/internal/api/health"
 	"github.com/gitrgoliveira/muster/internal/adapter"
 	adapterclaude "github.com/gitrgoliveira/muster/internal/adapter/claude"
+	api "github.com/gitrgoliveira/muster/internal/api"
+	"github.com/gitrgoliveira/muster/internal/api/health"
 	"github.com/gitrgoliveira/muster/internal/config"
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/orchestrator"
@@ -33,7 +33,7 @@ import (
 // repoFlags is a flag.Value that supports repeatable --repo flags.
 type repoFlags []string
 
-func (r *repoFlags) String() string  { return fmt.Sprintf("%v", *r) }
+func (r *repoFlags) String() string     { return fmt.Sprintf("%v", *r) }
 func (r *repoFlags) Set(v string) error { *r = append(*r, v); return nil }
 
 func main() {

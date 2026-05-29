@@ -33,11 +33,11 @@ const (
 	CodeCLITimeout     = "BD_CLI_TIMEOUT"
 
 	// M2 dispatch codes.
-	CodeRunAlreadyActive   = "RUN_ALREADY_ACTIVE"    // 409
-	CodeUnmappedPrefix     = "UNMAPPED_PREFIX"        // 422
-	CodeAdapterNotFound    = "ADAPTER_NOT_FOUND"      // 501
+	CodeRunAlreadyActive    = "RUN_ALREADY_ACTIVE"    // 409
+	CodeUnmappedPrefix      = "UNMAPPED_PREFIX"       // 422
+	CodeAdapterNotFound     = "ADAPTER_NOT_FOUND"     // 501
 	CodeAdapterNotInstalled = "ADAPTER_NOT_INSTALLED" // 501
-	CodeAdapterNotLoggedIn = "ADAPTER_NOT_LOGGED_IN"  // 409 (need to run `claude auth login`)
+	CodeAdapterNotLoggedIn  = "ADAPTER_NOT_LOGGED_IN" // 409 (need to run `claude auth login`)
 )
 
 // ServiceError wraps a validation or state error with a code understood by

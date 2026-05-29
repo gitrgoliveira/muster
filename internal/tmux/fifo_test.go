@@ -32,7 +32,7 @@ func TestMkfifo_CreatesPipeInTempDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkfifo: %v", err)
 	}
-	defer os.RemoveAll(filepath.Dir(path))
+	defer func() { _ = os.RemoveAll(filepath.Dir(path)) }()
 
 	fi, err := os.Stat(path)
 	if err != nil {

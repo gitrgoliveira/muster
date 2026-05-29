@@ -12,11 +12,11 @@ var ErrAttachUnavailable = errors.New("tmux attach unavailable")
 
 // Session describes a running (or recently dead) tmux session owned by muster.
 type Session struct {
-	Name      string    // "muster/<bead>/<step>/<loop>"
+	Name      string // "muster/<bead>/<step>/<loop>"
 	BeadID    string
 	StepIdx   int
 	Loop      int
-	Pane      string    // tmux pane id (e.g. "%3")
+	Pane      string // tmux pane id (e.g. "%3")
 	StartedAt time.Time
 }
 

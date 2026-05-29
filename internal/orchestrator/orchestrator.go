@@ -45,8 +45,8 @@ var ErrUnsupportedMode = errors.New("unsupported mode for adapter")
 // The registry is rebuilt on restart from tmux.List().
 type Run struct {
 	BeadID         string
-	StepIdx        int             // always 0 in M2
-	Loop           int             // always 0 in M2
+	StepIdx        int // always 0 in M2
+	Loop           int // always 0 in M2
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode
@@ -76,11 +76,11 @@ type Publisher func(frame ws.Frame)
 
 // Orchestrator manages agent run lifecycle.
 type Orchestrator struct {
-	mu              sync.RWMutex
-	runs            map[string]*Run // keyed by beadID
+	mu   sync.RWMutex
+	runs map[string]*Run // keyed by beadID
 
 	adapters        *adapter.Registry
-	transport       tmux.Manager    // may be a fallback transport
+	transport       tmux.Manager // may be a fallback transport
 	repoMap         RepoMap
 	worktreesDir    string
 	defaultPermMode core.PermissionMode

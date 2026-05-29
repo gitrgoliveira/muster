@@ -7,9 +7,9 @@ type HealthzResponse struct {
 
 // AdapterInfo describes a registered agent adapter's availability state.
 type AdapterInfo struct {
-	ID        string `json:"id"`
-	Version   string `json:"version,omitempty"`
-	LoggedIn  bool   `json:"loggedIn"`
+	ID       string `json:"id"`
+	Version  string `json:"version,omitempty"`
+	LoggedIn bool   `json:"loggedIn"`
 }
 
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.

@@ -14,9 +14,9 @@ const (
 	EventPong         EventType = "pong"
 
 	// M2 additions (additive; M1 events unchanged — FR-019).
-	EventRunlogLine   EventType = "runlog.line"          // agent pane output
-	EventTmuxOpened   EventType = "tmux.session.opened"  // session spawned
-	EventTmuxClosed   EventType = "tmux.session.closed"  // session ended
+	EventRunlogLine EventType = "runlog.line"         // agent pane output
+	EventTmuxOpened EventType = "tmux.session.opened" // session spawned
+	EventTmuxClosed EventType = "tmux.session.closed" // session ended
 )
 
 // Frame is the server-to-client event envelope. Each event type populates a

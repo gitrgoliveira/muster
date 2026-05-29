@@ -50,7 +50,7 @@ func (f *fakeTransport) Kill(name string) error  { f.killCalled = true; return n
 func (f *fakeTransport) Attach(name string) (string, error) {
 	return "tmux attach -t " + name, nil
 }
-func (f *fakeTransport) Send(name, keys string) error       { return nil }
+func (f *fakeTransport) Send(name, keys string) error                  { return nil }
 func (f *fakeTransport) Capture(name string, esc bool) (string, error) { return "", nil }
 func (f *fakeTransport) Pipe(name string) (io.ReadCloser, error) {
 	f.pipeCalled = true

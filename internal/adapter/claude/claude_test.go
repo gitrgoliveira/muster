@@ -199,19 +199,6 @@ func TestID_IsClaude(t *testing.T) {
 	}
 }
 
-// fakeBinDirWithScript creates a dir where 'claude' is replaced by given script content.
-func fakeBinDirWithScript(t *testing.T, script string) string {
-	t.Helper()
-	dir := t.TempDir()
-	dest := filepath.Join(dir, "claude")
-	if err := os.WriteFile(dest, []byte(script), 0755); err != nil {
-		t.Fatalf("write fake script: %v", err)
-	}
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
-	return dir
-}
-
 func TestDetect_VersionParsedFromOutput(t *testing.T) {
 	// Provide a custom version string
 	fakeBinDir(t)

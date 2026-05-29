@@ -16,9 +16,9 @@ var ErrNotSupported = errors.New("not supported")
 type QuotaSource int
 
 const (
-	QuotaNone      QuotaSource = iota // adapter does not surface quota
-	QuotaCLIOutput                    // quota available in CLI stdout (e.g. --output-format json)
-	QuotaAPIHeaders                   // quota available in HTTP response headers
+	QuotaNone       QuotaSource = iota // adapter does not surface quota
+	QuotaCLIOutput                     // quota available in CLI stdout (e.g. --output-format json)
+	QuotaAPIHeaders                    // quota available in HTTP response headers
 )
 
 // DetectResult holds adapter availability information gathered by Detect.
