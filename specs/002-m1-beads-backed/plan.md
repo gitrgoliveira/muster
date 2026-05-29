@@ -54,8 +54,8 @@ tmpdir `.beads/` populated via `bd init` (vendored binary or shell-out). Coverag
 
 **Constraints**:
 - Single binary, no daemons spawned by muster (server-mode Dolt is managed by `bd dolt start`, not muster)
-- Multi-repo aggregation deferred to M2 (one `.beads/` directory per muster instance in M1)
-- No write path bypassing `bd` — direct Dolt writes deferred to M2+
+- Multi-repo aggregation deferred to **M7 — Repos & routing** (§20), not M2 (one `.beads/` directory per muster instance in M1)
+- No write path bypassing `bd` — direct Dolt writes are not on the v1 roadmap (§20); `bd` is the sole writer for v1
 
 **Scale/Scope**: 1 beads directory per instance, up to ~5,000 issues, <10 concurrent WS clients.
 
@@ -237,7 +237,7 @@ Coverage gates (CI):
 |---|---|---|
 | Two backends (JSONL + Dolt SQL) | spec FR-003, FR-004 — both `dolt_mode` values must work | JSONL-only rejected: blocks server-mode users. SQL-only rejected: requires Dolt server even for local embedded databases |
 | Retain `internal/store/memstore.go` | Keeps M0 service tests trivial and provides a `--store=memory` escape hatch | Deleting it would force every service test to spin up Dolt; net negative for iteration speed |
-| Shell-out to `bd` for writes | Avoids re-implementing Dolt write semantics & beads' invariants inside muster in M1 | Direct Dolt writes from muster: doable but doubles M1 scope; deferred to M2 (acknowledged in spec assumptions) |
+| Shell-out to `bd` for writes | Avoids re-implementing Dolt write semantics & beads' invariants inside muster in M1 | Direct Dolt writes from muster: doable but doubles M1 scope; not on the v1 roadmap — `bd` is the sole writer for v1 (acknowledged in spec assumptions) |
 
 ---
 

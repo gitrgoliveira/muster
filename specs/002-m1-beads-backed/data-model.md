@@ -142,7 +142,7 @@ M0 handlers return `core.Bead` shapes; M1 keeps the same DTOs by mapping at the 
 var statusToColumn = map[string]core.Column{
     "open":        core.ColBacklog,
     "in_progress": core.ColRunning,
-    "blocked":     core.ColBacklog,   // M1 simplification; M2 may add a Blocked column
+    "blocked":     core.ColBacklog,   // M1 simplification; a later UI milestone (not M2) may add a Blocked column
     "closed":      core.ColDone,
     "deferred":    core.ColBacklog,
     "superseded":  core.ColDone,
