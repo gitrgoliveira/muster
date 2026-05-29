@@ -138,7 +138,7 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 - [x] T042 [P] Treat `<muster:subbead …>`/`<muster:checkpoint>` markers as inert with consistent handling (FR-020), in `internal/orchestrator/runlog.go` (+ test)
 - [x] T043 [P] Verify graceful shutdown does NOT kill agent tmux sessions (FR-018), in `cmd/muster/main.go` (+ test)
 - [x] T044 [P] Update [quickstart.md](quickstart.md) + README + `make help`/startup banner to mention `--repo`, `--worktrees-dir`, tmux dependency
-- [ ] T045 [P] Add `bd remember` note if any new cross-session gotcha emerges during implementation
+- [x] T045 [P] Add `bd remember` note — recorded cross-session gotchas: fake script permissions, FR-018 context isolation, fifo coverage gap, e2e build tag
 - [x] T046 Confirm per-package coverage gates (plan targets) and `go test -race ./...` clean
 - [x] T047 Validate the [quickstart.md](quickstart.md) end-to-end walkthrough — automated path: `make test-e2e` (real claude + real tmux; gated by `//go:build e2e`)
 
