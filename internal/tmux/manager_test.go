@@ -291,6 +291,74 @@ func TestRealTmuxManager_Send(t *testing.T) {
 	}
 }
 
+// TestRealTmuxManager_Capture verifies that Capture calls capture-pane with correct args.
+func TestRealTmuxManager_Capture(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	recordFile := setupFakeTmux(t)
+
+	// Provide canned output for the capture-pane call.
+	outputFile := filepath.Join(t.TempDir(), "capture_output")
+	if err := os.WriteFile(outputFile, []byte("captured content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", outputFile)
+
+	m := NewRealManager("")
+	out, err := m.Capture("muster/mp-abc/0/0", false)
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if out == "" {
+		t.Error("Capture should return output")
+	}
+
+	lines := readRecordFile(t, recordFile)
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l, "capture-pane") && strings.Contains(l, "muster/mp-abc/0/0") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected capture-pane in records, got: %v", lines)
+	}
+}
+
+// TestRealTmuxManager_CaptureWithEscapes verifies -e flag is passed with withEscapes=true.
+func TestRealTmuxManager_CaptureWithEscapes(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	recordFile := setupFakeTmux(t)
+
+	outputFile := filepath.Join(t.TempDir(), "capture_output")
+	if err := os.WriteFile(outputFile, []byte("content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", outputFile)
+
+	m := NewRealManager("")
+	_, err := m.Capture("muster/mp-abc/0/0", true) // withEscapes=true
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+
+	lines := readRecordFile(t, recordFile)
+	found := false
+	for _, l := range lines {
+		if strings.Contains(l, "capture-pane") && strings.Contains(l, "-e") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected capture-pane -e in records, got: %v", lines)
+	}
+}
+
 // skipIfNoRealTmux skips the test if the real tmux binary is not available.
 // Used for integration-style tests that require real tmux.
 func skipIfNoRealTmux(t *testing.T) {

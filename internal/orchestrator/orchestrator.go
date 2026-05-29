@@ -289,6 +289,21 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	o.mu.Unlock()
 
 	// Start pipe + exit watcher goroutine.
+	// Pipe the pane output to the WS hub as runlog.line frames.
+	pipeReader, pipeErr := o.transport.Pipe(sessionName)
+	if pipeErr != nil {
+		// Pipe failure is non-fatal (output won't stream, but the run continues).
+		pipeReader = nil
+	}
+	if pipeReader != nil {
+		streamer := &runlogStreamer{
+			beadID:  req.BeadID,
+			stepIdx: 0,
+			publish: o.publish,
+		}
+		go streamer.stream(pipeReader)
+	}
+
 	go o.watchRun(runCtx, run)
 
 	// Emit tmux.session.opened.
