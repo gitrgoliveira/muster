@@ -22,7 +22,7 @@ Correct mapping:
 - **"Agent mode"** → there is **no `--plan`/agent toggle**. The default interactive session *is* the agent. Autonomy is tuned via `--permission-mode` (`default` / `acceptEdits` / `dontAsk` / `bypassPermissions`). `--agent <name>` selects a *named* sub-agent — a different concept, not "agent mode".
 - There is **no `--no-streaming`**. Output mode is controlled by `-p/--print` + `--output-format {text|json|stream-json}`.
 
-**Action**: the adapter `Modes()` table for `claude` must map `plan → --permission-mode plan` and `agent → --permission-mode <autonomy>` (decide the default autonomy in plan). Drop all references to `--plan`/`--no-streaming`.
+**Action**: the adapter `Modes()` table for `claude` must map `plan → --permission-mode plan` and `agent → --permission-mode <autonomy>`, where **autonomy is supplied by the user per dispatch** (FR-021), not a muster default. Drop all references to `--plan`/`--no-streaming`.
 
 ## Auth detection — clean, non-interactive, structured
 
