@@ -86,3 +86,31 @@ The handoff §7.1 wrapper (`sh -c 'cat prompt | <agent>'`) does **not** capture 
 - Added runlog ANSI-handling and default-socket notes; added the exit-code-capture mechanism as a plan input.
 - Confirmed tmux ≥ 3.2 floor satisfied (3.6b) and all transport primitives feasible.
 - Reaffirmed muster-owns-transport (don't use `claude -w/--tmux`).
+
+---
+
+# Phase 0 — Design Decisions (resolving remaining unknowns)
+
+## D1 — Runlog transport format
+
+**Decision**: Stream **raw terminal bytes** from tmux `pipe-pane` as `runlog.line` frames; the UI renders them with a terminal emulator (xterm.js). Catch-up replays the pane via `capture-pane -ep -S -` (with escapes). No server-side ANSI stripping.
+
+**Rationale**: A live `claude` session is a full-screen, redrawing TUI. ANSI escape sequences encode cursor moves, clears, and progress redraws — *stripping* them produces garbage (overwritten lines collapse, progress bars become noise). The conventional, proven pattern for "show a live terminal in a browser" (ttyd, gotty, VS Code's integrated terminal, Wetty) is to ship the raw byte stream to a client-side terminal emulator. This single decision also preserves the three things the handoff (§7) wanted from the tmux transport — the TTY-aware pretty TUI, live `attach`, and `send`-keys intervention — which a stripped/structured stream would sacrifice.
+
+**Consequence**: This **supersedes the spec's original FR-009 wording** ("MUST strip/normalize ANSI") — FR-009 is updated to "stream raw; UI renders in a terminal emulator." The `runlog.line` payload is an opaque byte chunk + sequence number, not a clean text line.
+
+**Alternatives considered**:
+- *Server-side ANSI strip* → loses TUI fidelity; unusable for a redrawing agent.
+- *Run `claude -p --output-format stream-json` in the pane* → yields clean, structured, newline-delimited events (and free `total_cost_usd`/`usage` for quota). **Rejected for M2** because it is non-interactive: no pretty TUI, and `send`-keys can't drive it, killing US3's intervention value. **Recorded as the M4 (quota) / M5 (opencode SDK) path** — those milestones can add a structured transport alongside the terminal one.
+
+## D2 — Exit-code capture
+
+**Decision**: In **tmux mode**, set `remain-on-exit on` on the window; detect pane death (poll `list-panes -F '#{pane_dead} #{pane_dead_status}'`, or a `pane-died` hook), read `#{pane_dead_status}` as the exit code, emit `tmux.session.closed` + step done/failed, then `kill-session`. In **fallback mode**, read the code directly from `cmd.Wait()`.
+
+**Rationale**: The spike confirmed a tmux session running the agent directly **vanishes on exit without surfacing the exit code** — `list-sessions` simply stops listing it. `remain-on-exit` + `#{pane_dead_status}` is the tmux-native way to recover the code with no temp files and no race. Fallback has the child process handle, so `Wait()` is exact.
+
+**Alternatives considered**:
+- *`$?`-to-file wrapper* (`sh -c '… ; echo $? > .muster-exit'`) → works but introduces a file to write/read/clean and a read-after-death race; also pollutes the worktree.
+- *Infer from session disappearance* → gives done/not-done but loses the actual non-zero code (can't distinguish failure modes for FR-013).
+
+**Output**: all NEEDS CLARIFICATION resolved. Remaining choices in the plan are implementation detail, not design forks.
