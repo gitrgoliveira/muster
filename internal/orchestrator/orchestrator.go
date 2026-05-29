@@ -36,6 +36,11 @@ var ErrAdapterNotInstalled = errors.New("adapter not installed")
 // ErrAdapterNotLoggedIn is returned when the adapter is not logged in.
 var ErrAdapterNotLoggedIn = errors.New("adapter not logged in; run: claude auth login")
 
+// ErrUnsupportedMode is returned when the requested mode is not in the
+// adapter's Modes() table. This is a client error (4xx), not a server error:
+// it is rejected before any side effects (no worktree/session is created).
+var ErrUnsupportedMode = errors.New("unsupported mode for adapter")
+
 // Run holds the in-memory state of an active (or recently completed) agent run.
 // The registry is rebuilt on restart from tmux.List().
 type Run struct {
@@ -81,6 +86,14 @@ type Orchestrator struct {
 	defaultPermMode core.PermissionMode
 	publish         Publisher
 	runTimeout      time.Duration // 0 = no timeout
+
+	// onComplete is invoked (nil-guarded) when a run finishes — on normal exit
+	// (success = exit 0) and on the timeout/cancel path (exitCode -1, success
+	// false). It runs on the watcher goroutine, so it must be non-blocking-safe.
+	// M2 limitation: review is NOT a distinct persisted status (it folds to
+	// in_progress per the beads mapper), so completion is recorded via a bead
+	// note + a bead.updated WS frame rather than a column move.
+	onComplete func(beadID string, exitCode int, success bool)
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -106,6 +119,11 @@ type Config struct {
 	DefaultPermMode core.PermissionMode
 	Publish         Publisher
 	RunTimeout      time.Duration // 0 = no timeout (FR-017: opt-in only)
+
+	// OnComplete, if set, is called when a run finishes (success = exit 0).
+	// Wired in main.go to record the agent-run outcome on the bead (FR-013):
+	// a note + bead.updated frame. It runs on the watcher goroutine.
+	OnComplete func(beadID string, exitCode int, success bool)
 }
 
 // New creates a new Orchestrator.
@@ -119,6 +137,7 @@ func New(cfg Config) *Orchestrator {
 		defaultPermMode: cfg.DefaultPermMode,
 		publish:         cfg.Publish,
 		runTimeout:      cfg.RunTimeout,
+		onComplete:      cfg.OnComplete,
 	}
 }
 
@@ -188,6 +207,16 @@ func (e *PermModeError) Error() string {
 // promptFileName is the filename of the prompt file within the worktree.
 const promptFileName = ".muster-prompt-0.txt"
 
+// modeSupported reports whether the adapter's Modes() table contains mode.
+func modeSupported(adp adapter.Adapter, mode core.Mode) bool {
+	for _, m := range adp.Modes() {
+		if m.ID == mode {
+			return true
+		}
+	}
+	return false
+}
+
 // isFallbackTransport returns true if the transport is a FallbackManager.
 // Used to emit a warning when an interactive permission mode is used without tmux.
 func isFallbackTransport(t tmux.Manager) bool {
@@ -228,13 +257,40 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 			"bead", req.BeadID, "permissionMode", pm)
 	}
 
-	// Check for duplicate run.
+	// Check for duplicate run and immediately insert a reservation under the
+	// same lock to close the TOCTOU window. Without the reservation, two
+	// concurrent dispatches for the same bead could both pass the check, both
+	// do the slow Detect/Ensure/Invoke/Spawn work, and both spawn a session —
+	// leaking a goroutine and orphaning a tmux session. The reservation marks
+	// the bead StepActive up-front so the second caller gets ErrRunAlreadyActive.
 	o.mu.Lock()
 	if existing, ok := o.runs[req.BeadID]; ok && existing.State == core.StepActive {
 		o.mu.Unlock()
 		return nil, ErrRunAlreadyActive
 	}
+	reserved := &Run{
+		BeadID:    req.BeadID,
+		State:     core.StepActive,
+		StartedAt: time.Now(),
+	}
+	o.registerRun(reserved)
 	o.mu.Unlock()
+
+	// On any early-return error, release the reservation (only if it's still
+	// ours — a later success replaces the pointer's fields in place, not the
+	// pointer itself, so identity holds; but a subsequent dispatch could have
+	// recreated it after we failed, so guard on pointer identity).
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		o.mu.Lock()
+		if cur, ok := o.runs[req.BeadID]; ok && cur == reserved {
+			delete(o.runs, req.BeadID)
+		}
+		o.mu.Unlock()
+	}()
 
 	// Resolve adapter.
 	if o.adapters == nil {
@@ -257,10 +313,24 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		return nil, ErrAdapterNotLoggedIn
 	}
 
+	// Reject unsupported modes BEFORE any side effects (worktree creation,
+	// prompt write, Invoke). Otherwise mode=build/review/apply/yolo passes core
+	// validation, creates a worktree, then fails deep in Invoke → 500.
+	if !modeSupported(adp, req.Mode) {
+		return nil, ErrUnsupportedMode
+	}
+
 	// Resolve repo.
 	repoPath, err := o.repoMap.Resolve(req.BeadID)
 	if err != nil {
 		return nil, err // ErrUnmappedPrefix
+	}
+
+	// Security audit: a fully-autonomous run (bypassPermissions) acts without
+	// any confirmation prompts. Record it so the operator has a trail.
+	if pm == core.PermBypassPermissions {
+		slog.Warn("audit: dispatching with bypassPermissions (fully autonomous)",
+			"bead", req.BeadID, "repo", repoPath)
 	}
 
 	// Ensure worktree.
@@ -295,24 +365,24 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		return nil, fmt.Errorf("tmux spawn: %w", err)
 	}
 
-	// Register run.
+	// Fill the reserved run's fields in place (keeping the same pointer the
+	// reservation registered, so the TOCTOU guard's identity check holds).
 	runCtx, runCancel := context.WithCancel(context.Background())
-	run := &Run{
-		BeadID:         req.BeadID,
-		StepIdx:        0,
-		Loop:           0,
-		Agent:          req.Agent,
-		Mode:           req.Mode,
-		PermissionMode: pm,
-		Worktree:       wt.Path,
-		Session:        sess.Name,
-		State:          core.StepActive,
-		StartedAt:      time.Now(),
-		cancel:         runCancel,
-	}
+	run := reserved
 	o.mu.Lock()
-	o.registerRun(run)
+	run.StepIdx = 0
+	run.Loop = 0
+	run.Agent = req.Agent
+	run.Mode = req.Mode
+	run.PermissionMode = pm
+	run.Worktree = wt.Path
+	run.Session = sess.Name
+	run.State = core.StepActive
+	run.cancel = runCancel
 	o.mu.Unlock()
+
+	// Mark success so the deferred reservation-cleanup is a no-op.
+	success = true
 
 	// Start pipe + exit watcher goroutine.
 	// Pipe the pane output to the WS hub as runlog.line frames.
@@ -395,6 +465,12 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 					ExitCode: &ec,
 				})
 			}
+
+			// Record completion on the bead (FR-013). Timeout/cancel is a
+			// failure: exitCode -1, success false.
+			if o.onComplete != nil {
+				o.onComplete(run.BeadID, -1, false)
+			}
 			return
 		case <-time.After(pollInterval):
 		}
@@ -438,6 +514,14 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 			Session:  run.Session,
 			ExitCode: &ec,
 		})
+	}
+
+	// Record completion on the bead (FR-013 / SC-007). M2 limitation: review is
+	// not a distinct persisted status (it folds to in_progress per the beads
+	// mapper), so the writeback records a note + bead.updated rather than moving
+	// the bead to a review column.
+	if o.onComplete != nil {
+		o.onComplete(run.BeadID, exitCode, state == core.StepDone)
 	}
 }
 

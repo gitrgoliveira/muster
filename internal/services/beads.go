@@ -195,19 +195,17 @@ func wrapOrchestratorError(err error) *ServiceError {
 		return &ServiceError{Code: CodeAdapterNotFound, Message: msg}
 	case msg == "adapter not installed":
 		return &ServiceError{Code: CodeAdapterNotInstalled, Message: msg}
-	case containsStr(msg, "not logged in") || containsStr(msg, "auth login"):
+	case strings.Contains(msg, "not logged in") || strings.Contains(msg, "auth login"):
 		return &ServiceError{Code: CodeAdapterNotLoggedIn, Message: msg}
 	case msg == "permissionMode is required (no default configured)":
 		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
-	case containsStr(msg, "invalid permissionMode"):
+	case strings.Contains(msg, "invalid permissionMode"):
+		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
+	case strings.Contains(msg, "unsupported mode"):
 		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
 	default:
 		return &ServiceError{Code: CodeInternal, Message: msg}
 	}
-}
-
-func containsStr(s, sub string) bool {
-	return strings.Contains(s, sub)
 }
 
 // wrapCLIError maps *bdshell.CLIError exit codes to service error codes.

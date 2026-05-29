@@ -227,10 +227,17 @@ func (m *RealManager) DeadStatus(name string) (code int, dead bool, err error) {
 	}
 	dead = deadVal == 1
 
-	if dead && len(parts) >= 2 && parts[1] != "" {
-		code, err = strconv.Atoi(parts[1])
-		if err != nil {
-			return 0, true, fmt.Errorf("tmux DeadStatus: parse pane_dead_status %q: %w", parts[1], err)
+	if dead {
+		if len(parts) >= 2 && parts[1] != "" {
+			code, err = strconv.Atoi(parts[1])
+			if err != nil {
+				return 0, true, fmt.Errorf("tmux DeadStatus: parse pane_dead_status %q: %w", parts[1], err)
+			}
+		} else {
+			// Pane is dead but tmux reports no numeric exit status — this happens
+			// when the process was killed by a signal (no $? code). Treat as a
+			// failure (non-zero) so watchRun/finishRun do not mark it as success.
+			code = -1
 		}
 	}
 

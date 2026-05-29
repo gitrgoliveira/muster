@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -195,6 +196,35 @@ func main() {
 	}
 	detectCancel()
 
+	// onComplete records an agent run's outcome on its bead when the run exits
+	// (FR-013/SC-007). M2 limitation: beads has no distinct "review" status
+	// (review folds to in_progress per the mapper), so we cannot move the bead
+	// to a review column. Instead we append a note describing the outcome and
+	// broadcast bead.updated so the UI reflects the change. Runs on the
+	// orchestrator watcher goroutine — keep it non-blocking-safe.
+	doltDB := cfg.DoltDatabase
+	onComplete := func(beadID string, exitCode int, runSucceeded bool) {
+		if cli == nil {
+			slog.Warn("onComplete: bd CLI unavailable; cannot record run outcome", "bead", beadID)
+			return
+		}
+		var note string
+		if runSucceeded {
+			note = "muster: agent run completed (exit 0) — awaiting review"
+		} else {
+			note = fmt.Sprintf("muster: agent run failed (exit %d)", exitCode)
+		}
+		noteCtx, noteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer noteCancel()
+		iss, err := cli.AppendNote(noteCtx, beadID, note)
+		if err != nil {
+			slog.Warn("onComplete: failed to record run outcome on bead", "bead", beadID, "err", err)
+			return
+		}
+		bead := services.IssueToBead(&iss, doltDB)
+		hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, Bead: &bead})
+	}
+
 	// Build orchestrator.
 	orcMap := make(orchestrator.RepoMap, len(repoMap))
 	maps.Copy(orcMap, repoMap)
@@ -206,6 +236,7 @@ func main() {
 		DefaultPermMode: defaultPermMode,
 		Publish:         func(f ws.Frame) { hub.Broadcast(f) },
 		RunTimeout:      *runTimeoutFlag,
+		OnComplete:      onComplete,
 	})
 
 	var svcCLI services.CLIRunner

@@ -2,11 +2,19 @@ package orchestrator
 
 import (
 	"context"
+	"log/slog"
+	"regexp"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/tmux"
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
+
+// beadIDPattern validates a bead ID parsed from a tmux session name before we
+// trust it. Session names are user-controllable (the user can create arbitrary
+// `muster/*` tmux sessions), so a malformed/hostile name must not be registered
+// as a run. Format: lowercase prefix, hyphen, alphanumeric suffix (e.g. mp-abc).
+var beadIDPattern = regexp.MustCompile(`^[a-z]+-[0-9a-z]+$`)
 
 // RecoverSessions scans existing muster tmux sessions and re-attaches streaming
 // for those that correspond to active runs. Sessions with no matching bead are
@@ -34,6 +42,15 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	beadID := sess.BeadID
 	sessionName := sess.Name
 
+	// Security: the bead ID comes from a tmux session name, which is
+	// user-controllable. Reject anything that doesn't look like a real bead ID
+	// and kill the stray session rather than registering it as a run.
+	if !beadIDPattern.MatchString(beadID) {
+		slog.Warn("recovery: killing session with invalid bead ID", "session", sessionName, "beadID", beadID)
+		_ = o.transport.Kill(sessionName)
+		return
+	}
+
 	// Check if we already have a run for this bead (e.g., dispatched before recovery).
 	o.mu.RLock()
 	existing := o.runs[beadID]
@@ -45,7 +62,7 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	}
 
 	// Check if the pane is already dead.
-	code, dead, err := o.transport.DeadStatus(sessionName)
+	_, dead, err := o.transport.DeadStatus(sessionName)
 	if err != nil {
 		// Session may have already been cleaned up. Skip.
 		return
@@ -98,6 +115,4 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 			Session: sessionName,
 		})
 	}
-
-	_ = code // used to check dead above
 }

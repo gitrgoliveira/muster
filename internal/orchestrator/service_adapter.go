@@ -7,20 +7,6 @@ import (
 	"github.com/gitrgoliveira/muster/internal/services"
 )
 
-// DispatchForService implements the services.OrchestratorDispatcher interface.
-// This allows *Orchestrator to be wired into services.BeadService without
-// creating an import cycle (services does not import orchestrator).
-func (o *Orchestrator) DispatchForService(ctx context.Context, req services.OrchestratorDispatchRequest) (*core.Bead, error) {
-	return o.Dispatch(ctx, DispatchRequest{
-		BeadID:         req.BeadID,
-		BeadTitle:      req.BeadTitle,
-		BeadDesc:       req.BeadDesc,
-		Agent:          req.Agent,
-		Mode:           req.Mode,
-		PermissionMode: req.PermissionMode,
-	})
-}
-
 // AsServiceDispatcher returns a services.OrchestratorDispatcher that delegates
 // to this Orchestrator. Use this when wiring into services.BeadService.
 func (o *Orchestrator) AsServiceDispatcher() services.OrchestratorDispatcher {
@@ -32,8 +18,17 @@ type serviceDispatcherAdapter struct {
 	o *Orchestrator
 }
 
+// Dispatch implements services.OrchestratorDispatcher by translating the
+// import-cycle-avoiding request type into the orchestrator's own DispatchRequest.
 func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (*core.Bead, error) {
-	return a.o.DispatchForService(ctx, req)
+	return a.o.Dispatch(ctx, DispatchRequest{
+		BeadID:         req.BeadID,
+		BeadTitle:      req.BeadTitle,
+		BeadDesc:       req.BeadDesc,
+		Agent:          req.Agent,
+		Mode:           req.Mode,
+		PermissionMode: req.PermissionMode,
+	})
 }
 
 // AsSessionAttacher returns a services.SessionAttacher backed by this Orchestrator.

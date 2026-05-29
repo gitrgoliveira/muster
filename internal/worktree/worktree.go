@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,7 +89,7 @@ func validateGitRepo(path string) error {
 	cmd.Dir = path
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("worktree: not a git repo at %q: %w\n%s", path, errors.New("not a git repo"), out)
+		return fmt.Errorf("worktree: not a git repo at %q: %w\n%s", path, err, out)
 	}
 	return nil
 }

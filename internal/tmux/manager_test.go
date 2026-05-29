@@ -2,7 +2,6 @@ package tmux
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -215,6 +214,34 @@ func TestRealTmuxManager_DeadStatus_NotDead(t *testing.T) {
 	}
 }
 
+func TestRealTmuxManager_DeadStatus_SignalKilledNoStatus(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	setupFakeTmux(t)
+
+	// "1 " means pane_dead=1 but pane_dead_status is empty/missing (signal death,
+	// no numeric exit code). DeadStatus must report a non-zero code so the run is
+	// treated as a failure rather than a success.
+	outputFile := filepath.Join(t.TempDir(), "dead_no_status")
+	if err := os.WriteFile(outputFile, []byte("1 \n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", outputFile)
+
+	m := NewRealManager("")
+	code, dead, err := m.DeadStatus("muster/mp-abc/0/0")
+	if err != nil {
+		t.Fatalf("DeadStatus: %v", err)
+	}
+	if !dead {
+		t.Error("dead want true")
+	}
+	if code == 0 {
+		t.Errorf("code want non-zero (signal death) got %d", code)
+	}
+}
+
 func TestRealTmuxManager_List(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("shell-script fake tmux requires unix")
@@ -356,14 +383,5 @@ func TestRealTmuxManager_CaptureWithEscapes(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected capture-pane -e in records, got: %v", lines)
-	}
-}
-
-// skipIfNoRealTmux skips the test if the real tmux binary is not available.
-// Used for integration-style tests that require real tmux.
-func skipIfNoRealTmux(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
 	}
 }

@@ -104,6 +104,43 @@ func TestRecoverSessions_DeadSessionKilled(t *testing.T) {
 	}
 }
 
+func TestRecoverSessions_InvalidBeadIDKilled(t *testing.T) {
+	// A session name parses to a bead ID that doesn't match the expected
+	// pattern. Recovery must kill it and must NOT register a run.
+	transport := &controlledTransport{
+		fakeTransport: fakeTransport{
+			deadDead: false, // live, so only the validation guard can reject it
+			listReturns: []tmux.Session{
+				{
+					Name:    "muster/bad..id/0/0",
+					BeadID:  "bad..id",
+					StepIdx: 0,
+					Loop:    0,
+				},
+			},
+		},
+	}
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    transport,
+		RepoMap:      orchestrator.RepoMap{},
+		WorktreesDir: t.TempDir(),
+	})
+
+	o.RecoverSessions(context.Background())
+
+	if run := o.GetRun("bad..id"); run != nil {
+		t.Error("session with invalid bead ID should not register a run")
+	}
+	if !transport.killCalled {
+		t.Error("Kill should have been called for the invalid-bead-ID session")
+	}
+	if count := o.RunCount(); count != 0 {
+		t.Errorf("RunCount want 0 got %d", count)
+	}
+}
+
 func TestRecoverSessions_EmptyList(t *testing.T) {
 	transport := &controlledTransport{
 		fakeTransport: fakeTransport{

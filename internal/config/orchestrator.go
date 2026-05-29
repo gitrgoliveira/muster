@@ -6,35 +6,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
-
-	"github.com/gitrgoliveira/muster/internal/core"
 )
 
 // RepoMap maps bead-ID prefixes (e.g. "mp") to absolute repo paths.
 // Populated from repeatable --repo prefix=path flags and MUSTER_REPO env.
 type RepoMap map[string]string
-
-// OrchestratorConfig carries M2-specific orchestrator configuration.
-type OrchestratorConfig struct {
-	// RepoMap maps ID-prefixes to repo paths. Populated from --repo flags.
-	RepoMap RepoMap
-
-	// WorktreesDir is where per-bead worktrees are created.
-	// Defaults to a platform-appropriate temp path.
-	WorktreesDir string
-
-	// RunTimeout is the optional per-run timeout (0 = no timeout).
-	RunTimeout time.Duration
-
-	// DefaultPermissionMode is the fallback when the dispatch request omits
-	// permissionMode. Empty string means "no default" → dispatch fails if
-	// request also omits it (FR-021: muster never silently defaults autonomy).
-	DefaultPermissionMode core.PermissionMode
-
-	// ClaudeBin overrides the claude binary path (default: find on PATH).
-	ClaudeBin string
-}
 
 // ParseRepoFlag parses a single "prefix=path" string into the RepoMap.
 // Returns an error if the format is invalid.
