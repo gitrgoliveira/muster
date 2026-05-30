@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
@@ -54,6 +55,17 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusGatewayTimeout, render.CodeGatewayTimeout, se.Message)
 	case services.CodeInternal:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
+	// M2 dispatch error codes.
+	case services.CodeRunAlreadyActive:
+		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
+	case services.CodeUnmappedPrefix:
+		render.WriteError(w, r, http.StatusUnprocessableEntity, se.Code, se.Message)
+	case services.CodeAdapterNotFound:
+		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
+	case services.CodeAdapterNotInstalled:
+		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
+	case services.CodeAdapterNotLoggedIn:
+		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
 	default:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	}
@@ -228,6 +240,7 @@ func (h *Handlers) Move(w http.ResponseWriter, r *http.Request) {
 }
 
 // Dispatch handles POST /beads/{id}/dispatch.
+// On success returns 202 Accepted with the bead in running state (FR-002).
 func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !validateID(w, r, id) {
@@ -240,8 +253,9 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input := services.DispatchInput{
-		Agent: req.Agent,
-		Mode:  req.Mode,
+		Agent:          req.Agent,
+		Mode:           req.Mode,
+		PermissionMode: req.PermissionMode,
 	}
 
 	bead, err := h.svc.Dispatch(r.Context(), id, input)
@@ -249,7 +263,75 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	render.WriteJSON(w, http.StatusOK, bead)
+	// 202 Accepted — run has been launched asynchronously.
+	render.WriteJSON(w, http.StatusAccepted, bead)
+}
+
+// Attach handles GET /beads/{id}/steps/{idx}/attach.
+// Returns the tmux attach command for the live session (US3).
+func (h *Handlers) Attach(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+	idxStr := chi.URLParam(r, "idx")
+
+	// Parse step index.
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil || idx < 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return
+	}
+
+	// M2: only idx=0 is valid.
+	if idx != 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return
+	}
+
+	resp, err := h.svc.GetAttach(r.Context(), id, idx)
+	if mapServiceError(w, r, err) {
+		return
+	}
+	render.WriteJSON(w, http.StatusOK, resp)
+}
+
+// Send handles POST /beads/{id}/steps/{idx}/send.
+// Forwards keystrokes to the live tmux pane (US3).
+func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+	idxStr := chi.URLParam(r, "idx")
+
+	// Parse step index.
+	idx, parseErr := strconv.Atoi(idxStr)
+	if parseErr != nil || idx < 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return
+	}
+
+	// M2: only idx=0 is valid.
+	if idx != 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return
+	}
+
+	var req SendRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if err := h.svc.SendKeys(r.Context(), id, idx, req.Keys); mapServiceError(w, r, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SendRequest is the body for POST /beads/{id}/steps/{idx}/send.
+type SendRequest struct {
+	Keys string `json:"keys"`
 }
 
 // Comment handles POST /beads/{id}/comments.

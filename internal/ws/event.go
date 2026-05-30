@@ -12,6 +12,11 @@ const (
 	EventBeadDeleted  EventType = "bead.deleted"
 	EventCommentAdded EventType = "comment.added"
 	EventPong         EventType = "pong"
+
+	// M2 additions (additive; M1 events unchanged — FR-019).
+	EventRunlogLine EventType = "runlog.line"         // agent pane output
+	EventTmuxOpened EventType = "tmux.session.opened" // session spawned
+	EventTmuxClosed EventType = "tmux.session.closed" // session ended
 )
 
 // Frame is the server-to-client event envelope. Each event type populates a
@@ -41,6 +46,16 @@ type Frame struct {
 
 	// pong
 	At string `json:"at,omitempty"`
+
+	// M2: runlog.line — agent pane output (raw bytes; ANSI preserved)
+	BeadID  string `json:"beadID,omitempty"`
+	StepIdx int    `json:"stepIdx,omitempty"`
+	Seq     uint64 `json:"seq,omitempty"`
+	Data    string `json:"data,omitempty"` // raw pane bytes (UTF-8 best-effort)
+
+	// M2: tmux.session.opened / tmux.session.closed
+	Session  string `json:"session,omitempty"`
+	ExitCode *int   `json:"exitCode,omitempty"` // on closed; nil on opened
 }
 
 // ClientFrame is the only accepted client-to-server frame shape.

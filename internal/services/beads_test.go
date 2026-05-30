@@ -34,6 +34,32 @@ func TestWrapCLIError(t *testing.T) {
 	}
 }
 
+func TestWrapOrchestratorError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"already active → 409", errors.New("run already active for bead"), CodeRunAlreadyActive},
+		{"unmapped prefix → 422", errors.New("bead prefix has no repo mapping"), CodeUnmappedPrefix},
+		{"not registered → 501", errors.New("adapter not registered"), CodeAdapterNotFound},
+		{"not installed → 501", errors.New("adapter not installed"), CodeAdapterNotInstalled},
+		{"not logged in → 409", errors.New("adapter not logged in; run: claude auth login"), CodeAdapterNotLoggedIn},
+		{"no perm mode → 4xx", errors.New("permissionMode is required (no default configured)"), CodeInvalidRequest},
+		{"invalid perm mode → 4xx", errors.New("invalid permissionMode: bogus"), CodeInvalidRequest},
+		{"unsupported mode → 4xx", errors.New("unsupported mode for adapter"), CodeInvalidRequest},
+		{"unknown → internal", errors.New("boom"), CodeInternal},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapOrchestratorError(tc.err)
+			if got.Code != tc.wantCode {
+				t.Errorf("wrapOrchestratorError(%v) code = %q, want %q", tc.err, got.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
 func TestPatch_RejectsUnsupportedFields(t *testing.T) {
 	backend := store.NewMemoryBackend(nil)
 	svc := NewBeadService(backend, nil, func(_ ws.Frame) {})

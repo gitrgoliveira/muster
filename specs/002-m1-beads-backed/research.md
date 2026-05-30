@@ -116,7 +116,7 @@ arguments.
 - `--append-notes` (verified 2026-05-24): additive with newline separator; `--notes` replaces.
   Using `--notes` would clobber comments — a data-loss bug.
 - `--dolt-auto-commit=on`: without this, mutations remain in Dolt's working set and are not durable
-  through `bd dolt push`. M2 may revisit batch commits.
+  through `bd dolt push`. A later milestone (not M2) may revisit batch commits.
 - Argv injection mitigation: a malicious title like `"--priority=0"` could otherwise be parsed as
   a flag by cobra. `--title=<value>` in a single argv element prevents this; `--` separator hardens further.
 

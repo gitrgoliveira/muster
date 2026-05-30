@@ -121,7 +121,7 @@ bd update --json --dolt-auto-commit=on --append-notes=<text> -- <id>
 does not accept an `--actor` flag for `update`); prefix the actor name into the note text instead
 if the UI needs attribution (e.g., `<actor>: <text>`).
 
-(`bd v1.0` does not yet expose a dedicated `comment add` verb. M2 spec may revisit when it lands.)
+(`bd v1.0` does not yet expose a dedicated `comment add` verb. A later spec (not M2) may revisit when it lands.)
 
 ---
 

@@ -40,8 +40,9 @@ type MoveRequest struct {
 }
 
 type DispatchRequest struct {
-	Agent core.AgentID `json:"agent"`
-	Mode  core.Mode    `json:"mode"`
+	Agent          core.AgentID        `json:"agent"`
+	Mode           core.Mode           `json:"mode"`
+	PermissionMode core.PermissionMode `json:"permissionMode,omitempty"`
 }
 
 type CommentRequest struct {
