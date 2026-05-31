@@ -6,7 +6,7 @@ Additive to the M1 `bead.*` protocol. Same `ws.Frame` envelope, same hub. M1 eve
 
 | `type` | Emitted when | Frame fields |
 |---|---|---|
-| `runlog.line` | agent produces pane output | `beadID`, `stepIdx`, `seq` (monotonic per run), `data` (raw pane bytes; UTF-8 best-effort or base64) |
+| `runlog.line` | agent produces pane output | `beadID`, `stepIdx`, `seq` (monotonic per run), `data` (**base64-encoded** raw pane bytes — terminal output is not guaranteed UTF-8, so clients MUST base64-decode) |
 | `tmux.session.opened` | a run's session is spawned | `beadID`, `stepIdx`, `session` (name) |
 | `tmux.session.closed` | a run ends (exit/timeout/cancel) | `beadID`, `stepIdx`, `session`, `exitCode` |
 

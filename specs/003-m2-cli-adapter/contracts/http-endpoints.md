@@ -13,9 +13,11 @@ Request:
 - `permissionMode` (required unless `--default-permission-mode` is configured): allow-listed `core.PermissionMode`. **muster never defaults autonomy** (FR-021).
 
 Responses:
+> **Note on `202` vs M1's `200`:** M1's `/dispatch` was a non-functional stub that returned `200 OK`. M2 makes it a real asynchronous launch, so it returns `202 Accepted`. This is the one intentional, documented exception to FR-019's "no breaking REST changes" — no real M1 behavior depended on the stub's status code; both are 2xx.
+
 | Status | When |
 |---|---|
-| `202 Accepted` | run launched; body = the bead in `running`. Run proceeds async. |
+| `202 Accepted` | run launched; body = the bead in `running`. Run proceeds async (intentional change from M1's stub `200` — see note above). |
 | `409 CONFLICT` | a run is already active for this bead (one per bead in M2) |
 | `422 UNPROCESSABLE_ENTITY` | bead prefix has no repo mapping; or unknown agent/mode/permissionMode; or no permissionMode and no default |
 | `400 BAD_REQUEST` | malformed body |

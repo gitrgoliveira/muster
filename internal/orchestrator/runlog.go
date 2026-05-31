@@ -1,11 +1,16 @@
 package orchestrator
 
 import (
+	"encoding/base64"
 	"io"
 	"sync/atomic"
 
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
+
+// intPtr returns a pointer to i. Used for ws.Frame.StepIdx (*int) so the valid
+// M2 value 0 is serialized rather than dropped by omitempty.
+func intPtr(i int) *int { return &i }
 
 // runlogStreamer reads raw bytes from a pane pipe and fans them to the WS hub
 // as sequential runlog.line frames.
@@ -33,9 +38,11 @@ func (s *runlogStreamer) stream(r io.Reader) {
 				s.publish(ws.Frame{
 					Type:    ws.EventRunlogLine,
 					BeadID:  s.beadID,
-					StepIdx: s.stepIdx,
+					StepIdx: intPtr(s.stepIdx),
 					Seq:     seq,
-					Data:    string(data),
+					// base64: pane output is raw terminal bytes and may not be
+					// valid UTF-8; a Go string in JSON would corrupt those bytes.
+					Data: base64.StdEncoding.EncodeToString(data),
 				})
 			}
 		}

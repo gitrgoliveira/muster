@@ -112,7 +112,7 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 		o.publish(ws.Frame{
 			Type:    ws.EventTmuxOpened,
 			BeadID:  beadID,
-			StepIdx: sess.StepIdx,
+			StepIdx: intPtr(sess.StepIdx),
 			Session: sessionName,
 		})
 	}

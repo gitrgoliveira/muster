@@ -407,7 +407,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		o.publish(ws.Frame{
 			Type:    ws.EventTmuxOpened,
 			BeadID:  req.BeadID,
-			StepIdx: 0,
+			StepIdx: intPtr(0),
 			Session: sess.Name,
 		})
 	}
@@ -460,7 +460,7 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 				o.publish(ws.Frame{
 					Type:     ws.EventTmuxClosed,
 					BeadID:   run.BeadID,
-					StepIdx:  run.StepIdx,
+					StepIdx:  intPtr(run.StepIdx),
 					Session:  run.Session,
 					ExitCode: &ec,
 				})
@@ -510,7 +510,7 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		o.publish(ws.Frame{
 			Type:     ws.EventTmuxClosed,
 			BeadID:   run.BeadID,
-			StepIdx:  run.StepIdx,
+			StepIdx:  intPtr(run.StepIdx),
 			Session:  run.Session,
 			ExitCode: &ec,
 		})

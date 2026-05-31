@@ -71,7 +71,12 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 	// We build a shell command that sets env vars and execs the command.
 	shellCmd := buildShellCmd(env, argv)
 
-	// tmux new-session -d -s <name> -x 220 -y 50 <shell> -c <cwd>
+	// Spawn in two phases to avoid a race: if we passed the agent command to
+	// new-session and only set remain-on-exit afterwards, a fast-failing
+	// command could exit before remain-on-exit was set, destroying the pane and
+	// losing its exit code. Instead: create the session with the default
+	// (holder) shell, enable remain-on-exit, THEN respawn the pane with the real
+	// command — so the command runs only once the pane is guaranteed to persist.
 	spawnArgs := []string{
 		"new-session", "-d",
 		"-s", name,
@@ -81,18 +86,27 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 	if cwd != "" {
 		spawnArgs = append(spawnArgs, "-c", cwd)
 	}
-	spawnArgs = append(spawnArgs, shellCmd...)
 
 	cmd := exec.Command(bin, spawnArgs...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("tmux new-session %q: %w\n%s", name, err, out)
 	}
 
-	// Set remain-on-exit on for the window so pane survives process death.
+	// Set remain-on-exit BEFORE the agent command runs (race-free).
 	if _, err := m.run("set-option", "-t", name, "remain-on-exit", "on"); err != nil {
-		// Non-fatal: kill the session and report.
 		_ = m.Kill(name)
 		return nil, fmt.Errorf("tmux set-option remain-on-exit: %w", err)
+	}
+
+	// Respawn the pane with the real command, now that it will persist on exit.
+	respawnArgs := []string{"respawn-pane", "-k", "-t", name}
+	if cwd != "" {
+		respawnArgs = append(respawnArgs, "-c", cwd)
+	}
+	respawnArgs = append(respawnArgs, shellCmd...)
+	if _, err := m.run(respawnArgs...); err != nil {
+		_ = m.Kill(name)
+		return nil, fmt.Errorf("tmux respawn-pane %q: %w", name, err)
 	}
 
 	// Parse name to fill Session fields.

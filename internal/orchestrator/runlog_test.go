@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/base64"
 	"strings"
 	"sync"
 	"testing"
@@ -68,13 +69,22 @@ func TestRunlogStreamer_PreservesRawBytes(t *testing.T) {
 		t.Fatal("no frames emitted")
 	}
 
-	// Data must be preserved as-is (no stripping).
-	combined := ""
+	// Data is base64-encoded raw bytes (terminal output may be non-UTF-8).
+	// Decode and verify the ANSI escape survived round-trip (no stripping).
+	var combined []byte
 	for _, f := range frames {
-		combined += f.Data
+		// StepIdx must be present (pointer to 0), not dropped by omitempty.
+		if f.StepIdx == nil || *f.StepIdx != 0 {
+			t.Errorf("StepIdx want *0, got %v", f.StepIdx)
+		}
+		chunk, err := base64.StdEncoding.DecodeString(f.Data)
+		if err != nil {
+			t.Fatalf("Data is not valid base64: %v", err)
+		}
+		combined = append(combined, chunk...)
 	}
-	if !strings.Contains(combined, "\x1b[32m") {
-		t.Error("ANSI escape should be preserved in runlog.line data")
+	if !strings.Contains(string(combined), "\x1b[32m") {
+		t.Error("ANSI escape should be preserved (after base64 decode) in runlog.line data")
 	}
 }
 

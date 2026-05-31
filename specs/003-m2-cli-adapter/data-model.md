@@ -148,9 +148,9 @@ type DispatchInput struct {
 ```go
 // runlog.line
 BeadID  string `json:"beadID,omitempty"`
-StepIdx int    `json:"stepIdx,omitempty"`
+StepIdx *int   `json:"stepIdx,omitempty"`  // *int: M1 frames leave it nil; M2 sets it (so the valid value 0 isn't dropped by omitempty)
 Seq     uint64 `json:"seq,omitempty"`
-Data    string `json:"data,omitempty"`     // raw pane bytes (base64 or UTF-8 best-effort)
+Data    string `json:"data,omitempty"`     // base64-encoded raw pane bytes (terminal output is not guaranteed UTF-8)
 // tmux.session.opened / closed
 Session string `json:"session,omitempty"`
 ExitCode *int  `json:"exitCode,omitempty"` // on closed

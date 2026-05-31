@@ -15,7 +15,7 @@ muster spawns on the **default tmux socket** (no `-L`), so the user's plain `tmu
 | Manager method | tmux invocation |
 |---|---|
 | `Detect` | `tmux -V` → parse, require ≥ 3.2 |
-| `Spawn(name,cwd,env,argv)` | `tmux new-session -d -s <name> -x 200 -y 50 <wrapper>`; then `tmux set-option -t <name> remain-on-exit on` |
+| `Spawn(name,cwd,env,argv)` | **race-free 3-step**: `tmux new-session -d -s <name> -x 220 -y 50` (holder shell, no command) → `set-option -t <name> remain-on-exit on` → `respawn-pane -k -t <name> <wrapper>`. Setting remain-on-exit *before* the command runs ensures a fast-failing agent's pane (and its `pane_dead_status`) survives. |
 | `Pipe(name)` | `tmux pipe-pane -t <name> -o 'cat >> <fifo>'` → reader side (raw bytes incl. ANSI) |
 | `Capture(name,esc)` | `tmux capture-pane -p [-e] -S - -t <name>` (full scrollback; `-e` keeps escapes) |
 | `Send(name,keys)` | `tmux send-keys -t <name> <keys>` |
