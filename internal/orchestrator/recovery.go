@@ -75,8 +75,9 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 
 	// Recreate a Run for this session and resume streaming. Root the run in
 	// Background (NOT the recovery scan ctx) so it survives muster shutdown,
-	// exactly like Dispatch does (FR-018). Explicit cancellation is still
-	// possible via run.cancel.
+	// exactly like Dispatch does (FR-018). run.cancel cancels the watcher
+	// context; it is wired for a future cancel path but is not yet reachable
+	// externally (M2 has no cancel endpoint — see the run-cancel follow-up).
 	runCtx, runCancel := context.WithCancel(context.Background())
 	run := &Run{
 		BeadID:    beadID,
