@@ -75,7 +75,7 @@ Unverified. The contract says `POST /comments` maps to `bd update <id> --notes=<
 If user runs `bd dolt commit` while muster is mid-read, the `issues.jsonl` may be rewritten with a "committed" state that differs by metadata only. Watcher would emit spurious `bead.updated` events with no actual field changes. Not a correctness bug; just noisy WS traffic. Consider deep-equality in the diff, not just ID-set diff.
 
 ### R-L2 — Hardcoded ports/timeouts not configurable
-500ms debounce, 5s poll, 5s `bd` timeout, 30s reconnect cap — all hardcoded. Users on slow disks or remote NFS may need higher values. Defer to M2 but document.
+500ms debounce, 5s poll, 5s `bd` timeout, 30s reconnect cap — all hardcoded. Users on slow disks or remote NFS may need higher values. Defer to **M10 — Polish + harden** (operational hardening) but document now.
 
 ### R-L3 — `cmd/muster/embed.go` vs current `cmd/musterd/` structure
 Plan references `cmd/muster/embed.go`. Tasks.md never names it. T001 only renames the directory; need to confirm whether files inside also need updating (package declarations, etc.).
@@ -89,7 +89,7 @@ Plan references `cmd/muster/embed.go`. Tasks.md never names it. T001 only rename
 | CRITICAL | 2 | ✅ Both resolved |
 | HIGH | 6 | ✅ All 6 resolved |
 | MEDIUM | 7 | ✅ All 7 resolved |
-| LOW | 3 | 2 resolved, 1 deferred to M2 |
+| LOW | 3 | 2 resolved, 1 deferred to M10 (hardening) |
 
 ## Resolution status (after Phase 7.5 spike + spec/task updates)
 
@@ -116,7 +116,7 @@ Plan references `cmd/muster/embed.go`. Tasks.md never names it. T001 only rename
 
 ### LOW
 - **R-L1** (deep-equality diff): Resolved — research §8 + T054 + CHK091a use deep-equality, suppress empty deltas.
-- **R-L2** (hardcoded timeouts): Deferred to M2 (documented in research as known limitation).
+- **R-L2** (hardcoded timeouts): Deferred to **M10 — Polish + harden** (documented in research as known limitation).
 - **R-L3** (`embed.go` rename): Resolved via T001 — entire `cmd/musterd/` dir is renamed; all files inside come along.
 
 ## Verification spike (Phase 7.5) — empirical findings

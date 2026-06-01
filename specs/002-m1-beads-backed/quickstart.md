@@ -96,7 +96,7 @@ bin/muster serve --beads-dir ~/repos/beads-central/.beads
 # Now serves the mp-* issues from the main project.
 ```
 
-Multi-repo aggregation (one muster instance serving multiple repos) is **deferred to M2**.
+Multi-repo aggregation (one muster instance serving multiple repos) is **deferred to M7 — Repos & routing** (§20), not M2.
 
 ---
 

@@ -27,10 +27,10 @@ M0 faked it with seed data. M1 makes it real: `muster serve` reads from whicheve
 
 ### Session 2026-05-24
 
-- Q: Should muster write directly to Dolt, or shell out to the `bd` CLI for mutations? → A: **Shell out to `bd` CLI** in M1. Direct Dolt write support deferred to M2.
+- Q: Should muster write directly to Dolt, or shell out to the `bd` CLI for mutations? → A: **Shell out to `bd` CLI** in M1. Direct Dolt writes are not on the v1 roadmap (§20); `bd` remains the sole writer for v1 — revisit only post-v1 if a need arises. (M2 in §20 is the CLI-adapter milestone, not direct writes.)
 - Q: Is `issues.jsonl` sufficient for reads, or does muster need direct Dolt SQL access? → A: **Hybrid**. Embedded mode reads `issues.jsonl` directly (no Dolt library). Server mode connects via MySQL after `bd dolt start`. `issues.jsonl` also serves as the fsnotify change-detection trigger in both modes.
 - Q: What is the watch/polling interval for detecting changes made by `bd` CLI outside muster? → A: **fsnotify** on `issues.jsonl` with a **500ms debounce**. Fallback polling every 5s if fsnotify is unavailable (e.g., network FS).
-- Q: Should `GET /api/v1/beads` support pagination in M1? → A: No — same envelope as M0 (`{"items":[], "nextCursor":null, "total":N}`). Pagination deferred to M2.
+- Q: Should `GET /api/v1/beads` support pagination in M1? → A: No — same envelope as M0 (`{"items":[], "nextCursor":null, "total":N}`). Pagination is deferred (post-M1 scale concern; not yet milestoned in the §20 roadmap — *not* M2, which is the CLI-adapter milestone).
 - Q: Should muster expose write endpoints in M1? → A: **Yes** — PATCH, POST, move, close. All delegate to `bd` CLI.
 - Q: Both embedded and remote Dolt must work — how does muster select? → A: **Read `metadata.json`** from `beads-dir`. `dolt_mode: "embedded"` → read `.beads/issues.jsonl` (no Dolt server needed). `dolt_mode: "remote"` → run `bd dolt start` then connect via MySQL. Server-mode connection params (host, port, user, database) come from `metadata.json` itself (written by `bd init --server` or `bd dolt set`); password comes from `BEADS_DOLT_PASSWORD` env var.
 - Q: How does muster invoke `bd` to keep stdout parsing robust? → A: **Always pass `--json`** to `bd create`, `bd update`, `bd show`. JSON output is structured, stable, and avoids ANSI/banner noise. Use `--append-notes=<v>` (NOT `--notes=<v>`) for the comments endpoint so existing notes are preserved.
@@ -219,8 +219,8 @@ When the user runs `bd close <id>` or `bd create ...` in a terminal while muster
 
 ## Assumptions
 
-- The `bd` CLI is the sole writer to Dolt in M1. Direct Dolt write support deferred to M2+.
-- Multi-repo aggregation (multiple `.beads/` directories in one muster instance) is deferred to M2.
+- The `bd` CLI is the sole writer to Dolt in M1 — and for all of v1. Direct Dolt writes are not on the §20 roadmap; revisit only post-v1.
+- Multi-repo aggregation (multiple `.beads/` directories in one muster instance) is deferred to **M7 — Repos & routing** (§20), *not* M2. M2 is the CLI-adapter milestone.
 - Authentication is not added in M1.
 - `fsnotify` (`github.com/fsnotify/fsnotify`) is used for file watching.
 - `issues.jsonl` records match the `store.Issue` struct fields 1:1 (verified against live data).

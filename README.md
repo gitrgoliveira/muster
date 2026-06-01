@@ -1,6 +1,8 @@
 # muster
 
-A central hub that serves [beads](https://github.com/gastownhall/beads) issues over a REST + WebSocket API. M1 serves a single beads repository (via `--beads-dir`); aggregating multiple repositories from one instance is planned for a later milestone.
+A central hub that serves [beads](https://github.com/gastownhall/beads) issues over a REST + WebSocket API, and (M2) runs CLI coding agents against them. M1 serves a single beads repository (via `--beads-dir`); aggregating multiple repositories from one instance is planned for a later milestone.
+
+**M2 — Claude Code adapter:** dispatching a bead launches the `claude` CLI inside a per-bead **git worktree**, hosted in a **tmux** session, streaming its output over WebSocket (`runlog.line`) with live attach/send. Runtime deps: `git`, and `tmux` ≥ 3.2 (optional — without it agents still run via direct exec, but attach/send are disabled). Agent execution is exercisable via the API today; the embedded UI is not yet wired to the live runlog/attach stream (planned follow-up). muster defaults to listening on `127.0.0.1`; non-loopback binds are not yet refused and there is no auth/Origin check, so do not expose beyond localhost (see the `--addr` row below for the hardening follow-up).
 
 ## Quick start
 
@@ -17,7 +19,11 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 |---|---|---|---|
 | `--beads-dir` | `BEADS_DIR` | `./.beads` if present | Path to the beads directory containing `metadata.json` and `issues.jsonl`. Falls back to `./.beads` only when it exists; otherwise the flag/env is required. |
 | `--bd-bin` | `BD_BIN` | `bd` (from PATH) | Path to the `bd` CLI binary. Write endpoints are disabled if `bd` is not found. |
-| `--addr` | — | `127.0.0.1:7766` | TCP address to listen on |
+| `--addr` | — | `127.0.0.1:7766` | TCP address to listen on. Defaults to localhost; **non-loopback binds are not yet refused and there is no auth/Origin check** — do not expose beyond localhost (hardening is a tracked follow-up). |
+| `--repo` (repeatable) | `MUSTER_REPO` | — | Map a bead-ID prefix to a source repo, e.g. `--repo mp=/path/to/repo`. Resolves which repo a dispatched bead's worktree branches from (M2). |
+| `--worktrees-dir` | `MUSTER_WORKTREES_DIR` | `~/.muster/worktrees` | Root directory for per-bead git worktrees (M2). |
+| `--run-timeout` | `MUSTER_RUN_TIMEOUT` | `0` (none) | Optional per-run wall-clock cap, e.g. `30m`. `0` = unbounded (M2). |
+| `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | — | Fallback claude autonomy (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`plan`/`auto`) when a dispatch omits `permissionMode`. muster never defaults autonomy silently (M2). |
 
 ## API
 
@@ -28,19 +34,24 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `POST` | `/api/v1/beads` | Create a bead (requires `bd`) |
 | `PATCH` | `/api/v1/beads/{id}` | Update a bead (requires `bd`) |
 | `POST` | `/api/v1/beads/{id}/move` | Move to column (requires `bd`) |
-| `POST` | `/api/v1/beads/{id}/dispatch` | Dispatch to agent (requires `bd`) |
+| `POST` | `/api/v1/beads/{id}/dispatch` | Run a CLI agent on the bead — body `{agent, mode, permissionMode}` (M2) |
+| `GET` | `/api/v1/beads/{id}/steps/{idx}/attach` | tmux attach command + pane for a running step (M2; `idx=0`) |
+| `POST` | `/api/v1/beads/{id}/steps/{idx}/send` | Forward keystrokes to the live agent pane (M2; `idx=0`) |
 | `POST` | `/api/v1/beads/{id}/comments` | Add comment (requires `bd`) |
-| `GET` | `/api/v1/orchestrator/status` | Backend health and config |
-| `GET` | `/api/v1/stream` | WebSocket event stream |
+| `GET` | `/api/v1/orchestrator/status` | Backend health, config, tmux + adapter availability |
+| `GET` | `/api/v1/stream` | WebSocket event stream (`bead.*`, `runlog.line`, `tmux.session.*`) |
 
 ## Build & test
 
 ```bash
 make build        # produces bin/muster
-make test         # go test ./...
+make test         # go test ./... (fakes only — no real claude/tmux)
 make cover-check  # coverage gates
 make lint         # gofmt + go vet + golangci-lint
+make test-e2e     # real end-to-end M2 run (needs claude logged in + tmux)
 ```
+
+`make test` uses fake `claude`/`tmux` binaries, so it needs neither installed. `make test-e2e` (build-tagged, excluded from the default suite) drives a real dispatch against `claude` + `tmux` — see the [M2 quickstart](specs/003-m2-cli-adapter/quickstart.md).
 
 ## Multi-repo setup
 
