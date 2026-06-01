@@ -481,17 +481,20 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 }
 
 // finishRun transitions a run to done/failed, emits closed WS event, and kills the session.
+//
+// Ordering matters: the tmux session is killed and the pipe is closed BEFORE
+// the run's State flips off StepActive. Dispatch reuses a deterministic
+// session name (`tmux.SessionName(beadID, 0, 0)`) and gates duplicate dispatch
+// on `State == StepActive`. If the state flipped first, a concurrent
+// re-dispatch could pass the duplicate check while tmux's remain-on-exit
+// still held the previous session under the same name, surfacing a confusing
+// "duplicate session" 500 from tmux new-session. Killing first frees the
+// session name before any other caller can race in.
 func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	state := core.StepDone
 	if !success {
 		state = core.StepFailed
 	}
-
-	o.mu.Lock()
-	run.State = state
-	run.ExitCode = exitCode
-	run.EndedAt = time.Now()
-	o.mu.Unlock()
 
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
 	_ = o.transport.Kill(run.Session)
@@ -502,6 +505,13 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	if run.pipe != nil {
 		_ = run.pipe.Close()
 	}
+
+	// Only NOW flip the State off StepActive — see the ordering note above.
+	o.mu.Lock()
+	run.State = state
+	run.ExitCode = exitCode
+	run.EndedAt = time.Now()
+	o.mu.Unlock()
 
 	// Emit tmux.session.closed.
 	if o.publish != nil {

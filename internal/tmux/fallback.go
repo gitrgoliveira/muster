@@ -126,7 +126,12 @@ func (f *FallbackManager) DeadStatus(name string) (code int, dead bool, err erro
 	sess, ok := f.sessions[name]
 	f.mu.Unlock()
 	if !ok {
-		return 0, true, nil // session not found = consider dead
+		// Session not found = consider dead, but report -1 so callers do NOT
+		// interpret this as a successful (exit-0) completion. This matches
+		// RealManager.DeadStatus's "no numeric exit status" sentinel; the
+		// orchestrator's watchRun/finishRun must see a non-zero code so the
+		// run is marked failed, not done.
+		return -1, true, nil
 	}
 	select {
 	case <-sess.done:

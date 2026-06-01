@@ -95,14 +95,18 @@ type CommentInput struct {
 }
 
 // OrchestratorDispatcher is the interface BeadService uses to launch agent runs.
-// The real implementation is *orchestrator.Orchestrator; tests may substitute a fake.
+// The real implementation is *orchestrator.Orchestrator, wrapped by
+// Orchestrator.AsServiceDispatcher() which calls mapDispatchError to translate
+// orchestrator sentinel errors into typed *ServiceError values before they
+// cross the service boundary; tests may substitute a fake.
 // This interface is defined here (not in orchestrator) to avoid import cycles.
 // The Dispatch method accepts an OrchestratorDispatchRequest, which mirrors
 // orchestrator.DispatchRequest — kept in sync by the API layer.
 type OrchestratorDispatcher interface {
 	// Dispatch launches an agent run for the given bead, returning the active bead.
-	// Implementations return orchestrator sentinel errors (ErrRunAlreadyActive,
-	// ErrUnmappedPrefix, ErrAdapterNotFound, ErrAdapterNotInstalled).
+	// Implementations return *ServiceError (with Code set per
+	// orchestrator.mapDispatchError) rather than raw orchestrator sentinels;
+	// anything else is treated as CodeInternal by wrapOrchestratorError.
 	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (*core.Bead, error)
 }
 
@@ -476,10 +480,14 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// signal beyond tmux.session.opened. Use the full bead we fetched at
 		// the start of this branch and overlay the orchestrator's column so
 		// the frame carries a complete payload (not the orchestrator's stub).
+		// Return the same merged bead from the HTTP path so the response
+		// matches the WS frame (clients otherwise saw a stub here while a
+		// concurrent socket-listener saw the full bead).
 		if result != nil {
 			merged := *bead
 			merged.Column = result.Column
 			svc.publishWrite(ws.EventBeadUpdated, &merged)
+			return &merged, nil
 		}
 		return result, nil
 	}

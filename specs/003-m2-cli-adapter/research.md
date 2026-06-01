@@ -51,7 +51,7 @@ Correct mapping:
 Spawn → `pipe-pane` → `send-keys` → `capture-pane` → `list-sessions` (prefix filter) → `kill-session` all work. Session names **with slashes** (`muster/spike-bead/0/0`) are accepted.
 
 Two nuances that change the runlog contract:
-1. **`pipe-pane` emits RAW pane bytes** — including terminal control sequences (observed `[?2004l` bracketed-paste markers and echoed input). **`capture-pane -p` emits clean rendered text.** → The `runlog.line` stream (FR-009) must **strip/handle ANSI/control sequences** before broadcasting, or the UI gets terminal garbage. Plan must pick: filter pipe-pane output, or poll capture-pane.
+1. **`pipe-pane` emits RAW pane bytes** — including terminal control sequences (observed `[?2004l` bracketed-paste markers and echoed input). **`capture-pane -p` emits clean rendered text.** → For raw pane streaming we forward the bytes as-is and let the client render them in a terminal emulator (the decision pinned in D1 below); ANSI stripping is rejected. The plan picks raw `pipe-pane`, not polled `capture-pane`.
 2. **Default socket required for user attach.** The spike used `-L muster_spike` to avoid polluting the user's tmux, but for `tmux attach -t muster/<bead>/0/0` (FR-011) to work from the user's normal shell, muster MUST spawn on the **default** tmux socket (or the attach command it returns must include the `-L` socket).
 
 ## Exit-code capture gap (FR-013)

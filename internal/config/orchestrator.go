@@ -52,14 +52,17 @@ func ParseRepoEnv(m RepoMap, envVal string) error {
 
 // DefaultWorktreesDir returns the platform-appropriate default worktrees
 // directory when --worktrees-dir is not specified.
+//
+// Behavior: on darwin/linux, prefer a stable path under the user's home
+// (`~/.muster/worktrees`); fall back to `<os.TempDir()>/muster/worktrees`
+// only when the home directory is unavailable or on other platforms. The
+// temp-dir fallback also keeps tests usable on hosts where the test runner
+// lacks a real $HOME.
 func DefaultWorktreesDir() string {
-	// Use os.TempDir() as the base so tests don't need special perms.
-	tmp := os.TempDir()
 	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
-		// Prefer a stable path under the user's home if available.
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, ".muster", "worktrees")
 		}
 	}
-	return filepath.Join(tmp, "muster", "worktrees")
+	return filepath.Join(os.TempDir(), "muster", "worktrees")
 }

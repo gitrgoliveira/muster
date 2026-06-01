@@ -2,7 +2,7 @@
 
 A central hub that serves [beads](https://github.com/gastownhall/beads) issues over a REST + WebSocket API, and (M2) runs CLI coding agents against them. M1 serves a single beads repository (via `--beads-dir`); aggregating multiple repositories from one instance is planned for a later milestone.
 
-**M2 — Claude Code adapter:** dispatching a bead launches the `claude` CLI inside a per-bead **git worktree**, hosted in a **tmux** session, streaming its output over WebSocket (`runlog.line`) with live attach/send. Runtime deps: `git`, and `tmux` ≥ 3.2 (optional — without it agents still run via direct exec, but attach/send are disabled). Agent execution is exercisable via the API today; the embedded UI is not yet wired to the live runlog/attach stream (planned follow-up). muster binds to localhost only.
+**M2 — Claude Code adapter:** dispatching a bead launches the `claude` CLI inside a per-bead **git worktree**, hosted in a **tmux** session, streaming its output over WebSocket (`runlog.line`) with live attach/send. Runtime deps: `git`, and `tmux` ≥ 3.2 (optional — without it agents still run via direct exec, but attach/send are disabled). Agent execution is exercisable via the API today; the embedded UI is not yet wired to the live runlog/attach stream (planned follow-up). muster defaults to listening on `127.0.0.1`; non-loopback binds are not yet refused and there is no auth/Origin check, so do not expose beyond localhost (see the `--addr` row below for the hardening follow-up).
 
 ## Quick start
 

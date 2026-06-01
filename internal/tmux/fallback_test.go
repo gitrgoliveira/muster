@@ -82,6 +82,23 @@ func TestFallbackManager_DeadStatus_AfterExit(t *testing.T) {
 	}
 }
 
+func TestFallbackManager_DeadStatus_UnknownSession(t *testing.T) {
+	// An unknown session must report dead with a non-zero code so the
+	// orchestrator does not mark the run as a successful (exit-0) completion.
+	// Mirrors RealManager.DeadStatus's "no numeric exit status" sentinel.
+	f := tmux.NewFallbackManager()
+	code, dead, err := f.DeadStatus("muster/never-spawned/0/0")
+	if err != nil {
+		t.Fatalf("DeadStatus error: %v", err)
+	}
+	if !dead {
+		t.Error("unknown session should be reported as dead")
+	}
+	if code == 0 {
+		t.Errorf("unknown session must NOT report exit code 0 (looks like success); got %d", code)
+	}
+}
+
 func TestFallbackManager_Attach_ReturnsUnavailable(t *testing.T) {
 	f := tmux.NewFallbackManager()
 	_, err := f.Attach("muster/mp-test/0/0")

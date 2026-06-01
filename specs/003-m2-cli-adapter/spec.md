@@ -91,7 +91,7 @@ While an agent runs, the user can retrieve a `tmux attach` command and connect t
 
 ### User Story 4 — Live runlog streaming over WebSocket (Priority: P2)
 
-The agent's pane output is streamed line-by-line over the existing WebSocket hub so the UI shows output in real time without the user having to attach. Catch-up for a client that joins mid-run (or after a page reload) is served by replaying the live tmux pane scrollback (`capture-pane`). muster does not maintain a durable runlog store in M2.
+The agent's pane output is streamed as ordered raw byte chunks (base64-encoded in the `runlog.line` frame) over the existing WebSocket hub so the UI shows output in real time without the user having to attach. ANSI handling is the client's concern; muster does not strip or transform the bytes. Catch-up for a client that joins mid-run (or after a page reload) is served by replaying the live tmux pane scrollback (`capture-pane`). muster does not maintain a durable runlog store in M2.
 
 **Why this priority**: The default UI experience for watching an agent is the streamed output, not a raw terminal attach. High value, but the run itself succeeds without it, so P2.
 
@@ -269,7 +269,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
 | `--repo` (repeatable) | `MUSTER_REPO` | (none) | Prefix→repo mapping(s), e.g. `mp=/path/to/bracket-creator`; resolves each bead's source repo by ID prefix |
-| `--worktrees-dir` | `MUSTER_WORKTREES_DIR` | platform temp/muster | Root for per-bead worktrees |
+| `--worktrees-dir` | `MUSTER_WORKTREES_DIR` | `~/.muster/worktrees` (or `<platform-temp>/muster/worktrees` if no HOME) | Root for per-bead worktrees |
 | `--run-timeout` | `MUSTER_RUN_TIMEOUT` | unbounded (no timeout) | Optional per-run wall-clock cap |
 | `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | (none) | Optional user-set fallback autonomy when a dispatch omits `permissionMode`; if unset, dispatch must specify it (FR-021) |
 

@@ -156,9 +156,17 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 
 	// Build the shell one-liner that feeds the prompt file to claude via stdin.
 	// Using sh -c avoids multi-line shell-escaping issues.
-	// bin and promptRel are single-quoted to handle paths with spaces or
-	// special characters (e.g. /Users/Some User/bin/claude).
-	claudeCmd := shellQuote(bin) + " " + strings.Join(modeArgs, " ") + " < " + shellQuote(promptRel)
+	// Defense in depth: every fragment is single-quoted before joining. bin and
+	// promptRel can legitimately contain spaces or special characters (e.g.
+	// /Users/Some User/bin/claude). modeArgs comes from a validated enum today
+	// (Orchestrator.resolvePermMode rejects any value outside PermissionMode.Valid()),
+	// but quoting it here means a future caller that introduces a free-form
+	// fragment cannot accidentally turn this into a shell-injection sink.
+	quotedMode := make([]string, len(modeArgs))
+	for i, a := range modeArgs {
+		quotedMode[i] = shellQuote(a)
+	}
+	claudeCmd := shellQuote(bin) + " " + strings.Join(quotedMode, " ") + " < " + shellQuote(promptRel)
 	argv := []string{"sh", "-c", claudeCmd}
 
 	return adapter.Spec{

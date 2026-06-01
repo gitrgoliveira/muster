@@ -46,7 +46,7 @@ M2's user stories share one engine (transport + adapter + worktree + orchestrato
 
 - [x] T012 [US2] Test `worktree.Ensure` create + reuse + non-git-repo error + two-bead isolation against a real git tmpdir, in `internal/worktree/worktree_test.go`
 - [x] T013 [US2] Implement `worktree.Ensure(worktreesDir, repoPath, beadID)` → `git worktree add -b muster/<beadID> <path>` (reuse existing) in `internal/worktree/worktree.go`
-- [x] T014 [US2] Resolve `--worktrees-dir` from config and pass into the orchestrator; default to a platform temp/muster path, in `internal/orchestrator/orchestrator.go` + `cmd/muster/main.go`
+- [x] T014 [US2] Resolve `--worktrees-dir` from config and pass into the orchestrator; default to `~/.muster/worktrees` (falling back to `<platform-temp>/muster/worktrees` if `$HOME` is unavailable), in `internal/orchestrator/orchestrator.go` + `cmd/muster/main.go`
 
 **Checkpoint**: worktrees can be created/reused in isolation, exercised by tests.
 
