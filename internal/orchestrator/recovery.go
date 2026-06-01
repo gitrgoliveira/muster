@@ -16,11 +16,16 @@ import (
 // as a run. Format: lowercase prefix, hyphen, alphanumeric suffix (e.g. mp-abc).
 var beadIDPattern = regexp.MustCompile(`^[a-z]+-[0-9a-z]+$`)
 
-// RecoverSessions scans existing muster tmux sessions and re-attaches streaming
-// for those that correspond to active runs. Sessions with no matching bead are
-// killed after the grace period.
+// RecoverSessions scans existing muster tmux sessions and re-attaches streaming.
+// For each surviving session it: validates the bead ID; kills sessions whose
+// pane is already dead; and re-registers + resumes streaming for live ones.
 //
-// Called once at startup (T037 wires this into main.go).
+// NOTE: it does NOT verify the bead still exists or apply a grace period —
+// killing orphaned-but-live sessions whose bead was deleted is a tracked
+// follow-up (the orchestrator has no bead-existence lookup). Only already-dead
+// sessions are reaped here.
+//
+// Called once at startup (wired into main.go).
 func (o *Orchestrator) RecoverSessions(ctx context.Context) {
 	sessions, err := o.transport.List()
 	if err != nil {
@@ -93,9 +98,12 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	o.registerRun(run)
 	o.mu.Unlock()
 
-	// Re-attach pipe for streaming.
+	// Re-attach pipe for streaming. Set before watchRun starts so finishRun
+	// can close it (frees the FIFO/temp dir); no race — the watcher goroutine is
+	// launched after this assignment.
 	pipeReader, pipeErr := o.transport.Pipe(sessionName)
 	if pipeErr == nil && pipeReader != nil {
+		run.pipe = pipeReader
 		streamer := &runlogStreamer{
 			beadID:  beadID,
 			stepIdx: sess.StepIdx,

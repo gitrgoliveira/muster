@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -59,6 +60,10 @@ type Run struct {
 
 	// cancel cancels the context for this run's watcher goroutine.
 	cancel context.CancelFunc
+
+	// pipe is the pane output reader (tmux FIFO or fallback stdout). Closed in
+	// finishRun so the real tmux manager removes the FIFO + temp dir (no leak).
+	pipe io.ReadCloser
 }
 
 // DispatchRequest carries the inputs for Orchestrator.Dispatch.
@@ -392,6 +397,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		pipeReader = nil
 	}
 	if pipeReader != nil {
+		run.pipe = pipeReader // closed in finishRun (frees the FIFO/temp dir)
 		streamer := &runlogStreamer{
 			beadID:  req.BeadID,
 			stepIdx: 0,
@@ -441,44 +447,26 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 		defer cancel()
 	}
 
+	// One ticker for the whole poll loop (avoids allocating a timer per iteration).
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-watchCtx.Done():
-			// Cancelled due to timeout or graceful shutdown.
-			// Kill the session and mark as cancelled.
-			if run.Session != "" {
-				_ = o.transport.Kill(run.Session)
-			}
-			o.mu.Lock()
-			run.State = core.StepFailed // cancelled/timeout → failed
-			run.EndedAt = time.Now()
-			o.mu.Unlock()
-
-			// Emit closed event.
-			if o.publish != nil {
-				ec := -1
-				o.publish(ws.Frame{
-					Type:     ws.EventTmuxClosed,
-					BeadID:   run.BeadID,
-					StepIdx:  intPtr(run.StepIdx),
-					Session:  run.Session,
-					ExitCode: &ec,
-				})
-			}
-
-			// Record completion on the bead (FR-013). Timeout/cancel is a
-			// failure: exitCode -1, success false.
-			if o.onComplete != nil {
-				o.onComplete(run.BeadID, -1, false)
-			}
+			// Timeout or graceful-shutdown cancel → failure. finishRun kills the
+			// session, sets ExitCode=-1, emits closed, records the outcome, and
+			// closes the pipe (same as a non-zero exit).
+			o.finishRun(run, -1, false)
 			return
-		case <-time.After(pollInterval):
+		case <-ticker.C:
 		}
 
 		code, dead, err := o.transport.DeadStatus(run.Session)
 		if err != nil {
-			// Session may have been killed externally; treat as done.
-			o.finishRun(run, 0, false)
+			// Session vanished (e.g. killed externally) — unknown exit, treat as
+			// a failure with code -1 (not 0, which would look successful).
+			o.finishRun(run, -1, false)
 			return
 		}
 		if dead {
@@ -503,6 +491,13 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
 	_ = o.transport.Kill(run.Session)
+
+	// Close the pane pipe so the real tmux manager removes its FIFO + temp dir.
+	// The session is killed above, so the stream goroutine has hit (or will hit)
+	// EOF; closing is idempotent-safe here as finishRun runs once per run.
+	if run.pipe != nil {
+		_ = run.pipe.Close()
+	}
 
 	// Emit tmux.session.closed.
 	if o.publish != nil {

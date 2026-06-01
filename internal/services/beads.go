@@ -174,38 +174,20 @@ func (svc *BeadService) requireCLI() error {
 	return nil
 }
 
-// wrapOrchestratorError maps orchestrator sentinel errors to ServiceErrors.
-// We compare by message string to avoid an import cycle with the orchestrator package.
-// If the error is already a *ServiceError, it is returned as-is.
+// wrapOrchestratorError normalizes an error returned by the OrchestratorDispatcher
+// into a *ServiceError. Orchestrator sentinel→code mapping happens on the
+// orchestrator side (orchestrator.mapDispatchError, via errors.Is) and reaches
+// here already typed; anything else is an internal error. No message-string
+// matching — that was brittle (a message tweak would silently mis-map codes).
 func wrapOrchestratorError(err error) *ServiceError {
 	if err == nil {
 		return nil
 	}
-	// Already a ServiceError (e.g. from fakes in tests).
-	if se, ok := err.(*ServiceError); ok {
+	var se *ServiceError
+	if errors.As(err, &se) {
 		return se
 	}
-	msg := err.Error()
-	switch {
-	case msg == "run already active for bead":
-		return &ServiceError{Code: CodeRunAlreadyActive, Message: msg}
-	case msg == "bead prefix has no repo mapping":
-		return &ServiceError{Code: CodeUnmappedPrefix, Message: msg}
-	case msg == "adapter not registered":
-		return &ServiceError{Code: CodeAdapterNotFound, Message: msg}
-	case msg == "adapter not installed":
-		return &ServiceError{Code: CodeAdapterNotInstalled, Message: msg}
-	case strings.Contains(msg, "not logged in") || strings.Contains(msg, "auth login"):
-		return &ServiceError{Code: CodeAdapterNotLoggedIn, Message: msg}
-	case msg == "permissionMode is required (no default configured)":
-		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
-	case strings.Contains(msg, "invalid permissionMode"):
-		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
-	case strings.Contains(msg, "unsupported mode"):
-		return &ServiceError{Code: CodeInvalidRequest, Message: msg}
-	default:
-		return &ServiceError{Code: CodeInternal, Message: msg}
-	}
+	return &ServiceError{Code: CodeInternal, Message: err.Error()}
 }
 
 // wrapCLIError maps *bdshell.CLIError exit codes to service error codes.

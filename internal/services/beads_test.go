@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/core"
@@ -35,24 +36,28 @@ func TestWrapCLIError(t *testing.T) {
 }
 
 func TestWrapOrchestratorError(t *testing.T) {
+	// Sentinel→code mapping now lives in orchestrator.mapDispatchError (errors.Is)
+	// and arrives here already typed. wrapOrchestratorError only: passes typed
+	// ServiceErrors through (incl. wrapped), and maps anything else to Internal.
 	tests := []struct {
 		name     string
 		err      error
 		wantCode string
 	}{
-		{"already active → 409", errors.New("run already active for bead"), CodeRunAlreadyActive},
-		{"unmapped prefix → 422", errors.New("bead prefix has no repo mapping"), CodeUnmappedPrefix},
-		{"not registered → 501", errors.New("adapter not registered"), CodeAdapterNotFound},
-		{"not installed → 501", errors.New("adapter not installed"), CodeAdapterNotInstalled},
-		{"not logged in → 409", errors.New("adapter not logged in; run: claude auth login"), CodeAdapterNotLoggedIn},
-		{"no perm mode → 4xx", errors.New("permissionMode is required (no default configured)"), CodeInvalidRequest},
-		{"invalid perm mode → 4xx", errors.New("invalid permissionMode: bogus"), CodeInvalidRequest},
-		{"unsupported mode → 4xx", errors.New("unsupported mode for adapter"), CodeInvalidRequest},
+		{"typed passthrough", &ServiceError{Code: CodeRunAlreadyActive, Message: "x"}, CodeRunAlreadyActive},
+		{"wrapped typed passthrough", fmt.Errorf("ctx: %w", &ServiceError{Code: CodeUnmappedPrefix, Message: "y"}), CodeUnmappedPrefix},
 		{"unknown → internal", errors.New("boom"), CodeInternal},
+		{"nil → nil", nil, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := wrapOrchestratorError(tc.err)
+			if tc.err == nil {
+				if got != nil {
+					t.Errorf("wrapOrchestratorError(nil) = %v, want nil", got)
+				}
+				return
+			}
 			if got.Code != tc.wantCode {
 				t.Errorf("wrapOrchestratorError(%v) code = %q, want %q", tc.err, got.Code, tc.wantCode)
 			}
