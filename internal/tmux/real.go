@@ -149,7 +149,9 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 	}
 
 	// Start tmux pipe-pane writing to the FIFO.
-	// pipe-pane -o captures output only (not echoed input for clean streaming).
+	// The -o flag means "only open a new pipe if no previous pipe is currently
+	// open", guarding against double-piping the same pane. pipe-pane already
+	// captures only pane output (not echoed input).
 	pipeCmd := fmt.Sprintf("cat >> %s", fifoPath)
 	_, err = m.run("pipe-pane", "-t", name, "-o", pipeCmd)
 	if err != nil {

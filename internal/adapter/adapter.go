@@ -44,7 +44,11 @@ type InvokeReq struct {
 	Mode           core.Mode
 	PermissionMode core.PermissionMode // user-supplied (FR-021); never defaulted by muster
 	Worktree       string              // cwd for the agent process
-	PromptFile     string              // path to assembled prompt inside the worktree
+	// PromptFile is the path to the assembled prompt file.
+	// CONTRACT: PromptFile MUST live directly inside Worktree (i.e. filepath.Base(PromptFile)
+	// is the entire relative path). The claude adapter uses filepath.Base and runs with
+	// cwd=Worktree, so any subdirectory component would break prompt delivery.
+	PromptFile string
 }
 
 // Spec is the resolved, transport-agnostic launch description returned by Invoke.

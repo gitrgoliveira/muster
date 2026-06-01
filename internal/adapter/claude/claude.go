@@ -140,7 +140,9 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 
 	// Build the shell one-liner that feeds the prompt file to claude via stdin.
 	// Using sh -c avoids multi-line shell-escaping issues.
-	claudeCmd := bin + " " + strings.Join(modeArgs, " ") + " < " + promptRel
+	// bin and promptRel are single-quoted to handle paths with spaces or
+	// special characters (e.g. /Users/Some User/bin/claude).
+	claudeCmd := shellQuote(bin) + " " + strings.Join(modeArgs, " ") + " < " + shellQuote(promptRel)
 	argv := []string{"sh", "-c", claudeCmd}
 
 	return adapter.Spec{
@@ -157,3 +159,9 @@ func (a *Adapter) Login(_ context.Context) (adapter.LoginFlow, error) {
 
 // QuotaSource implements adapter.Adapter. M2 does not track quota.
 func (a *Adapter) QuotaSource() adapter.QuotaSource { return adapter.QuotaNone }
+
+// shellQuote wraps s in single quotes, escaping any embedded single quotes
+// using the POSIX idiom: ' becomes '\” (end-quote, literal-single-quote, re-open-quote).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

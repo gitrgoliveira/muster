@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/adapter"
@@ -210,6 +211,39 @@ func TestDetect_VersionParsedFromOutput(t *testing.T) {
 	}
 	if result.Version != "9.9.999 (Claude Code)" {
 		t.Errorf("Version want '9.9.999 (Claude Code)' got %q", result.Version)
+	}
+}
+
+func TestInvoke_BinPathWithSpace(t *testing.T) {
+	// Verify that a claude binary path containing a space is shell-quoted
+	// correctly so the sh -c one-liner does not break.
+	worktree := t.TempDir()
+	promptFile := filepath.Join(worktree, ".muster-prompt-0.txt")
+	if err := os.WriteFile(promptFile, []byte("test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use an explicit bin path that contains a space.
+	a := claude.New(claude.Options{Bin: "/Users/Some User/bin/claude"})
+	req := adapter.InvokeReq{
+		Bead:           core.Bead{ID: "mp-abc", Title: "Test"},
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+		Worktree:       worktree,
+		PromptFile:     promptFile,
+	}
+
+	spec, err := a.Invoke(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(spec.Argv) < 3 || spec.Argv[0] != "sh" || spec.Argv[1] != "-c" {
+		t.Fatalf("unexpected argv: %v", spec.Argv)
+	}
+	shellCmd := spec.Argv[2]
+	// The binary path must be single-quoted in the shell command.
+	if !strings.Contains(shellCmd, "'/Users/Some User/bin/claude'") {
+		t.Errorf("expected single-quoted binary path in shell command, got: %q", shellCmd)
 	}
 }
 

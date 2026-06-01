@@ -64,6 +64,9 @@ func readRecordFile(t *testing.T, recordFile string) []string {
 }
 
 func TestRealTmuxManager_Detect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
 	setupFakeTmux(t)
 
 	// Fake tmux needs to output a version string for -V.

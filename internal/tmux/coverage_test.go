@@ -41,20 +41,20 @@ func TestBuildShellCmd_WithEnv(t *testing.T) {
 // TestIsWrappedAttachUnavailable tests wrapping detection.
 func TestIsWrappedAttachUnavailable_Wrapped(t *testing.T) {
 	wrapped := fmt.Errorf("outer: %w", ErrAttachUnavailable)
-	if !isWrappedAttachUnavailable(wrapped) {
+	if !IsAttachUnavailable(wrapped) {
 		t.Error("should detect ErrAttachUnavailable wrapped in another error")
 	}
 }
 
 func TestIsWrappedAttachUnavailable_OtherError(t *testing.T) {
 	other := errors.New("some other error")
-	if isWrappedAttachUnavailable(other) {
+	if IsAttachUnavailable(other) {
 		t.Error("should not detect ErrAttachUnavailable in unrelated error")
 	}
 }
 
 func TestIsWrappedAttachUnavailable_Nil(t *testing.T) {
-	if isWrappedAttachUnavailable(nil) {
+	if IsAttachUnavailable(nil) {
 		t.Error("should not detect ErrAttachUnavailable in nil")
 	}
 }

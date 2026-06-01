@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -157,25 +158,8 @@ func (f *FallbackManager) List() ([]Session, error) {
 	return nil, nil
 }
 
-// IsAttachUnavailable reports whether err wraps ErrAttachUnavailable.
+// IsAttachUnavailable reports whether err (or any error in its chain) is
+// ErrAttachUnavailable. It is equivalent to errors.Is(err, ErrAttachUnavailable).
 func IsAttachUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	return err == ErrAttachUnavailable || isWrappedAttachUnavailable(err)
-}
-
-func isWrappedAttachUnavailable(err error) bool {
-	type unwrapper interface{ Unwrap() error }
-	for err != nil {
-		if err == ErrAttachUnavailable {
-			return true
-		}
-		u, ok := err.(unwrapper)
-		if !ok {
-			break
-		}
-		err = u.Unwrap()
-	}
-	return false
+	return errors.Is(err, ErrAttachUnavailable)
 }

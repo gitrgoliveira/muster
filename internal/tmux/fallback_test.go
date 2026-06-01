@@ -162,7 +162,3 @@ func TestIsAttachUnavailable_False(t *testing.T) {
 		t.Error("IsAttachUnavailable(nil) should be false")
 	}
 }
-
-func TestNewRegistryWithDefaults(t *testing.T) {
-	// coverage for adapter.NewRegistryWithDefaults
-}
