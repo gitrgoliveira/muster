@@ -161,8 +161,10 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("tmux pipe-pane %q: %w", name, err)
 	}
 
-	// Open the read end of the FIFO. This blocks until the write end is open
-	// (tmux has started writing), so open in a goroutine and surface errors.
+	// Open the read end of the FIFO. POSIX semantics: this blocks until tmux
+	// (the writer) opens its end. That's fine here because we already issued
+	// `pipe-pane` above, so tmux is already attached as the writer — the open
+	// returns immediately. (No goroutine needed.)
 	f, err := os.Open(fifoPath)
 	if err != nil {
 		_ = os.RemoveAll(fifoDir)

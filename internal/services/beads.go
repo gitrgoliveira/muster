@@ -469,6 +469,18 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		if orchErr != nil {
 			return nil, wrapOrchestratorError(orchErr)
 		}
+		// Parity with the legacy bd-CLI dispatch path below: publish a
+		// bead.updated frame so other connected clients learn about the
+		// running transition. In remote mode there is no file watcher to fan
+		// a jsonl write into the hub, so this manual publish is the only
+		// signal beyond tmux.session.opened. Use the full bead we fetched at
+		// the start of this branch and overlay the orchestrator's column so
+		// the frame carries a complete payload (not the orchestrator's stub).
+		if result != nil {
+			merged := *bead
+			merged.Column = result.Column
+			svc.publishWrite(ws.EventBeadUpdated, &merged)
+		}
 		return result, nil
 	}
 

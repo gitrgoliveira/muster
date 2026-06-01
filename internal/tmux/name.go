@@ -22,9 +22,10 @@ func ParseSessionName(name string) (beadID string, stepIdx, loop int, err error)
 		return "", 0, 0, fmt.Errorf("session name %q does not start with %q", name, sessionPrefix)
 	}
 	rest := name[len(sessionPrefix):]
-	// rest = "<beadID>/<stepIdx>/<loop>"
-	// beadID may contain hyphens but no slashes; stepIdx and loop are integers.
-	// Split from the right to find the two trailing integers.
+	// rest = "<beadID>/<stepIdx>/<loop>". The beadID may itself contain
+	// slashes (any leading segments before the trailing stepIdx/loop pair are
+	// rejoined into beadID), so split from the right to peel off the two
+	// trailing integers and treat everything left of them as the bead ID.
 	parts := strings.Split(rest, "/")
 	if len(parts) < 3 {
 		return "", 0, 0, fmt.Errorf("session name %q: expected muster/<bead>/<step>/<loop>", name)

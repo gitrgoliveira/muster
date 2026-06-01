@@ -69,12 +69,9 @@ func TestRealTmuxManager_Detect(t *testing.T) {
 	}
 	setupFakeTmux(t)
 
-	// Fake tmux needs to output a version string for -V.
-	t.Setenv("FAKE_TMUX_OUTPUT_V", "tmux 3.6b")
-
-	// We need to set the output for the -V subcommand. The fake script
-	// handles -V as the first argument. We set FAKE_TMUX_OUTPUT_FILE to a
-	// temp file with the version string.
+	// fake_tmux.sh reads FAKE_TMUX_OUTPUT_FILE to decide what to print for
+	// any subcommand (here `tmux -V`). Point it at a temp file with a fake
+	// version string.
 	versionFile := filepath.Join(t.TempDir(), "version_output")
 	if err := os.WriteFile(versionFile, []byte("tmux 3.6b\n"), 0644); err != nil {
 		t.Fatal(err)

@@ -54,6 +54,10 @@ func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
 				RepoPath: repoPath,
 			}, nil
 		}
+		// Path exists but is not a linked worktree. Falling through to
+		// `git worktree add` would either fail with a less clear error or
+		// risk operating on an unrelated pre-existing directory. Refuse.
+		return Worktree{}, fmt.Errorf("worktree: path %q exists but is not a git worktree (refusing to overwrite)", path)
 	} else if !os.IsNotExist(err) {
 		return Worktree{}, fmt.Errorf("worktree: stat %q: %w", path, err)
 	}

@@ -115,6 +115,38 @@ func TestEnsure_ManuallyDeletedWorktree(t *testing.T) {
 	}
 }
 
+func TestEnsure_PathExistsButNotWorktree(t *testing.T) {
+	// If the target path exists but is not a linked git worktree
+	// (e.g. a plain directory or a stale checkout), Ensure must refuse
+	// rather than fall through to `git worktree add` with a confusing error.
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+
+	// Pre-create a non-worktree directory at the path Ensure would use.
+	collisionPath := filepath.Join(worktreesDir, "mp-collide")
+	if err := os.MkdirAll(collisionPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Put a sentinel inside so we can check it wasn't touched.
+	sentinel := filepath.Join(collisionPath, "important.txt")
+	if err := os.WriteFile(sentinel, []byte("keep me"), 0644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	_, err := Ensure(worktreesDir, repoPath, "mp-collide")
+	if err == nil {
+		t.Fatal("want error for non-worktree pre-existing path, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a git worktree") {
+		t.Errorf("error %q should mention 'not a git worktree'", err.Error())
+	}
+
+	// Sentinel must still exist (Ensure refused to touch the directory).
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("sentinel file should be untouched: %v", err)
+	}
+}
+
 func TestEnsure_TwoBeadIsolation(t *testing.T) {
 	repoPath := initGitRepo(t)
 	worktreesDir := t.TempDir()
