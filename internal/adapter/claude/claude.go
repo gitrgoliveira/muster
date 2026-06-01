@@ -59,6 +59,12 @@ func (a *Adapter) Detect(ctx context.Context) (adapter.DetectResult, error) {
 	versionCmd := exec.CommandContext(ctx, bin, "--version")
 	versionOut, err := versionCmd.Output()
 	if err != nil {
+		// Distinguish context cancellation/timeout from "binary failed to run":
+		// the caller (Dispatch, health probe) needs to see the cancellation, not
+		// a misleading "not installed" verdict.
+		if ctx.Err() != nil {
+			return adapter.DetectResult{}, ctx.Err()
+		}
 		return adapter.DetectResult{Installed: false}, nil
 	}
 	version := strings.TrimSpace(string(versionOut))
@@ -67,6 +73,9 @@ func (a *Adapter) Detect(ctx context.Context) (adapter.DetectResult, error) {
 	authCmd := exec.CommandContext(ctx, bin, "auth", "status", "--json")
 	authOut, err := authCmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return adapter.DetectResult{}, ctx.Err()
+		}
 		// Binary exists but auth check failed — installed but status unknown; treat as not logged in.
 		return adapter.DetectResult{
 			Installed: true,
@@ -135,8 +144,15 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 		return adapter.Spec{}, fmt.Errorf("claude adapter: unsupported mode %q", req.Mode)
 	}
 
-	// Prompt file path relative to cwd (the worktree).
-	promptRel := filepath.Base(req.PromptFile)
+	// Prompt file path relative to cwd (the worktree). The orchestrator's
+	// contract (see Dispatch in internal/orchestrator) is to write the prompt
+	// directly at <worktree>/.muster-prompt-0.txt. Validate that contract here
+	// so a future caller passing a subdir-or-absolute PromptFile fails fast
+	// with a clear adapter error instead of a confusing shell-redirect error.
+	promptRel, err := filepath.Rel(req.Worktree, req.PromptFile)
+	if err != nil || promptRel == "." || strings.HasPrefix(promptRel, "..") || strings.ContainsRune(promptRel, filepath.Separator) {
+		return adapter.Spec{}, fmt.Errorf("claude adapter: PromptFile %q must be directly under Worktree %q", req.PromptFile, req.Worktree)
+	}
 
 	// Build the shell one-liner that feeds the prompt file to claude via stdin.
 	// Using sh -c avoids multi-line shell-escaping issues.
@@ -160,8 +176,9 @@ func (a *Adapter) Login(_ context.Context) (adapter.LoginFlow, error) {
 // QuotaSource implements adapter.Adapter. M2 does not track quota.
 func (a *Adapter) QuotaSource() adapter.QuotaSource { return adapter.QuotaNone }
 
-// shellQuote wraps s in single quotes, escaping any embedded single quotes
-// using the POSIX idiom: ' becomes '\” (end-quote, literal-single-quote, re-open-quote).
+// shellQuote wraps s in single quotes, escaping each embedded single quote
+// via the standard POSIX idiom: close-quote, backslash-escaped single quote,
+// reopen-quote (see the raw-string literal below for the exact bytes).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

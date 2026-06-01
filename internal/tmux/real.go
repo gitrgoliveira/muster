@@ -143,19 +143,21 @@ func buildShellCmd(env, argv []string) []string {
 // The pipe is backed by a named pipe (FIFO) written to by tmux pipe-pane.
 func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 	// Create a named pipe (FIFO).
-	fifoPath, err := mkfifo()
+	fifoDir, fifoPath, err := mkfifo()
 	if err != nil {
 		return nil, fmt.Errorf("tmux Pipe: create fifo: %w", err)
 	}
 
-	// Start tmux pipe-pane writing to the FIFO.
+	// Start tmux pipe-pane writing to the FIFO. tmux executes the pipe-cmd via
+	// a shell, so the FIFO path must be shell-quoted to survive a TMPDIR that
+	// contains spaces or shell metacharacters.
 	// The -o flag means "only open a new pipe if no previous pipe is currently
 	// open", guarding against double-piping the same pane. pipe-pane already
 	// captures only pane output (not echoed input).
-	pipeCmd := fmt.Sprintf("cat >> %s", fifoPath)
+	pipeCmd := "cat >> " + shellSingleQuote(fifoPath)
 	_, err = m.run("pipe-pane", "-t", name, "-o", pipeCmd)
 	if err != nil {
-		_ = os.Remove(fifoPath)
+		_ = os.RemoveAll(fifoDir)
 		return nil, fmt.Errorf("tmux pipe-pane %q: %w", name, err)
 	}
 
@@ -163,37 +165,46 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 	// (tmux has started writing), so open in a goroutine and surface errors.
 	f, err := os.Open(fifoPath)
 	if err != nil {
-		_ = os.Remove(fifoPath)
+		_ = os.RemoveAll(fifoDir)
 		return nil, fmt.Errorf("tmux Pipe: open fifo: %w", err)
 	}
 
-	// Return a ReadCloser that removes the FIFO on Close.
-	return &fifoReader{File: f, path: fifoPath}, nil
+	// Return a ReadCloser that removes the FIFO + its temp dir on Close.
+	return &fifoReader{File: f, dir: fifoDir}, nil
 }
 
 type fifoReader struct {
 	*os.File
-	path string
+	dir string // temp dir holding the FIFO; removed (with the FIFO inside) on Close
 }
 
 func (r *fifoReader) Close() error {
 	err := r.File.Close()
-	_ = os.Remove(r.path)
+	_ = os.RemoveAll(r.dir) // removes the FIFO file AND its parent temp dir
 	return err
 }
 
-// mkfifo creates a named pipe in a temp directory and returns its path.
-func mkfifo() (string, error) {
-	dir, err := os.MkdirTemp("", "muster-pipe-*")
+// mkfifo creates a named pipe in a fresh temp directory and returns both the
+// directory and the FIFO path. The caller must os.RemoveAll(dir) on cleanup.
+func mkfifo() (dir, path string, err error) {
+	dir, err = os.MkdirTemp("", "muster-pipe-*")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	path := dir + "/pipe"
+	path = dir + "/pipe"
 	if err := mkFifoSyscall(path); err != nil {
 		_ = os.RemoveAll(dir)
-		return "", err
+		return "", "", err
 	}
-	return path, nil
+	return dir, path, nil
+}
+
+// shellSingleQuote wraps s in single quotes, escaping each embedded single
+// quote via the standard POSIX idiom (close-quote, backslash-escaped single
+// quote, reopen-quote — see the raw-string literal below for the exact bytes).
+// Used for paths embedded in tmux pipe-cmd strings.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Capture implements Manager. Returns pane scrollback via capture-pane.

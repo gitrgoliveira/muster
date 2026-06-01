@@ -57,8 +57,10 @@ clean:
 ## test-e2e: Run the real end-to-end M2 flow (requires: claude logged in + tmux installed).
 ##   Uses real claude (Max plan usage, not per-call billing) and real tmux.
 ##   Skips gracefully if either is unavailable.
+##   Timeout is set generously above the test's own 120s wait loop + setup
+##   so the harness itself never trips before the test does.
 test-e2e:
-	go test -tags=e2e -run TestE2E -count=1 -v -timeout 120s ./internal/orchestrator/
+	go test -tags=e2e -run TestE2E -count=1 -v -timeout 300s ./internal/orchestrator/
 
 help:
 	@echo "Available targets:"

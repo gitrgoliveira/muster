@@ -40,6 +40,10 @@ func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
 	branch := branchName(beadID)
 
 	// If the path already exists as a git worktree directory, reuse it.
+	// Only os.IsNotExist is acceptable to fall through to creation; other stat
+	// errors (permission denied, IO error, …) would otherwise reach
+	// `git worktree add` and surface a confusing downstream message — return
+	// the real cause instead.
 	if _, err := os.Stat(path); err == nil {
 		// Directory exists — verify it's a worktree.
 		if isWorktreeDir(path) {
@@ -50,6 +54,8 @@ func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
 				RepoPath: repoPath,
 			}, nil
 		}
+	} else if !os.IsNotExist(err) {
+		return Worktree{}, fmt.Errorf("worktree: stat %q: %w", path, err)
 	}
 
 	// Create parent directory if needed.

@@ -28,8 +28,10 @@ func (o *Orchestrator) GetAttach(beadID string, stepIdx int) (*services.AttachRe
 		}, nil
 	}
 
-	if run.Session == "" {
-		// Fallback mode: no tmux session.
+	if isFallbackTransport(o.transport) {
+		// Fallback mode: no tmux session to attach to. (run.Session is non-empty
+		// in fallback too — FallbackManager keys its in-memory sessions by name —
+		// so check the transport type, not run.Session.)
 		return &services.AttachResponse{
 			Available: false,
 			Reason:    "tmux not available (fallback transport)",
@@ -69,7 +71,9 @@ func (o *Orchestrator) SendKeys(beadID string, stepIdx int, keys string) error {
 		}
 	}
 
-	if run.Session == "" {
+	if isFallbackTransport(o.transport) {
+		// Same as GetAttach: run.Session is non-empty under fallback, so the
+		// transport type is the reliable signal.
 		return &services.ServiceError{
 			Code:    services.CodeCLIUnavailable,
 			Message: "tmux not available (fallback transport)",

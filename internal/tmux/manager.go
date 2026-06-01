@@ -24,8 +24,11 @@ type Session struct {
 // The real implementation shells out to the `tmux` binary; a fallback
 // implementation uses exec.Command directly when tmux is absent.
 type Manager interface {
-	// Detect probes for tmux and returns its version string.
-	// Returns an error if tmux is not available or below the minimum version (3.2).
+	// Detect probes for tmux and returns its version string (output of `tmux -V`).
+	// Returns an error if tmux is not available. Implementations do NOT enforce
+	// a minimum-version check today; callers that need one should parse the
+	// returned string. (Plan §5 notes tmux ≥3.2 is the supported floor, but
+	// M2 only requires the binary be present.)
 	Detect() (version string, err error)
 
 	// Spawn creates a new tmux session on the default socket with remain-on-exit on.

@@ -199,10 +199,13 @@ func main() {
 	// onComplete records an agent run's outcome on its bead when the run exits
 	// (FR-013/SC-007). M2 limitation: beads has no distinct "review" status
 	// (review folds to in_progress per the mapper), so we cannot move the bead
-	// to a review column. Instead we append a note describing the outcome and
-	// broadcast bead.updated so the UI reflects the change. Runs on the
+	// to a review column. Instead we append a note describing the outcome and —
+	// in remote mode only — broadcast bead.updated so the UI reflects the
+	// change. In embedded mode the file watcher already fans the jsonl change
+	// into the WS hub; broadcasting here would double-announce. Runs on the
 	// orchestrator watcher goroutine — keep it non-blocking-safe.
 	doltDB := cfg.DoltDatabase
+	isRemoteMode := cfg.Mode == "remote"
 	onComplete := func(beadID string, exitCode int, runSucceeded bool) {
 		if cli == nil {
 			slog.Warn("onComplete: bd CLI unavailable; cannot record run outcome", "bead", beadID)
@@ -221,8 +224,10 @@ func main() {
 			slog.Warn("onComplete: failed to record run outcome on bead", "bead", beadID, "err", err)
 			return
 		}
-		bead := services.IssueToBead(&iss, doltDB)
-		hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, Bead: &bead})
+		if isRemoteMode {
+			bead := services.IssueToBead(&iss, doltDB)
+			hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, Bead: &bead})
+		}
 	}
 
 	// Build orchestrator.
