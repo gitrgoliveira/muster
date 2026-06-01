@@ -147,6 +147,29 @@ func TestEnsure_PathExistsButNotWorktree(t *testing.T) {
 	}
 }
 
+func TestEnsure_ReuseRejectsMismatchedRepo(t *testing.T) {
+	// If worktreesDir is reused across a repo-mapping change, an existing
+	// worktree at the same path may belong to a different repository. Ensure
+	// must refuse to silently return it as if it were ours.
+	repoA := initGitRepo(t)
+	repoB := initGitRepo(t)
+	worktreesDir := t.TempDir()
+
+	// Create the worktree linked to repoA.
+	if _, err := Ensure(worktreesDir, repoA, "mp-shared"); err != nil {
+		t.Fatalf("first Ensure (repoA): %v", err)
+	}
+
+	// Now ask for the same beadID against repoB — should error.
+	_, err := Ensure(worktreesDir, repoB, "mp-shared")
+	if err == nil {
+		t.Fatal("want error for repo-mismatched reuse, got nil")
+	}
+	if !strings.Contains(err.Error(), "linked to repo") || !strings.Contains(err.Error(), "refusing to reuse") {
+		t.Errorf("error %q should describe a repo-mismatch reuse refusal", err.Error())
+	}
+}
+
 func TestEnsure_TwoBeadIsolation(t *testing.T) {
 	repoPath := initGitRepo(t)
 	worktreesDir := t.TempDir()

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Worktree describes a per-bead git worktree.
@@ -47,6 +48,14 @@ func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
 	if _, err := os.Stat(path); err == nil {
 		// Directory exists — verify it's a worktree.
 		if isWorktreeDir(path) {
+			// Also verify the existing worktree belongs to repoPath. Without
+			// this check, if worktreesDir is reused across a repo-mapping
+			// change (or any other config drift), Ensure could silently
+			// return a worktree linked to a different repository — and the
+			// agent would then run in an unexpected checkout.
+			if err := existingWorktreeMatchesRepo(path, repoPath); err != nil {
+				return Worktree{}, err
+			}
 			return Worktree{
 				BeadID:   beadID,
 				Path:     path,
@@ -102,6 +111,49 @@ func validateGitRepo(path string) error {
 		return fmt.Errorf("worktree: not a git repo at %q: %w\n%s", path, err, out)
 	}
 	return nil
+}
+
+// existingWorktreeMatchesRepo verifies an already-existing linked worktree at
+// wtPath was created from repoPath, by comparing their shared "common git
+// directory" (the .git dir of the main checkout, which all linked worktrees
+// reference). Returns an error if they differ — the safe default in that case
+// is to refuse rather than reuse a worktree pointing at the wrong repo.
+func existingWorktreeMatchesRepo(wtPath, repoPath string) error {
+	repoCD, err := gitCommonDir(repoPath)
+	if err != nil {
+		return fmt.Errorf("worktree: resolve repo git-common-dir: %w", err)
+	}
+	wtCD, err := gitCommonDir(wtPath)
+	if err != nil {
+		return fmt.Errorf("worktree: resolve worktree git-common-dir: %w", err)
+	}
+	if repoCD != wtCD {
+		return fmt.Errorf("worktree: existing path %q is linked to repo (common-dir %q), not %q (common-dir %q) — refusing to reuse", wtPath, wtCD, repoPath, repoCD)
+	}
+	return nil
+}
+
+// gitCommonDir returns the absolute, cleaned path of `git rev-parse
+// --git-common-dir` run inside dir. The common-dir is the .git directory of
+// the main worktree; linked worktrees share the same value.
+func gitCommonDir(dir string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --git-common-dir in %q: %w\n%s", dir, err, out)
+	}
+	p := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(p) {
+		// git returns a path relative to the cwd it was invoked from.
+		p = filepath.Join(dir, p)
+	}
+	// Resolve symlinks so e.g. /var/folders vs /private/var/folders on macOS
+	// don't false-mismatch.
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
+	}
+	return filepath.Clean(p), nil
 }
 
 // isWorktreeDir returns true if path contains a .git file (indicating it is a

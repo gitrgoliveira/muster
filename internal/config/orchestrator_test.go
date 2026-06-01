@@ -11,13 +11,21 @@ import (
 func TestParseRepoFlag(t *testing.T) {
 	t.Run("valid prefix=path", func(t *testing.T) {
 		m := config.RepoMap{}
-		// Use a real-path-like string; Abs will just canonicalize it.
-		err := config.ParseRepoFlag(m, "mp=/tmp/myrepo")
+		// Use t.TempDir() so the test is portable: ParseRepoFlag stores
+		// filepath.Abs(path), and on Windows Abs("/tmp/myrepo") resolves to a
+		// volume-qualified path — comparing against a hard-coded Unix string
+		// would fail there. Compare against Abs of the same input instead.
+		repoDir := t.TempDir()
+		err := config.ParseRepoFlag(m, "mp="+repoDir)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if m["mp"] != filepath.Clean("/tmp/myrepo") {
-			t.Errorf("want /tmp/myrepo got %q", m["mp"])
+		wantAbs, err := filepath.Abs(repoDir)
+		if err != nil {
+			t.Fatalf("filepath.Abs(%q): %v", repoDir, err)
+		}
+		if m["mp"] != wantAbs {
+			t.Errorf("want %q got %q", wantAbs, m["mp"])
 		}
 	})
 

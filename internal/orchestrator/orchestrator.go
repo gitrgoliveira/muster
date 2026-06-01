@@ -454,9 +454,13 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 	for {
 		select {
 		case <-watchCtx.Done():
-			// Timeout or graceful-shutdown cancel → failure. finishRun kills the
-			// session, sets ExitCode=-1, emits closed, records the outcome, and
-			// closes the pipe (same as a non-zero exit).
+			// watchCtx fires here for the configured RunTimeout (FR-017) or
+			// an explicit run cancellation via run.cancel (future cancel
+			// endpoint). NOT graceful shutdown: watchRun is intentionally
+			// rooted in context.Background() (FR-018), so server SIGTERM does
+			// not cancel it — agent tmux sessions survive a muster restart.
+			// finishRun kills the session, sets ExitCode=-1, emits closed,
+			// records the outcome, and closes the pipe (same as non-zero exit).
 			o.finishRun(run, -1, false)
 			return
 		case <-ticker.C:

@@ -2,34 +2,76 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/adapter"
+	"github.com/gitrgoliveira/muster/internal/adapter/claude"
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/orchestrator"
 	"github.com/gitrgoliveira/muster/internal/services"
 )
 
 func TestServiceDispatcherAdapter_ErrMapping(t *testing.T) {
-	// The service adapter maps orchestrator errors to ServiceErrors.
-	// Test that ErrUnmappedPrefix is correctly wrapped.
-	reg := adapter.NewRegistry()
-	o := orchestrator.New(orchestrator.Config{
-		Adapters:     reg,
-		Transport:    &fakeTransport{},
-		RepoMap:      orchestrator.RepoMap{}, // empty → unmapped
-		WorktreesDir: t.TempDir(),
-	})
+	// Verify the service adapter maps orchestrator sentinel errors to typed
+	// *services.ServiceError values with the expected Code. (The full
+	// errors.Is mapping table is covered package-internally in
+	// maperr_internal_test.go; this test exercises the wiring end-to-end via
+	// AsServiceDispatcher().)
+	tests := []struct {
+		name     string
+		setup    func(t *testing.T) orchestrator.Config
+		wantCode string
+	}{
+		{
+			name: "no adapter registered → ADAPTER_NOT_FOUND",
+			setup: func(t *testing.T) orchestrator.Config {
+				return orchestrator.Config{
+					Adapters:     adapter.NewRegistry(),
+					Transport:    &fakeTransport{},
+					RepoMap:      orchestrator.RepoMap{"mp": t.TempDir()},
+					WorktreesDir: t.TempDir(),
+				}
+			},
+			wantCode: services.CodeAdapterNotFound,
+		},
+		{
+			name: "claude registered, prefix unmapped → UNMAPPED_PREFIX",
+			setup: func(t *testing.T) orchestrator.Config {
+				setupFakeClaude(t)
+				reg := adapter.NewRegistryWithDefaults(claude.New(claude.Options{}))
+				return orchestrator.Config{
+					Adapters:     reg,
+					Transport:    &fakeTransport{},
+					RepoMap:      orchestrator.RepoMap{}, // empty → unmapped
+					WorktreesDir: t.TempDir(),
+				}
+			},
+			wantCode: services.CodeUnmappedPrefix,
+		},
+	}
 
-	disp := o.AsServiceDispatcher()
-	_, err := disp.Dispatch(context.Background(), services.OrchestratorDispatchRequest{
-		BeadID:         "mp-abc",
-		Agent:          core.AgentClaude,
-		Mode:           core.ModeAgent,
-		PermissionMode: core.PermAcceptEdits,
-	})
-	if err == nil {
-		t.Fatal("expected error from service dispatcher")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := orchestrator.New(tc.setup(t))
+			disp := o.AsServiceDispatcher()
+			_, err := disp.Dispatch(context.Background(), services.OrchestratorDispatchRequest{
+				BeadID:         "mp-abc",
+				Agent:          core.AgentClaude,
+				Mode:           core.ModeAgent,
+				PermissionMode: core.PermAcceptEdits,
+			})
+			if err == nil {
+				t.Fatal("expected error from service dispatcher")
+			}
+			var se *services.ServiceError
+			if !errors.As(err, &se) {
+				t.Fatalf("want *services.ServiceError, got %T: %v", err, err)
+			}
+			if se.Code != tc.wantCode {
+				t.Errorf("want Code=%q, got %q (msg=%q)", tc.wantCode, se.Code, se.Message)
+			}
+		})
 	}
 }
 
