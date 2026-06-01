@@ -51,7 +51,7 @@ make lint         # gofmt + go vet + golangci-lint
 make test-e2e     # real end-to-end M2 run (needs claude logged in + tmux)
 ```
 
-`make test` uses fake `claude`/`tmux` binaries, so it needs neither installed. `make test-e2e` (build-tagged, excluded from the default suite) drives a real dispatch against `claude` + `tmux` — see the [M2 quickstart](specs/003-m2-cli-adapter/quickstart.md).
+`make test` uses fake `claude`/`tmux` binaries, so it needs neither installed. `make test-e2e` (build-tagged, excluded from the default suite) drives a real dispatch against `claude` + `tmux` — see the [M2 quickstart](specs/003-m2-cli-adapter/quickstart.md). The `test-e2e` target and the underlying `//go:build e2e` test ship with the M2 orchestrator stack (stack 3 of the M2 PR series); on a tree that has only the docs/foundation stacks merged the target is absent, and `go test -tags=e2e -run TestE2E ./internal/orchestrator/` is the manual equivalent.
 
 ## Multi-repo setup
 
