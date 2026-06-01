@@ -15,7 +15,7 @@ claude auth status --json   # {"loggedIn": true, ...}
 
 ```bash
 make build
-./muster serve \
+bin/muster serve \
   --beads-dir ~/repos/beads-central/.beads \
   --repo mp=~/repos/bracket-creator \
   --worktrees-dir ~/.muster/worktrees \
@@ -30,7 +30,7 @@ curl -s localhost:7766/api/v1/orchestrator/status | jq '{tmuxAvailable,tmuxVersi
 
 ```bash
 # Terminal A — watch WS
-websocat ws://localhost:7766/api/v1/stream | jq -c 'select(.type|startswith("runlog")or startswith("tmux"))'
+websocat ws://localhost:7766/api/v1/stream | jq -c 'select(.type | (startswith("runlog") or startswith("tmux")))'
 
 # Terminal B — dispatch bead mp-abc to claude in agent mode
 curl -s -X POST localhost:7766/api/v1/beads/mp-abc/dispatch \
@@ -60,7 +60,7 @@ When the agent exits, Terminal A shows `tmux.session.closed` (with `exitCode`) a
 
 ```bash
 # While an agent runs, kill and restart muster:
-kill <muster-pid> ; ./muster serve --beads-dir … --repo mp=…
+kill <muster-pid> ; bin/muster serve --beads-dir … --repo mp=…
 ```
 On startup muster lists `muster/*` tmux sessions, re-associates `mp-abc`/step 0, marks it `running`, and resumes `runlog.line` streaming — the agent never stopped.
 
@@ -71,6 +71,8 @@ The M2 implementation ships an automated e2e test that exercises this exact flow
 ```bash
 make test-e2e
 ```
+
+> The `test-e2e` Makefile target and the build-tagged e2e test it runs ship in the M2 orchestrator stack (stack 3 of the M2 PR series). On a tree that has only stack 1 / stack 2 merged, the target does not exist yet and `go test -tags=e2e -run TestE2E ./internal/orchestrator/` is the manual equivalent.
 
 **Requirements**: `claude` installed and logged in (Max plan) + `tmux` ≥ 3.2. The test skips gracefully if either is missing. It uses a trivial one-word prompt to minimize usage. Uses Max plan usage allowance (not per-call billing).
 
