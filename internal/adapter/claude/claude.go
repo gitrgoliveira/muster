@@ -163,11 +163,21 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 	// (Orchestrator.resolvePermMode rejects any value outside PermissionMode.Valid()),
 	// but quoting it here means a future caller that introduces a free-form
 	// fragment cannot accidentally turn this into a shell-injection sink.
+	//
+	// `exec` prefix: replace the `sh -c` shell with the claude process rather
+	// than leaving sh as a parent that forks-and-waits. Under the fallback
+	// (direct-exec) transport, Kill signals only the process muster started —
+	// i.e. sh — so without `exec` a timeout/cancel could kill sh and orphan the
+	// claude child (the run would look terminated while claude kept running).
+	// With `exec`, that tracked process IS claude, so Kill terminates it
+	// directly. Harmless-to-beneficial under tmux too: the pane's foreground
+	// process becomes claude, so remain-on-exit / pane_dead_status track
+	// claude's own exit.
 	quotedMode := make([]string, len(modeArgs))
 	for i, arg := range modeArgs {
 		quotedMode[i] = shellquote.Single(arg)
 	}
-	claudeCmd := shellquote.Single(bin) + " " + strings.Join(quotedMode, " ") + " < " + shellquote.Single(promptRel)
+	claudeCmd := "exec " + shellquote.Single(bin) + " " + strings.Join(quotedMode, " ") + " < " + shellquote.Single(promptRel)
 	argv := []string{"sh", "-c", claudeCmd}
 
 	return adapter.Spec{

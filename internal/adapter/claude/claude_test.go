@@ -242,6 +242,12 @@ func TestInvoke_BinPathWithSpace(t *testing.T) {
 	if !strings.Contains(shellCmd, "'/Users/Some User/bin/claude'") {
 		t.Errorf("expected single-quoted binary path in shell command, got: %q", shellCmd)
 	}
+	// Must be `exec`-prefixed so sh is replaced by claude (see Invoke): under
+	// the fallback transport this is what lets Kill terminate the agent rather
+	// than orphan it behind a forked sh.
+	if !strings.HasPrefix(shellCmd, "exec ") {
+		t.Errorf("expected shell command to start with 'exec ', got: %q", shellCmd)
+	}
 }
 
 func TestDetect_ExplicitBin(t *testing.T) {
