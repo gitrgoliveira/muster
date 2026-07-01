@@ -103,6 +103,55 @@ func TestEnsure_Reuse(t *testing.T) {
 	}
 }
 
+// TestEnsure_ReuseRejectsWrongBranch verifies Ensure refuses to reuse an
+// existing worktree that a user has switched to a different branch. Reusing it
+// as-is would silently run the agent against an unexpected revision, breaking
+// the per-bead branch invariant.
+func TestEnsure_ReuseRejectsWrongBranch(t *testing.T) {
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+
+	wt, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-abc")
+	if err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+
+	// Simulate a user switching the worktree to a different branch.
+	runGitCmd(t, wt.Path, "checkout", "-b", "somethingelse")
+
+	_, err = Ensure(context.Background(), worktreesDir, repoPath, "mp-abc")
+	if err == nil {
+		t.Fatal("want error reusing a worktree on the wrong branch, got nil")
+	}
+	if !strings.Contains(err.Error(), "per-bead branch invariant") {
+		t.Errorf("error %q should mention the per-bead branch invariant", err.Error())
+	}
+}
+
+// TestEnsure_ReuseRejectsDetachedHEAD verifies Ensure refuses to reuse an
+// existing worktree whose HEAD has been detached (e.g. a manual `git checkout
+// <sha>`), which similarly would run the agent against an unexpected revision.
+func TestEnsure_ReuseRejectsDetachedHEAD(t *testing.T) {
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+
+	wt, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-abc")
+	if err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+
+	// Detach HEAD at the current commit.
+	runGitCmd(t, wt.Path, "checkout", "--detach", "HEAD")
+
+	_, err = Ensure(context.Background(), worktreesDir, repoPath, "mp-abc")
+	if err == nil {
+		t.Fatal("want error reusing a worktree with a detached HEAD, got nil")
+	}
+	if !strings.Contains(err.Error(), "detached HEAD") {
+		t.Errorf("error %q should mention detached HEAD", err.Error())
+	}
+}
+
 func TestEnsure_NonGitRepoError(t *testing.T) {
 	notARepo := t.TempDir()
 	worktreesDir := t.TempDir()

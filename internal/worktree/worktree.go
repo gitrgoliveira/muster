@@ -67,6 +67,14 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 			if err := existingWorktreeMatchesRepo(ctx, path, repoPath); err != nil {
 				return Worktree{}, err
 			}
+			// And verify it's still checked out on the expected per-bead
+			// branch. A user may have manually switched branches or detached
+			// HEAD inside the worktree; reusing it as-is would silently run the
+			// agent against an unexpected revision, breaking the per-bead
+			// branch invariant. Refuse rather than run on the wrong revision.
+			if err := worktreeOnExpectedBranch(ctx, path, branch); err != nil {
+				return Worktree{}, err
+			}
 			return Worktree{
 				BeadID:   beadID,
 				Path:     path,
@@ -195,6 +203,28 @@ func existingWorktreeMatchesRepo(ctx context.Context, wtPath, repoPath string) e
 	}
 	if repoCD != wtCD {
 		return fmt.Errorf("worktree: existing path %q is linked to repo (common-dir %q), not %q (common-dir %q) — refusing to reuse", wtPath, wtCD, repoPath, repoCD)
+	}
+	return nil
+}
+
+// worktreeOnExpectedBranch verifies the worktree at wtPath currently has the
+// branch checked out (not a different branch, not a detached HEAD). It compares
+// the full symbolic ref of HEAD against refs/heads/<branch>: `git symbolic-ref
+// HEAD` exits non-zero on a detached HEAD, and the full-ref form avoids the
+// ambiguity `--short` introduces when a same-named tag also exists. Returns an
+// error if HEAD is detached or on a different branch — Ensure refuses to reuse
+// such a worktree rather than silently run the agent on an unexpected revision.
+func worktreeOnExpectedBranch(ctx context.Context, wtPath, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "HEAD")
+	cmd.Dir = wtPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("worktree: existing path %q is not on a branch (detached HEAD?); expected branch %q — refusing to reuse: %w\n%s", wtPath, branch, err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	want := "refs/heads/" + branch
+	if got != want {
+		return fmt.Errorf("worktree: existing path %q is on %q, expected %q — refusing to reuse (per-bead branch invariant)", wtPath, got, want)
 	}
 	return nil
 }
