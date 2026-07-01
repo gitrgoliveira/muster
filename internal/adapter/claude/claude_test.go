@@ -90,6 +90,32 @@ func TestDetect_NotInstalled(t *testing.T) {
 	}
 }
 
+// TestDetect_VersionFails_InstalledWithError verifies that when the binary
+// resolves but `claude --version` exits non-zero, Detect reports Installed:true
+// (the binary IS present) AND returns a real error carrying stderr — rather
+// than a misleading Installed:false, which would make Dispatch report
+// ADAPTER_NOT_INSTALLED and tell the operator to install claude.
+func TestDetect_VersionFails_InstalledWithError(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude-broken")
+	script := "#!/bin/sh\necho 'boom: broken claude' >&2\nexit 3\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write broken claude: %v", err)
+	}
+
+	a := claude.New(claude.Options{Bin: bin})
+	result, err := a.Detect(context.Background())
+	if err == nil {
+		t.Fatal("Detect should return an error when claude --version fails")
+	}
+	if !result.Installed {
+		t.Error("Installed want true (binary was found, just failed to run)")
+	}
+	if !strings.Contains(err.Error(), "boom: broken claude") {
+		t.Errorf("error should include the binary's stderr, got: %v", err)
+	}
+}
+
 func TestModes_PlanAndAgent(t *testing.T) {
 	a := claude.New(claude.Options{})
 	modes := a.Modes()

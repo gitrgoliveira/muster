@@ -198,7 +198,12 @@ func main() {
 	var adapterInfos []health.AdapterInfo
 	detectCtx, detectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	for _, a := range reg.All() {
-		result, _ := a.Detect(detectCtx)
+		result, derr := a.Detect(detectCtx)
+		if derr != nil {
+			// Non-fatal: still report the adapter, but log so operators can tell
+			// "probe failed / timed out" apart from a genuine loggedIn=false.
+			slog.Warn("adapter Detect failed during startup status probe", "adapter", a.ID(), "err", derr)
+		}
 		adapterInfos = append(adapterInfos, health.AdapterInfo{
 			ID:       string(a.ID()),
 			Version:  result.Version,

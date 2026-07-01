@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -66,7 +67,18 @@ func (a *Adapter) Detect(ctx context.Context) (adapter.DetectResult, error) {
 		if ctx.Err() != nil {
 			return adapter.DetectResult{}, ctx.Err()
 		}
-		return adapter.DetectResult{Installed: false}, nil
+		// The binary resolved on PATH (resolve() succeeded) but `claude
+		// --version` failed to run. It IS installed — report Installed:true and
+		// surface a real error (with stderr) rather than a bare Installed:false,
+		// which would make Dispatch return ADAPTER_NOT_INSTALLED (501) and tell
+		// the operator to install claude when the real problem is a broken or
+		// misbehaving binary.
+		var stderr string
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+		return adapter.DetectResult{Installed: true}, fmt.Errorf("claude --version failed: %w (stderr: %s)", err, stderr)
 	}
 	version := strings.TrimSpace(string(versionOut))
 
