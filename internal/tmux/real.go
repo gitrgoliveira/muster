@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -249,7 +250,7 @@ func mkfifo() (dir, path string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	path = dir + "/pipe"
+	path = filepath.Join(dir, "pipe")
 	if err := mkFifoSyscall(path); err != nil {
 		_ = os.RemoveAll(dir)
 		return "", "", err

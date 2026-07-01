@@ -234,9 +234,15 @@ func isWorktreeDir(path string) bool {
 	return !info.IsDir()
 }
 
-// branchExists returns true if branch exists in the repo.
+// branchExists returns true if a local branch named branch exists in the repo.
+//
+// It verifies specifically under refs/heads/. A bare `git rev-parse --verify
+// <branch>` resolves ANY ref matching the name — including a tag — so if a tag
+// named muster/<beadID> existed, Ensure would take the "reuse existing branch"
+// path and `git worktree add <path> <tag>` would check out the tag in detached
+// HEAD, breaking the invariant that each bead gets a dedicated branch.
 func branchExists(ctx context.Context, repoPath, branch string) bool {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", branch)
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	cmd.Dir = repoPath
 	return cmd.Run() == nil
 }

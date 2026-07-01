@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -176,6 +177,41 @@ func TestEnsure_ManuallyDeletedWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(wt2.Path); err != nil {
 		t.Errorf("worktree should exist after re-creation: %v", err)
+	}
+}
+
+// TestEnsure_TagNamedLikeBranch verifies that a tag named muster/<beadID>
+// does NOT cause Ensure to treat it as an existing branch. A bare
+// `git rev-parse --verify muster/<beadID>` would resolve the tag, sending
+// Ensure down the "reuse existing branch" path and checking out the tag in
+// detached HEAD — breaking the dedicated-branch invariant. Ensure must instead
+// create a real branch refs/heads/muster/<beadID>.
+func TestEnsure_TagNamedLikeBranch(t *testing.T) {
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+
+	// Create a tag that collides with the branch name Ensure will want.
+	runGitCmd(t, repoPath, "tag", "muster/mp-tagcollide")
+
+	wt, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-tagcollide")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	// The worktree must be on a real local branch, not a detached HEAD on the
+	// tag. `git symbolic-ref HEAD` fails (non-zero) on a detached HEAD, so
+	// capture the error ourselves rather than fataling with a raw git error.
+	// Use the full ref form (not --short): with a same-named tag and branch,
+	// --short keeps a disambiguating "heads/" prefix, but the full ref is
+	// unambiguously refs/heads/... — which is exactly the invariant we assert.
+	cmd := exec.Command("git", "symbolic-ref", "HEAD")
+	cmd.Dir = wt.Path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("worktree HEAD is not on a branch (detached-on-tag?): %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "refs/heads/muster/mp-tagcollide" {
+		t.Errorf("worktree HEAD want refs/heads/muster/mp-tagcollide, got %q", got)
 	}
 }
 
