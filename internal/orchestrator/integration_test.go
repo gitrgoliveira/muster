@@ -3,7 +3,6 @@ package orchestrator_test
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -17,11 +16,16 @@ import (
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
 
-// skipIfNoRealTmux skips the test if tmux is not installed.
+// skipIfNoRealTmux skips the test unless a real, supported tmux is available.
+// It uses the same RealManager.Detect() the orchestrator uses at startup, so
+// the guard skips not just when tmux is absent but also when the installed
+// version is unparseable or below the supported floor (>= 3.2) — running these
+// real-transport tests against an out-of-contract tmux would fail in obscure
+// ways rather than skipping cleanly.
 func skipIfNoRealTmux(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed; skipping integration test")
+	if _, err := tmux.NewRealManager("").Detect(); err != nil {
+		t.Skipf("no supported tmux available; skipping integration test: %v", err)
 	}
 }
 

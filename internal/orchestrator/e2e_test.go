@@ -45,9 +45,11 @@ const e2eBeadID = "mp-e2e01"
 func checkE2EPrerequisites(t *testing.T) {
 	t.Helper()
 
-	// Check tmux.
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed; skipping e2e test. Install tmux >= 3.2 to run.")
+	// Check tmux via the same Detect() the orchestrator uses, so we skip not
+	// just when tmux is absent but also when it's below the supported floor
+	// (>= 3.2) or unparseable — the e2e path runs the real transport.
+	if _, err := tmux.NewRealManager("").Detect(); err != nil {
+		t.Skipf("no supported tmux available; skipping e2e test (install tmux >= 3.2): %v", err)
 	}
 
 	// Check claude installed.

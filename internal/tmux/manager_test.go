@@ -442,8 +442,11 @@ func TestRealTmuxManager_Send(t *testing.T) {
 // fake-shell test can't catch this because it only records argv, not tmux's
 // own key-name-lookup behavior.
 func TestRealTmuxManager_Send_LiteralDelivery(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed; skipping real-tmux test")
+	// Detect() (not a bare LookPath) so we also skip on an unparseable or
+	// below-floor (< 3.2) tmux, which is outside the supported contract this
+	// real-transport test assumes.
+	if _, err := NewRealManager("").Detect(); err != nil {
+		t.Skipf("no supported tmux available; skipping real-tmux test: %v", err)
 	}
 	if runtime.GOOS == "windows" {
 		t.Skip("requires unix pty")

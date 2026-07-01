@@ -34,12 +34,14 @@ func worktreePath(worktreesDir, beadID string) string {
 //   - Otherwise, it is created via `git worktree add -b muster/<beadID> <path>`.
 //   - Returns an error if repoPath is not a git repository.
 //
-// ctx bounds every git subprocess Ensure spawns. Ensure is called from Dispatch
-// while the run reservation (State=StepActive) is already held; a hung git
-// call would otherwise pin the reservation indefinitely and make the bead
-// undispatchable until the server restarts, so the caller MUST supply a
-// deadline-carrying context. Cancellation propagates through
-// exec.CommandContext to kill the child git process.
+// ctx bounds every git subprocess Ensure spawns; cancellation propagates
+// through exec.CommandContext to kill the child git process. Ensure does not
+// enforce a deadline itself, so callers are free to pass context.Background()
+// (several tests do). In production, however, callers SHOULD supply a
+// deadline-carrying context: Ensure is called from Dispatch while the run
+// reservation (State=StepActive) is already held, and a hung git call on an
+// unbounded context would pin the reservation indefinitely, making the bead
+// undispatchable until the server restarts.
 func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktree, error) {
 	// Validate that repoPath is a git repo.
 	if err := validateGitRepo(ctx, repoPath); err != nil {
