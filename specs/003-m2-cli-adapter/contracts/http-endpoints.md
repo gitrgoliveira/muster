@@ -40,8 +40,9 @@ Request `{ "keys": "y\n" }` → forwards to the live pane via `send-keys`.
 | Status | When |
 |---|---|
 | `204 No Content` | delivered |
-| `409`/`404` | session already exited / not running / unknown |
-| `412`/`409` | tmux unavailable (fallback) — sending unsupported |
+| `400 INVALID_STATE` | step is not currently running (or is starting: tmux session not yet assigned) |
+| `404` | unknown bead, or `idx≠0` |
+| `503` | tmux unavailable (fallback transport) — sending unsupported |
 
 ## `GET /api/v1/orchestrator/status` (additive fields)
 

@@ -169,8 +169,8 @@ Adapters      []AdapterInfo `json:"adapters,omitempty"` // {id, version, loggedI
 
 ```
 dispatch(claude) ──> step running, bead column = running   (FR-002, FR-013)
-   agent exit 0  ──> step done,    bead column = review
-   agent exit ≠0 ──> step failed,  bead column unchanged/failed marker
+   agent exit 0  ──> step done,    bead column unchanged; outcome recorded via an appended note + bead.updated
+   agent exit ≠0 ──> step failed,  bead column unchanged; outcome recorded via an appended note + bead.updated
    timeout/cancel──> step cancelled, session killed
 ```
-Column constants exist (`core.ColRunning`, `core.ColReview`). No new bead persistence beyond what M1's `bd` bridge already writes (column moves go through the existing write path).
+`core.ColReview` exists as a column constant but M2 does not persist a distinct review state — completing a run cannot move the bead to `review` (no dedicated write path), so completion is recorded as a note on the bead plus a `bead.updated` broadcast, leaving the column unchanged. A persisted "review" state is tracked as a follow-up (FR-013 completion distinguishable from `in_progress`), not part of M2.

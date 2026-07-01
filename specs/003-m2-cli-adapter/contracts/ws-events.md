@@ -13,7 +13,7 @@ Additive to the M1 `bead.*` protocol. Same `ws.Frame` envelope, same hub. M1 eve
 ## Ordering & semantics
 
 - `runlog.line.seq` is monotonic within a (bead, step) run; clients render in `seq` order into a terminal emulator. `data` is **raw** (ANSI preserved) — see plan D1.
-- Lifecycle order per run: `tmux.session.opened` → `runlog.line`* → `tmux.session.closed`. A `bead.updated` (M1 event) accompanies the column transition on close.
+- Lifecycle order per run: `tmux.session.opened` → `runlog.line`* → `tmux.session.closed`. A `bead.updated` (M1 event) accompanies close, recording the run's outcome as an appended note — M2 cannot persist a distinct `review` state, so the bead's column does not move on completion (see data-model.md).
 - **Catch-up is NOT via replayed WS frames**: a late-joining client fetches scrollback via the attach/`capture-pane` path (REST), then consumes live `runlog.line` from connect time. (No durable runlog in M2 — M9.)
 - Fallback (tmux absent): `runlog.line` still flows from the child's stdout/stderr; `tmux.session.*` still bracket the run (name empty/synthetic); no catch-up.
 
