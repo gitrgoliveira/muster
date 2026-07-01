@@ -2,13 +2,17 @@
 
 End-to-end walkthrough of the M2 happy path. Assumes M1 is built and a beads dir exists.
 
-## Prerequisites (probed at startup)
+## Prerequisites
+
+muster probes `tmux` (>= 3.2) and the `claude` adapter at startup. `git` is
+required at run time (worktree creation shells out to it) but is **not** probed
+or version-checked at startup.
 
 ```bash
-tmux -V                 # >= 3.2
-git --version           # >= 2.40
-claude --version        # the adapter
+tmux -V                 # >= 3.2  (probed at startup)
+claude --version        # the adapter (probed at startup)
 claude auth status --json   # {"loggedIn": true, ...}
+git --version           # >= 2.40 recommended (used at run time, not probed)
 ```
 
 ## 1. Start muster with a repo mapping
