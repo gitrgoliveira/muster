@@ -141,6 +141,49 @@ func TestRecoverSessions_InvalidBeadIDKilled(t *testing.T) {
 	}
 }
 
+func TestRecoverSessions_UnsupportedIndicesKilled(t *testing.T) {
+	// A session with a valid bead ID but an unsupported step/loop index
+	// (M2 only creates 0/0). A locally-planted "muster/mp-abc/-1/0" must be
+	// killed and must NOT register a phantom run — otherwise it would block
+	// dispatch for mp-abc forever while being unattachable (idx=0 only).
+	cases := []struct {
+		name    string
+		session tmux.Session
+	}{
+		{"negative step", tmux.Session{Name: "muster/mp-abc/-1/0", BeadID: "mp-abc", StepIdx: -1, Loop: 0}},
+		{"nonzero step", tmux.Session{Name: "muster/mp-abc/1/0", BeadID: "mp-abc", StepIdx: 1, Loop: 0}},
+		{"nonzero loop", tmux.Session{Name: "muster/mp-abc/0/2", BeadID: "mp-abc", StepIdx: 0, Loop: 2}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := &controlledTransport{
+				fakeTransport: fakeTransport{
+					deadDead:    false, // live, so only the validation guard can reject it
+					listReturns: []tmux.Session{tc.session},
+				},
+			}
+			o := orchestrator.New(orchestrator.Config{
+				Adapters:     adapter.NewRegistry(),
+				Transport:    transport,
+				RepoMap:      orchestrator.RepoMap{},
+				WorktreesDir: t.TempDir(),
+			})
+
+			o.RecoverSessions(context.Background())
+
+			if run := o.GetRun("mp-abc"); run != nil {
+				t.Error("session with unsupported step/loop indices should not register a run")
+			}
+			if !transport.killCalled {
+				t.Error("Kill should have been called for the unsupported-index session")
+			}
+			if count := o.RunCount(); count != 0 {
+				t.Errorf("RunCount want 0 got %d", count)
+			}
+		})
+	}
+}
+
 func TestRecoverSessions_EmptyList(t *testing.T) {
 	transport := &controlledTransport{
 		fakeTransport: fakeTransport{

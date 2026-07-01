@@ -58,6 +58,22 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 		return
 	}
 
+	// Security: the step/loop indices are likewise parsed from the
+	// user-controllable session name, and ParseSessionName accepts any integer
+	// (including negatives). M2 only ever creates step 0 / loop 0 runs
+	// (tmux.SessionName(beadID, 0, 0) in Dispatch). A session encoding any
+	// other index — e.g. a locally-planted `muster/mp-abc/-1/0` — is not a real
+	// muster run: recovering it would register a phantom active run that
+	// permanently blocks dispatch for the bead (ErrRunAlreadyActive) yet can
+	// never be attached to or sent keys (those endpoints only accept idx=0), a
+	// DoS wedge. Kill the stray rather than register it.
+	if sess.StepIdx != 0 || sess.Loop != 0 {
+		slog.Warn("recovery: killing session with unsupported step/loop indices (M2 supports only 0/0)",
+			"session", sessionName, "beadID", beadID, "stepIdx", sess.StepIdx, "loop", sess.Loop)
+		_ = o.transport.Kill(sessionName)
+		return
+	}
+
 	// Check if we already have a run for this bead (e.g., dispatched before recovery).
 	o.mu.RLock()
 	existing := o.runs[beadID]

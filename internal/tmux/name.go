@@ -22,8 +22,9 @@ func SessionName(beadID string, stepIdx, loop int) string {
 // (stepIdx, loop) must parse as integers. It does NOT reject values SessionName
 // would never emit — negative or non-canonical integers (parsed via
 // strconv.Atoi) and bead IDs that wouldn't pass core.ValidBeadID both parse
-// successfully. Callers needing those guarantees validate separately (recovery
-// runs the bead ID through core.ValidBeadID). Returns an error only when the
+// successfully. Callers needing those guarantees validate separately: recovery
+// runs the bead ID through core.ValidBeadID and rejects/kills sessions whose
+// step or loop index isn't the M2-supported 0. Returns an error only when the
 // structural shape above is violated.
 func ParseSessionName(name string) (beadID string, stepIdx, loop int, err error) {
 	if !strings.HasPrefix(name, sessionPrefix) {
