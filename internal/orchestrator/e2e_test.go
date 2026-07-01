@@ -14,7 +14,7 @@ package orchestrator_test
 // (asking claude to output a single word). It skips gracefully if either
 // prerequisite is missing.
 //
-// Cleanup: kills any muster/mp-e2e-* tmux sessions and removes temp dirs.
+// Cleanup: kills the muster/<e2eBeadID>/* tmux session and removes temp dirs.
 
 import (
 	"context"
@@ -31,6 +31,15 @@ import (
 	"github.com/gitrgoliveira/muster/internal/tmux"
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
+
+// e2eBeadID is the bead ID used throughout this test. It must match the
+// validated bead-ID format `^[a-z]+-[0-9a-z]+$` (see idPattern in
+// internal/api/beads/handlers.go and beadIDPattern in
+// internal/orchestrator/recovery.go) so the test exercises a representative
+// ID: a suffix with a second hyphen would fail that validation and would be
+// skipped by restart recovery. The "mp" prefix is mapped to the temp repo in
+// the orchestrator config below.
+const e2eBeadID = "mp-e2e01"
 
 // checkE2EPrerequisites skips the test if claude or tmux is absent/unauthed.
 func checkE2EPrerequisites(t *testing.T) {
@@ -97,7 +106,7 @@ func TestE2E_Dispatch_RealClaude_RealTmux(t *testing.T) {
 
 	// Trivial prompt: costs ~minimal tokens, asks for a single word.
 	req := orchestrator.DispatchRequest{
-		BeadID:    "mp-e2e-01",
+		BeadID:    e2eBeadID,
 		BeadTitle: "E2E test",
 		BeadDesc:  "Reply with exactly one word: 'done'. Nothing else.",
 		Agent:     core.AgentClaude,
@@ -108,7 +117,7 @@ func TestE2E_Dispatch_RealClaude_RealTmux(t *testing.T) {
 
 	// Cleanup: kill any lingering session.
 	t.Cleanup(func() {
-		sessionName := tmux.SessionName("mp-e2e-01", 0, 0)
+		sessionName := tmux.SessionName(e2eBeadID, 0, 0)
 		_ = realTransport.Kill(sessionName)
 	})
 
@@ -123,7 +132,7 @@ func TestE2E_Dispatch_RealClaude_RealTmux(t *testing.T) {
 	t.Logf("Bead dispatched; column=%s", bead.Column)
 
 	// Verify run registered.
-	run := o.GetRun("mp-e2e-01")
+	run := o.GetRun(e2eBeadID)
 	if run == nil {
 		t.Fatal("GetRun returned nil immediately after Dispatch")
 	}
@@ -133,7 +142,7 @@ func TestE2E_Dispatch_RealClaude_RealTmux(t *testing.T) {
 	t.Log("Waiting for run to complete...")
 	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
-		run = o.GetRun("mp-e2e-01")
+		run = o.GetRun(e2eBeadID)
 		if run != nil && run.State != core.StepActive {
 			t.Logf("Run completed: state=%s exitCode=%d", run.State, run.ExitCode)
 			break
@@ -141,7 +150,7 @@ func TestE2E_Dispatch_RealClaude_RealTmux(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	run = o.GetRun("mp-e2e-01")
+	run = o.GetRun(e2eBeadID)
 	if run == nil {
 		t.Fatal("run disappeared from registry")
 	}
@@ -159,15 +168,15 @@ func TestE2E_Dispatch_RealClaude_RealTmux(t *testing.T) {
 	for _, ev := range eventsCopy {
 		switch ev.Type {
 		case ws.EventTmuxOpened:
-			if ev.BeadID == "mp-e2e-01" {
+			if ev.BeadID == e2eBeadID {
 				foundOpened = true
 			}
 		case ws.EventRunlogLine:
-			if ev.BeadID == "mp-e2e-01" {
+			if ev.BeadID == e2eBeadID {
 				foundRunlog = true
 			}
 		case ws.EventTmuxClosed:
-			if ev.BeadID == "mp-e2e-01" {
+			if ev.BeadID == e2eBeadID {
 				foundClosed = true
 			}
 		}

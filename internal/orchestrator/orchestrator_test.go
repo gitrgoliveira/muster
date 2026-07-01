@@ -540,7 +540,7 @@ func TestDispatch_OnComplete_PanicRecovered(t *testing.T) {
 	// OnComplete must still fire normally. If the panic were unrecovered, the
 	// whole test binary would have already crashed before reaching this point.
 	_, err = o.Dispatch(context.Background(), orchestrator.DispatchRequest{
-		BeadID:         "mp-after-panic",
+		BeadID:         "mp-afterpanic",
 		BeadTitle:      "Test",
 		Agent:          core.AgentClaude,
 		Mode:           core.ModeAgent,
