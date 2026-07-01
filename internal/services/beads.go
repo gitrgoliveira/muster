@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"unicode/utf8"
 
@@ -441,8 +442,12 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 }
 
 // Dispatch transitions a bead to running.
-// When an orchestrator is wired in, it delegates to the orchestrator to launch
-// a real agent run; otherwise it falls back to the legacy bd-CLI path (stub).
+// When an orchestrator is wired in, it delegates to the orchestrator to
+// launch a real agent run, then persists the running transition via the same
+// bd CLI claim the legacy path uses (best-effort: a failure here is logged,
+// not fatal, since the run is already active) — beads is the source of truth
+// for issue state, so the launch alone is not enough. Otherwise it falls back
+// to the legacy bd-CLI path (stub).
 func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchInput) (*core.Bead, error) {
 	if !input.Agent.Valid() {
 		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid agent"}
@@ -473,13 +478,43 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		if orchErr != nil {
 			return nil, wrapOrchestratorError(orchErr)
 		}
+
+		// Persist the running transition. Beads is the source of truth for
+		// issue state (constitution II; FR-002 requires dispatch to
+		// "transition the bead to a running state") — the orchestrator's own
+		// result is an in-memory stub scoped to its run registry, not a
+		// store write. Without this call, a subsequent GET (or a
+		// reconnecting client re-reading the store) would keep showing the
+		// pre-dispatch column even though the agent is genuinely running.
+		// This is the same bd-CLI claim the legacy path below already uses,
+		// and its write is what the rest of the notification pipeline
+		// already assumes happens: in embedded mode the file watcher fans
+		// the resulting jsonl change into the WS hub (no watcher runs in
+		// remote mode, which is why publishWrite below exists).
+		//
+		// The agent has already launched by this point (orchestrator.Dispatch
+		// succeeded above), so a failure here is logged, not fatal: failing
+		// the whole request would be misleading (the run IS active) and a
+		// client retry would just hit ErrRunAlreadyActive/409.
+		if svc.cli != nil {
+			if iss, err := svc.cli.Dispatch(ctx, id); err != nil {
+				slog.Warn("Dispatch: orchestrator run started but persisting the running state failed; bead state may lag until the run completes", "bead", id, "err", err)
+			} else {
+				b := IssueToBead(&iss, svc.repo)
+				bead = &b
+			}
+		} else {
+			slog.Warn("Dispatch: bd CLI unavailable; cannot persist running state for orchestrator-backed run", "bead", id)
+		}
+
 		// Parity with the legacy bd-CLI dispatch path below: publish a
 		// bead.updated frame so other connected clients learn about the
 		// running transition. In remote mode there is no file watcher to fan
 		// a jsonl write into the hub, so this manual publish is the only
-		// signal beyond tmux.session.opened. Use the full bead we fetched at
-		// the start of this branch and overlay the orchestrator's column so
-		// the frame carries a complete payload (not the orchestrator's stub).
+		// signal beyond tmux.session.opened. Overlay the orchestrator's
+		// column so the frame carries a complete payload even if the bd
+		// claim above failed/was unavailable (result.Column is still
+		// authoritative for "the run is active" either way).
 		// Return the same merged bead from the HTTP path so the response
 		// matches the WS frame (clients otherwise saw a stub here while a
 		// concurrent socket-listener saw the full bead).

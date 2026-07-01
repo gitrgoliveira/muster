@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Worktree describes a per-bead git worktree.
@@ -126,10 +127,22 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 // or (if the gitlink itself never got written) permanently refuse to reuse
 // OR recreate it — both are worse than a best-effort removal here.
 //
-// Uses context.Background(), not the caller's ctx: cleanup must still run
-// when the failure IS the caller's ctx expiring/being cancelled.
+// cleanupTimeout bounds each best-effort git subprocess cleanupFailedCreate
+// runs. Decoupled from the caller's ctx (which may already be the thing that
+// expired), but NOT unbounded either — a hung `git worktree remove`/`prune`
+// (e.g. a stale NFS mount or a stuck lock file) must not block Ensure's
+// error-return path indefinitely, since Ensure runs while the orchestrator's
+// run reservation is held (see the ctx-decoupling rationale on Ensure above).
+const cleanupTimeout = 10 * time.Second
+
+// Uses a context decoupled from the caller's ctx (not context.Background()
+// forever — see cleanupTimeout): cleanup must still run when the failure IS
+// the caller's ctx expiring/being cancelled, but each subprocess gets its own
+// bounded deadline so a hung cleanup can't wedge the caller forever either.
 func cleanupFailedCreate(repoPath, path string) {
-	removeCmd := exec.CommandContext(context.Background(), "git", "worktree", "remove", "--force", path)
+	removeCtx, removeCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer removeCancel()
+	removeCmd := exec.CommandContext(removeCtx, "git", "worktree", "remove", "--force", path)
 	removeCmd.Dir = repoPath
 	if removeCmd.Run() == nil {
 		return
@@ -138,7 +151,9 @@ func cleanupFailedCreate(repoPath, path string) {
 	// half-created directory (e.g. no gitlink was ever written). Fall back to
 	// a raw removal plus prune to drop the stale admin entry.
 	_ = os.RemoveAll(path)
-	pruneCmd := exec.CommandContext(context.Background(), "git", "worktree", "prune")
+	pruneCtx, pruneCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer pruneCancel()
+	pruneCmd := exec.CommandContext(pruneCtx, "git", "worktree", "prune")
 	pruneCmd.Dir = repoPath
 	_ = pruneCmd.Run()
 }

@@ -160,7 +160,14 @@ func TestColumnToStatuses_RoundTrip(t *testing.T) {
 }
 
 // fakeCLI is a CLIRunner that returns a fixed issue for every write.
-type fakeCLI struct{ iss store.Issue }
+// dispatchCalls, if non-nil, is incremented on every Dispatch call — lets
+// tests assert the bd CLI claim actually ran (not just an in-memory overlay).
+// dispatchErr, if set, is returned by Dispatch instead of iss.
+type fakeCLI struct {
+	iss           store.Issue
+	dispatchCalls *int
+	dispatchErr   error
+}
 
 func (f fakeCLI) Create(context.Context, bdshell.CreateInput) (store.Issue, error) {
 	return f.iss, nil
@@ -168,8 +175,16 @@ func (f fakeCLI) Create(context.Context, bdshell.CreateInput) (store.Issue, erro
 func (f fakeCLI) Update(context.Context, string, bdshell.UpdatePatch) (store.Issue, error) {
 	return f.iss, nil
 }
-func (f fakeCLI) Close(context.Context, string) (store.Issue, error)    { return f.iss, nil }
-func (f fakeCLI) Dispatch(context.Context, string) (store.Issue, error) { return f.iss, nil }
+func (f fakeCLI) Close(context.Context, string) (store.Issue, error) { return f.iss, nil }
+func (f fakeCLI) Dispatch(context.Context, string) (store.Issue, error) {
+	if f.dispatchCalls != nil {
+		*f.dispatchCalls++
+	}
+	if f.dispatchErr != nil {
+		return store.Issue{}, f.dispatchErr
+	}
+	return f.iss, nil
+}
 func (f fakeCLI) AppendNote(context.Context, string, string) (store.Issue, error) {
 	return f.iss, nil
 }
@@ -214,6 +229,110 @@ func TestPublishOnWrite_EmbeddedModeSilent(t *testing.T) {
 	}
 	if len(frames) != 0 {
 		t.Errorf("embedded mode must not publish on write, got %d frames", len(frames))
+	}
+}
+
+// fakeOrchestrator is an OrchestratorDispatcher that returns a fixed stub
+// bead, mirroring what orchestrator.Dispatch actually returns (an in-memory
+// stub, not a store write).
+type fakeOrchestrator struct{ dispatchCalled bool }
+
+func (f *fakeOrchestrator) Dispatch(context.Context, OrchestratorDispatchRequest) (*core.Bead, error) {
+	f.dispatchCalled = true
+	return &core.Bead{ID: "mp-aaa", Column: core.ColRunning}, nil
+}
+
+// TestDispatch_OrchestratorPath_PersistsRunningState verifies that
+// BeadService.Dispatch, when an orchestrator is wired in, ALSO persists the
+// running transition via the bd CLI (bd update --claim) — not just an
+// in-memory overlay on the orchestrator's own stub bead. Beads is the source
+// of truth for issue state (constitution II; FR-002); without this, a
+// subsequent GET would show the pre-dispatch column even though the agent is
+// genuinely running.
+func TestDispatch_OrchestratorPath_PersistsRunningState(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues()) // mp-aaa starts "open"
+	dispatchCalls := 0
+	cli := fakeCLI{
+		iss:           store.Issue{ID: "mp-aaa", Title: "Implement feature alpha", Status: "in_progress", IssueType: "feature"},
+		dispatchCalls: &dispatchCalls,
+	}
+	orch := &fakeOrchestrator{}
+
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	svc := NewBeadServiceWithRepo(backend, cli, pub, "muster", true).WithOrchestrator(orch)
+
+	got, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{Agent: core.AgentClaude, Mode: core.ModeAgent})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	if !orch.dispatchCalled {
+		t.Fatal("orchestrator.Dispatch was not called")
+	}
+	// The bd CLI claim must have actually run (persisting the transition to
+	// the beads store) — not just relied on the orchestrator's in-memory
+	// stub overlay.
+	if dispatchCalls != 1 {
+		t.Errorf("bd CLI Dispatch (claim) call count want 1 got %d", dispatchCalls)
+	}
+	if got.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Column)
+	}
+
+	if len(frames) == 0 {
+		t.Fatal("expected a bead.updated frame to be published")
+	}
+	last := frames[len(frames)-1]
+	if last.Type != ws.EventBeadUpdated || last.Bead == nil {
+		t.Fatalf("last frame = %+v, want bead.updated with Bead", last)
+	}
+	if last.Bead.Column != core.ColRunning {
+		t.Errorf("published bead Column want running got %q", last.Bead.Column)
+	}
+}
+
+// TestDispatch_OrchestratorPath_CLIUnavailable verifies the orchestrator
+// launch still succeeds when the bd CLI isn't configured — persistence is
+// best-effort (logged, not fatal), since the run is already genuinely active
+// by the time the claim would run.
+func TestDispatch_OrchestratorPath_CLIUnavailable(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	svc := NewBeadService(backend, nil, nil).WithOrchestrator(orch)
+
+	got, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{Agent: core.AgentClaude, Mode: core.ModeAgent})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !orch.dispatchCalled {
+		t.Fatal("orchestrator.Dispatch was not called")
+	}
+	if got.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Column)
+	}
+}
+
+// TestDispatch_OrchestratorPath_CLIClaimFails verifies that a failed bd CLI
+// claim does not fail the whole Dispatch call: the agent is already genuinely
+// running by the time the claim would run (orchestrator.Dispatch already
+// succeeded), so failing the request here would be misleading and would
+// prompt a pointless retry that just hits ErrRunAlreadyActive.
+func TestDispatch_OrchestratorPath_CLIClaimFails(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	cli := fakeCLI{dispatchErr: errors.New("bd: connection refused")}
+	orch := &fakeOrchestrator{}
+	svc := NewBeadServiceWithRepo(backend, cli, nil, "muster", true).WithOrchestrator(orch)
+
+	got, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{Agent: core.AgentClaude, Mode: core.ModeAgent})
+	if err != nil {
+		t.Fatalf("Dispatch should still succeed when only the bd claim fails: %v", err)
+	}
+	if !orch.dispatchCalled {
+		t.Fatal("orchestrator.Dispatch was not called")
+	}
+	if got.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Column)
 	}
 }
 

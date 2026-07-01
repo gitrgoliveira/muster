@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -417,8 +418,11 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	// Write prompt file. 0o600 keeps the file readable only by the muster
 	// process owner — the bead prompt may contain sensitive task context, and
-	// other local users have no need to read it.
-	promptPath := wt.Path + "/" + promptFileName
+	// other local users have no need to read it. filepath.Join (not a
+	// hard-coded "/") keeps this portable to Windows, where the adapter's own
+	// filepath.Rel(Worktree, PromptFile) contract check expects an OS-native
+	// separator throughout.
+	promptPath := filepath.Join(wt.Path, promptFileName)
 	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
