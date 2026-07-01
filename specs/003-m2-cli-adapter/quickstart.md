@@ -54,7 +54,7 @@ curl -s -X POST localhost:7766/api/v1/beads/mp-abc/steps/0/send -d '{"keys":"y\n
 
 ## 4. Completion
 
-When the agent exits, Terminal A shows `tmux.session.closed` (with `exitCode`) and a `bead.updated` moving `mp-abc` to `review` (exit 0). The worktree at `~/.muster/worktrees/mp-abc` holds the agent's changes on branch `muster/mp-abc`.
+When the agent exits, Terminal A shows `tmux.session.closed` (with `exitCode`) followed by a `bead.updated` frame. **M2 limitation**: beads has no distinct "review" status (it folds to `in_progress`), so the bead's column does not change — completion is recorded as a note on the bead ("agent run completed (exit 0) — awaiting review" or the failure equivalent) plus the `bead.updated` frame announcing that note. The worktree at `~/.muster/worktrees/mp-abc` holds the agent's changes on branch `muster/mp-abc`.
 
 ## 5. Restart recovery
 

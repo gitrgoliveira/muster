@@ -257,9 +257,20 @@ func (m *RealManager) Capture(name string, withEscapes bool) (string, error) {
 	return out, nil
 }
 
-// Send implements Manager. Delivers keystrokes via send-keys.
+// Send implements Manager. Delivers keys as literal text via send-keys -l.
+//
+// Without -l, tmux send-keys treats its argument as a KEY NAME to look up
+// first (e.g. "Enter", "Space", "Tab", "C-c") and only falls back to sending
+// it as literal characters if no key name matches — so an answer that
+// happens to collide with a recognized key name (e.g. sending the literal
+// text "Enter") would press that key instead of typing the text, and there is
+// no way for a caller to know in advance which inputs will collide. -l
+// disables that lookup entirely and sends the exact bytes given, including
+// any embedded newline (verified against both a plain pipe reader and an
+// interactive bash+readline shell: a trailing "\n" in a single -l call is
+// delivered and accepted as Enter — no separate C-m/Enter keypress needed).
 func (m *RealManager) Send(name, keys string) error {
-	_, err := m.run("send-keys", "-t", name, keys)
+	_, err := m.run("send-keys", "-t", name, "-l", keys)
 	if err != nil {
 		return fmt.Errorf("tmux send-keys %q: %w", name, err)
 	}

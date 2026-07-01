@@ -2,10 +2,12 @@ package tmux
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeTmuxPath returns the absolute path to the fake_tmux.sh script in testdata.
@@ -394,11 +396,75 @@ func TestRealTmuxManager_Send(t *testing.T) {
 	for _, l := range lines {
 		if strings.Contains(l, "send-keys") && strings.Contains(l, "muster/mp-abc/0/0") {
 			found = true
+			// -l is required: without it, tmux treats the argument as a key
+			// NAME lookup (e.g. a literal "Enter" would press the Enter key
+			// instead of typing the text) rather than literal characters.
+			if !strings.Contains(l, "-l") {
+				t.Errorf("send-keys invocation must include -l for literal delivery, got: %q", l)
+			}
 			break
 		}
 	}
 	if !found {
 		t.Errorf("expected send-keys in records, got: %v", lines)
+	}
+}
+
+// TestRealTmuxManager_Send_LiteralDelivery exercises Send against a REAL tmux
+// binary (not the fake_tmux.sh recorder) with a session name that happens to
+// match a tmux special key name. Without -l, `send-keys -t <session> Enter`
+// presses the Enter key instead of typing the literal text "Enter" — a
+// fake-shell test can't catch this because it only records argv, not tmux's
+// own key-name-lookup behavior.
+func TestRealTmuxManager_Send_LiteralDelivery(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed; skipping real-tmux test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix pty")
+	}
+
+	sessionName := "muster-test-send-literal"
+	outFile := filepath.Join(t.TempDir(), "out.txt")
+
+	// Spawn a session that just dumps whatever it receives to a file.
+	spawnCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-x", "80", "-y", "24", "cat > "+outFile)
+	if out, err := spawnCmd.CombinedOutput(); err != nil {
+		t.Fatalf("tmux new-session: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+	})
+
+	// Give the pane a moment to start.
+	time.Sleep(200 * time.Millisecond)
+
+	m := NewRealManager("")
+	// "Enter" is a recognized tmux key name — without -l this would press
+	// Enter (sending nothing to the file) instead of typing the 5 literal
+	// characters "Enter".
+	if err := m.Send(sessionName, "Enter"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	// Terminate cat's stdin so it flushes and exits, by sending a real EOF
+	// (Ctrl-D) via a plain (non-literal) key so we can read the file.
+	if _, err := m.run("send-keys", "-t", sessionName, "C-d"); err != nil {
+		t.Fatalf("send C-d: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var data []byte
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(outFile)
+		if err == nil && len(b) > 0 {
+			data = b
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if string(data) != "Enter" {
+		t.Errorf("Send(%q, \"Enter\") delivered %q, want literal \"Enter\" (if empty, -l is likely missing and tmux pressed the Enter key instead)", sessionName, string(data))
 	}
 }
 
