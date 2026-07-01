@@ -571,6 +571,19 @@ func TestAttach_404_NonZeroIdx(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// TestAttach_404_NonCanonicalZeroIdx verifies the step-index route requires
+// the canonical "0" and rejects non-canonical zero forms (Atoi would accept
+// "-0"/"+0"/"00" as 0).
+func TestAttach_404_NonCanonicalZeroIdx(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	for _, idx := range []string{"-0", "+0", "00"} {
+		resp := doGet(t, srv, "/beads/mp-aaa/steps/"+idx+"/attach")
+		assert.Equalf(t, http.StatusNotFound, resp.StatusCode, "idx %q should 404", idx)
+	}
+}
+
 func TestSend_400_BadBody(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()

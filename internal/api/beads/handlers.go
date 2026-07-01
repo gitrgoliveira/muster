@@ -3,7 +3,6 @@ package beads
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
@@ -77,15 +76,17 @@ func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
 }
 
 // parseStepIdx parses and validates the {idx} path param shared by Attach and
-// Send. M2 only supports step 0, so any other value — malformed, negative, or
-// non-zero — writes a 404 (unknown step) and returns ok=false.
+// Send. M2 only supports step 0, so it requires the canonical "0" exactly and
+// writes a 404 (unknown step) with ok=false for anything else. Requiring the
+// literal "0" (rather than strconv.Atoi(idxStr)==0) rejects non-canonical zero
+// forms — "-0", "+0", "00" — that the contract doesn't define, keeping routing
+// unambiguous.
 func parseStepIdx(w http.ResponseWriter, r *http.Request, idxStr string) (idx int, ok bool) {
-	idx, err := strconv.Atoi(idxStr)
-	if err != nil || idx != 0 {
+	if idxStr != "0" {
 		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
 		return 0, false
 	}
-	return idx, true
+	return 0, true
 }
 
 // decodeJSON decodes the request body with DisallowUnknownFields. On error,
