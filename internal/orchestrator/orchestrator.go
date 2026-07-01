@@ -234,7 +234,22 @@ func (o *Orchestrator) scheduleRunEviction(run *Run) {
 
 // resolvePermMode returns the effective permission mode, applying the default
 // if the request omits it, or returning ErrNoPermissionMode if neither is set.
-func (o *Orchestrator) resolvePermMode(requested core.PermissionMode) (core.PermissionMode, error) {
+//
+// Plan mode is a special case: the claude adapter's Modes() table hardcodes
+// "--permission-mode plan" for core.ModePlan regardless of whatever value is
+// passed in (see claude.Adapter.Modes) — plan mode is inherently read-only,
+// not a user-selectable autonomy level. Without this carve-out, a plan-mode
+// dispatch would spuriously require a permissionMode that's discarded before
+// it ever reaches the CLI, and — worse — the fallback-transport "prompting
+// mode" warning below would judge hang risk against a resolved value that
+// isn't actually what gets passed to claude.
+func (o *Orchestrator) resolvePermMode(mode core.Mode, requested core.PermissionMode) (core.PermissionMode, error) {
+	if mode == core.ModePlan {
+		if requested != "" && requested != core.PermPlan {
+			return "", &PermModeError{Mode: requested}
+		}
+		return core.PermPlan, nil
+	}
 	if requested != "" {
 		if !requested.Valid() {
 			return "", &PermModeError{Mode: requested}
@@ -297,7 +312,7 @@ var promptingModes = map[core.PermissionMode]bool{
 // Returns a stub *core.Bead with updated column (the caller publishes bead.updated).
 func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core.Bead, error) {
 	// Resolve permission mode.
-	pm, err := o.resolvePermMode(req.PermissionMode)
+	pm, err := o.resolvePermMode(req.Mode, req.PermissionMode)
 	if err != nil {
 		return nil, err
 	}

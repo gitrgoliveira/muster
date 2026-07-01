@@ -387,6 +387,27 @@ func TestDispatch_OrchestratorPath_EmbeddedMode_SkipsForcedPublishWhenPersisted(
 	}
 }
 
+// TestSendKeys_NoAttacher verifies that SendKeys reports CodeCLIMissing
+// (→ 501) rather than CodeCLIUnavailable (→ 503) when no SessionAttacher is
+// wired in: the feature is simply not configured, not a transient backend
+// outage, so clients shouldn't be told to retry.
+func TestSendKeys_NoAttacher(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	svc := NewBeadService(backend, nil, nil)
+
+	err := svc.SendKeys(context.Background(), "mp-aaa", 0, "y\n")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se, ok := err.(*ServiceError)
+	if !ok {
+		t.Fatalf("expected ServiceError, got %T", err)
+	}
+	if se.Code != CodeCLIMissing {
+		t.Errorf("code = %q, want %q", se.Code, CodeCLIMissing)
+	}
+}
+
 func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func intPtr(i int) *int       { return &i }

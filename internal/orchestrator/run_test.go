@@ -87,13 +87,13 @@ func TestResolvePermMode(t *testing.T) {
 	o := New(Config{RepoMap: RepoMap{}})
 
 	// No default, no request → error.
-	_, err := o.resolvePermMode("")
+	_, err := o.resolvePermMode(core.ModeAgent, "")
 	if err != ErrNoPermissionMode {
 		t.Errorf("want ErrNoPermissionMode got %v", err)
 	}
 
 	// Request wins.
-	pm, err := o.resolvePermMode(core.PermAcceptEdits)
+	pm, err := o.resolvePermMode(core.ModeAgent, core.PermAcceptEdits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestResolvePermMode(t *testing.T) {
 
 	// Default used when request is empty.
 	o.defaultPermMode = core.PermDontAsk
-	pm, err = o.resolvePermMode("")
+	pm, err = o.resolvePermMode(core.ModeAgent, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,9 +112,54 @@ func TestResolvePermMode(t *testing.T) {
 	}
 
 	// Invalid mode returns error.
-	_, err = o.resolvePermMode("invalid-mode")
+	_, err = o.resolvePermMode(core.ModeAgent, "invalid-mode")
 	if err == nil {
 		t.Error("want error for invalid permission mode")
+	}
+}
+
+// TestResolvePermMode_Plan verifies that core.ModePlan always resolves to
+// core.PermPlan regardless of the requested/default permission mode — the
+// claude adapter's Modes() table hardcodes "--permission-mode plan" for plan
+// mode, discarding whatever value would otherwise be resolved. Without this
+// carve-out, plan-mode dispatch would spuriously require a permissionMode
+// (even with no default configured) that's never actually used.
+func TestResolvePermMode_Plan(t *testing.T) {
+	o := New(Config{RepoMap: RepoMap{}})
+
+	// No default, no request, plan mode → still resolves (no ErrNoPermissionMode).
+	pm, err := o.resolvePermMode(core.ModePlan, "")
+	if err != nil {
+		t.Fatalf("plan mode should not require permissionMode: %v", err)
+	}
+	if pm != core.PermPlan {
+		t.Errorf("want PermPlan got %q", pm)
+	}
+
+	// Explicit "plan" request in plan mode is accepted.
+	pm, err = o.resolvePermMode(core.ModePlan, core.PermPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pm != core.PermPlan {
+		t.Errorf("want PermPlan got %q", pm)
+	}
+
+	// A default permission mode configured for agent-mode dispatches must not
+	// leak into plan mode's resolution.
+	o.defaultPermMode = core.PermBypassPermissions
+	pm, err = o.resolvePermMode(core.ModePlan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pm != core.PermPlan {
+		t.Errorf("want PermPlan got %q", pm)
+	}
+
+	// A conflicting explicit permissionMode in plan mode is rejected — it
+	// would silently be ignored downstream, which is worse than an error.
+	if _, err := o.resolvePermMode(core.ModePlan, core.PermAcceptEdits); err == nil {
+		t.Error("want error for non-plan permissionMode requested with plan mode")
 	}
 }
 

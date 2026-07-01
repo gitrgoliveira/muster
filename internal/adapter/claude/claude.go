@@ -164,8 +164,8 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 	// but quoting it here means a future caller that introduces a free-form
 	// fragment cannot accidentally turn this into a shell-injection sink.
 	quotedMode := make([]string, len(modeArgs))
-	for i, a := range modeArgs {
-		quotedMode[i] = shellquote.Single(a)
+	for i, arg := range modeArgs {
+		quotedMode[i] = shellquote.Single(arg)
 	}
 	claudeCmd := shellquote.Single(bin) + " " + strings.Join(quotedMode, " ") + " < " + shellquote.Single(promptRel)
 	argv := []string{"sh", "-c", claudeCmd}

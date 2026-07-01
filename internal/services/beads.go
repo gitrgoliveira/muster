@@ -604,7 +604,11 @@ func (svc *BeadService) SendKeys(ctx context.Context, beadID string, stepIdx int
 	if svc.attacher != nil {
 		return svc.attacher.SendKeys(beadID, stepIdx, keys)
 	}
-	return &ServiceError{Code: CodeCLIUnavailable, Message: "send not available"}
+	// No attacher wired in: this isn't a transient backend outage (which is
+	// what CodeCLIUnavailable/503 signals to clients) — the feature is simply
+	// not configured, matching the CodeCLIMissing/501 the legacy bd-CLI paths
+	// use when svc.cli is nil.
+	return &ServiceError{Code: CodeCLIMissing, Message: "send not available"}
 }
 
 // AddComment appends a comment via the CLI.
