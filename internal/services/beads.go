@@ -172,6 +172,17 @@ func (svc *BeadService) publishWrite(eventType ws.EventType, bead *core.Bead) {
 	svc.publish(ws.Frame{Type: eventType, Bead: bead})
 }
 
+// publishForce broadcasts a write event unconditionally (ignoring
+// publishOnWrite). Used when a real bd write did not happen — and so the
+// embedded-mode file watcher won't fan a jsonl change into the hub either —
+// but other connected clients still need to learn about a state transition.
+func (svc *BeadService) publishForce(eventType ws.EventType, bead *core.Bead) {
+	if svc.publish == nil {
+		return
+	}
+	svc.publish(ws.Frame{Type: eventType, Bead: bead})
+}
+
 func (svc *BeadService) requireCLI() error {
 	if svc.cli == nil {
 		return &ServiceError{Code: CodeCLIMissing, Message: "bd CLI not available"}
@@ -496,12 +507,14 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// succeeded above), so a failure here is logged, not fatal: failing
 		// the whole request would be misleading (the run IS active) and a
 		// client retry would just hit ErrRunAlreadyActive/409.
+		persisted := false
 		if svc.cli != nil {
 			if iss, err := svc.cli.Dispatch(ctx, id); err != nil {
 				slog.Warn("Dispatch: orchestrator run started but persisting the running state failed; bead state may lag until the run completes", "bead", id, "err", err)
 			} else {
 				b := IssueToBead(&iss, svc.repo)
 				bead = &b
+				persisted = true
 			}
 		} else {
 			slog.Warn("Dispatch: bd CLI unavailable; cannot persist running state for orchestrator-backed run", "bead", id)
@@ -521,7 +534,17 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		if result != nil {
 			merged := *bead
 			merged.Column = result.Column
-			svc.publishWrite(ws.EventBeadUpdated, &merged)
+			if svc.publishOnWrite || !persisted {
+				// svc.publishOnWrite: remote mode, no watcher runs at all, so
+				// this manual publish is the only signal regardless of
+				// persist outcome.
+				// !persisted: embedded mode, but no real bd write happened
+				// (cli nil or claim failed) — the file watcher has nothing
+				// to fan into the hub, so publishWrite's normal no-op gate
+				// would otherwise leave every other connected client
+				// without a running-transition signal at all.
+				svc.publishForce(ws.EventBeadUpdated, &merged)
+			}
 			return &merged, nil
 		}
 		return result, nil

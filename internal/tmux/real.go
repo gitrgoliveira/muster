@@ -205,8 +205,11 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 	// a shell, so the FIFO path must be shell-quoted to survive a TMPDIR that
 	// contains spaces or shell metacharacters.
 	// The -o flag means "only open a new pipe if no previous pipe is currently
-	// open", guarding against double-piping the same pane. pipe-pane already
-	// captures only pane output (not echoed input).
+	// open", guarding against double-piping the same pane. pipe-pane captures
+	// raw pane output, which includes echoed input (a pty echoes keystrokes
+	// back into the pane, so they appear in this stream too) and terminal
+	// control sequences (e.g. bracketed-paste markers) — muster does not
+	// strip any of it; the client renders via a terminal emulator (D1).
 	pipeCmd := "cat >> " + shellquote.Single(fifoPath)
 	_, err = m.run("pipe-pane", "-t", name, "-o", pipeCmd)
 	if err != nil {

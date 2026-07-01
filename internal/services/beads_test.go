@@ -336,6 +336,57 @@ func TestDispatch_OrchestratorPath_CLIClaimFails(t *testing.T) {
 	}
 }
 
+// TestDispatch_OrchestratorPath_EmbeddedMode_ForcesPublishWhenNotPersisted
+// verifies that in embedded mode (publishOnWrite=false), if the bd CLI claim
+// did not happen (no CLI configured here), Dispatch still broadcasts a
+// bead.updated frame directly. Without this, publishWrite's normal no-op gate
+// (embedded mode relies on the file watcher instead) would leave every other
+// connected client without any running-transition signal at all, since no
+// real bd write occurred to trigger the watcher.
+func TestDispatch_OrchestratorPath_EmbeddedMode_ForcesPublishWhenNotPersisted(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	// publishOnWrite=false mirrors embedded mode; nil cli means the claim can't run.
+	svc := NewBeadServiceWithRepo(backend, nil, pub, "muster", false).WithOrchestrator(orch)
+
+	got, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{Agent: core.AgentClaude, Mode: core.ModeAgent})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if got.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Column)
+	}
+	if len(frames) == 0 {
+		t.Fatal("expected a forced bead.updated frame despite publishOnWrite=false, since no real bd write occurred")
+	}
+	last := frames[len(frames)-1]
+	if last.Type != ws.EventBeadUpdated || last.Bead == nil || last.Bead.Column != core.ColRunning {
+		t.Fatalf("last frame = %+v, want bead.updated with Column=running", last)
+	}
+}
+
+// TestDispatch_OrchestratorPath_EmbeddedMode_SkipsForcedPublishWhenPersisted
+// verifies the opposite: when the bd claim DOES succeed in embedded mode, the
+// normal publishWrite no-op gate is left alone (the file watcher is the sole
+// announcer of that real write) — Dispatch must not double-announce.
+func TestDispatch_OrchestratorPath_EmbeddedMode_SkipsForcedPublishWhenPersisted(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	cli := fakeCLI{iss: store.Issue{ID: "mp-aaa", Title: "Implement feature alpha", Status: "in_progress", IssueType: "feature"}}
+	orch := &fakeOrchestrator{}
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	svc := NewBeadServiceWithRepo(backend, cli, pub, "muster", false).WithOrchestrator(orch)
+
+	if _, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{Agent: core.AgentClaude, Mode: core.ModeAgent}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if len(frames) != 0 {
+		t.Fatalf("expected no forced publish when embedded-mode claim succeeded (file watcher owns the signal), got %d frames", len(frames))
+	}
+}
+
 func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func intPtr(i int) *int       { return &i }
