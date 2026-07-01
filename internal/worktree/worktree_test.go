@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,7 @@ func TestEnsure_Create(t *testing.T) {
 	repoPath := initGitRepo(t)
 	worktreesDir := t.TempDir()
 
-	wt, err := Ensure(worktreesDir, repoPath, "mp-abc")
+	wt, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-abc")
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestEnsure_Reuse(t *testing.T) {
 	worktreesDir := t.TempDir()
 
 	// Create the worktree first.
-	wt1, err := Ensure(worktreesDir, repoPath, "mp-abc")
+	wt1, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-abc")
 	if err != nil {
 		t.Fatalf("first Ensure: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestEnsure_Reuse(t *testing.T) {
 	}
 
 	// Call Ensure again — should reuse the existing worktree.
-	wt2, err := Ensure(worktreesDir, repoPath, "mp-abc")
+	wt2, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-abc")
 	if err != nil {
 		t.Fatalf("second Ensure: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestEnsure_NonGitRepoError(t *testing.T) {
 	notARepo := t.TempDir()
 	worktreesDir := t.TempDir()
 
-	_, err := Ensure(worktreesDir, notARepo, "mp-abc")
+	_, err := Ensure(context.Background(), worktreesDir, notARepo, "mp-abc")
 	if err == nil {
 		t.Fatal("want error for non-git-repo, got nil")
 	}
@@ -93,7 +94,7 @@ func TestEnsure_ManuallyDeletedWorktree(t *testing.T) {
 	worktreesDir := t.TempDir()
 
 	// First ensure creates the worktree.
-	wt1, err := Ensure(worktreesDir, repoPath, "mp-regen")
+	wt1, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-regen")
 	if err != nil {
 		t.Fatalf("first Ensure: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestEnsure_ManuallyDeletedWorktree(t *testing.T) {
 	runGitCmd(t, repoPath, "worktree", "prune")
 
 	// Second ensure should recreate the worktree on the existing branch.
-	wt2, err := Ensure(worktreesDir, repoPath, "mp-regen")
+	wt2, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-regen")
 	if err != nil {
 		t.Fatalf("second Ensure after manual remove: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestEnsure_PathExistsButNotWorktree(t *testing.T) {
 		t.Fatalf("write sentinel: %v", err)
 	}
 
-	_, err := Ensure(worktreesDir, repoPath, "mp-collide")
+	_, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-collide")
 	if err == nil {
 		t.Fatal("want error for non-worktree pre-existing path, got nil")
 	}
@@ -156,12 +157,12 @@ func TestEnsure_ReuseRejectsMismatchedRepo(t *testing.T) {
 	worktreesDir := t.TempDir()
 
 	// Create the worktree linked to repoA.
-	if _, err := Ensure(worktreesDir, repoA, "mp-shared"); err != nil {
+	if _, err := Ensure(context.Background(), worktreesDir, repoA, "mp-shared"); err != nil {
 		t.Fatalf("first Ensure (repoA): %v", err)
 	}
 
 	// Now ask for the same beadID against repoB — should error.
-	_, err := Ensure(worktreesDir, repoB, "mp-shared")
+	_, err := Ensure(context.Background(), worktreesDir, repoB, "mp-shared")
 	if err == nil {
 		t.Fatal("want error for repo-mismatched reuse, got nil")
 	}
@@ -175,11 +176,11 @@ func TestEnsure_TwoBeadIsolation(t *testing.T) {
 	worktreesDir := t.TempDir()
 
 	// Create two worktrees for two different beads.
-	wt1, err := Ensure(worktreesDir, repoPath, "mp-aaa")
+	wt1, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-aaa")
 	if err != nil {
 		t.Fatalf("Ensure mp-aaa: %v", err)
 	}
-	wt2, err := Ensure(worktreesDir, repoPath, "mp-bbb")
+	wt2, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-bbb")
 	if err != nil {
 		t.Fatalf("Ensure mp-bbb: %v", err)
 	}

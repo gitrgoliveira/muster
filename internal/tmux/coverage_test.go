@@ -1,8 +1,6 @@
 package tmux
 
 import (
-	"errors"
-	"fmt"
 	"testing"
 )
 
@@ -35,26 +33,5 @@ func TestBuildShellCmd_WithEnv(t *testing.T) {
 	}
 	if got[3] != "sh" {
 		t.Errorf("cmd[0] want sh got %q", got[3])
-	}
-}
-
-// TestIsWrappedAttachUnavailable tests wrapping detection.
-func TestIsWrappedAttachUnavailable_Wrapped(t *testing.T) {
-	wrapped := fmt.Errorf("outer: %w", ErrAttachUnavailable)
-	if !IsAttachUnavailable(wrapped) {
-		t.Error("should detect ErrAttachUnavailable wrapped in another error")
-	}
-}
-
-func TestIsWrappedAttachUnavailable_OtherError(t *testing.T) {
-	other := errors.New("some other error")
-	if IsAttachUnavailable(other) {
-		t.Error("should not detect ErrAttachUnavailable in unrelated error")
-	}
-}
-
-func TestIsWrappedAttachUnavailable_Nil(t *testing.T) {
-	if IsAttachUnavailable(nil) {
-		t.Error("should not detect ErrAttachUnavailable in nil")
 	}
 }

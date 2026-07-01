@@ -167,15 +167,3 @@ func TestFallbackManager_Kill_ExistingSession(t *testing.T) {
 		t.Errorf("Kill running session: %v", err)
 	}
 }
-
-func TestIsAttachUnavailable_True(t *testing.T) {
-	if !tmux.IsAttachUnavailable(tmux.ErrAttachUnavailable) {
-		t.Error("IsAttachUnavailable(ErrAttachUnavailable) should be true")
-	}
-}
-
-func TestIsAttachUnavailable_False(t *testing.T) {
-	if tmux.IsAttachUnavailable(nil) {
-		t.Error("IsAttachUnavailable(nil) should be false")
-	}
-}

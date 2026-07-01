@@ -44,6 +44,14 @@ var ErrUnsupportedMode = errors.New("unsupported mode for adapter")
 
 // Run holds the in-memory state of an active (or recently completed) agent run.
 // The registry is rebuilt on restart from tmux.List().
+//
+// Field mutability contract:
+//   - Immutable after Dispatch/recoverSession populate them and launch
+//     watchRun (the Go memory model's happens-before on the `go` statement
+//     ensures the watcher goroutine sees these): BeadID, StepIdx, Loop, Agent,
+//     Mode, PermissionMode, Worktree, Session, StartedAt, cancel, pipe. These
+//     may be read (e.g. by finishRun) without holding o.mu.
+//   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt.
 type Run struct {
 	BeadID         string
 	StepIdx        int // always 0 in M2
@@ -306,8 +314,14 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		return nil, ErrAdapterNotFound
 	}
 
-	// Detect adapter (installed + logged in).
-	detectResult, err := adp.Detect(ctx)
+	// Detect adapter (installed + logged in). Bound the probe with an
+	// independent short deadline so a hung claude binary or slow HTTP client
+	// cannot pin the run reservation (`State=StepActive`, registered above)
+	// indefinitely — otherwise the bead would remain undispatchable until the
+	// server restarts.
+	detectCtx, detectCancel := context.WithTimeout(ctx, 10*time.Second)
+	detectResult, err := adp.Detect(detectCtx)
+	detectCancel()
 	if err != nil {
 		return nil, fmt.Errorf("adapter detect: %w", err)
 	}
@@ -338,22 +352,28 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 			"bead", req.BeadID, "repo", repoPath)
 	}
 
-	// Ensure worktree.
-	wt, err := worktree.Ensure(o.worktreesDir, repoPath, req.BeadID)
+	// Ensure worktree. Bound the git subprocesses with an independent
+	// short deadline for the same reason as the Detect probe above: a hung
+	// `git rev-parse` / `git worktree add` (e.g. against a slow NFS mount or a
+	// stuck `.git` lock) would otherwise hold the run reservation forever.
+	ensureCtx, ensureCancel := context.WithTimeout(ctx, 30*time.Second)
+	wt, err := worktree.Ensure(ensureCtx, o.worktreesDir, repoPath, req.BeadID)
+	ensureCancel()
 	if err != nil {
 		return nil, fmt.Errorf("worktree: %w", err)
 	}
 
-	// Write prompt file.
+	// Write prompt file. 0o600 keeps the file readable only by the muster
+	// process owner — the bead prompt may contain sensitive task context, and
+	// other local users have no need to read it.
 	promptPath := wt.Path + "/" + promptFileName
 	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
-	if err := os.WriteFile(promptPath, []byte(prompt), 0644); err != nil {
+	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
 	}
 
 	// Invoke adapter to get the Spec.
 	spec, err := adp.Invoke(ctx, adapter.InvokeReq{
-		Bead:           core.Bead{ID: req.BeadID, Title: req.BeadTitle, Desc: req.BeadDesc},
 		Mode:           req.Mode,
 		PermissionMode: pm,
 		Worktree:       wt.Path,
@@ -372,11 +392,12 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	// Fill the reserved run's fields in place (keeping the same pointer the
 	// reservation registered, so the TOCTOU guard's identity check holds).
+	// StepIdx and Loop are omitted: both are already zero-valued in the
+	// reservation allocation and M2 pins them at zero anyway (see the Run
+	// struct field comments).
 	runCtx, runCancel := context.WithCancel(context.Background())
 	run := reserved
 	o.mu.Lock()
-	run.StepIdx = 0
-	run.Loop = 0
 	run.Agent = req.Agent
 	run.Mode = req.Mode
 	run.PermissionMode = pm

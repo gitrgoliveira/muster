@@ -578,3 +578,19 @@ func TestSend_404_NonZeroIdx(t *testing.T) {
 	resp := doPost(t, srv, "/beads/mp-aaa/steps/2/send", map[string]string{"keys": "y\n"})
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
+
+func TestSend_400_EmptyKeys(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/0/send", map[string]string{"keys": ""})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestSend_400_KeysTooLarge(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/0/send", map[string]string{"keys": strings.Repeat("y", 4097)})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}

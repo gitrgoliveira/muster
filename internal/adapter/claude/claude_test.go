@@ -151,10 +151,6 @@ func TestInvoke_Spec(t *testing.T) {
 	}
 
 	req := adapter.InvokeReq{
-		Bead: core.Bead{
-			ID:    "mp-abc",
-			Title: "Test task",
-		},
 		Mode:           core.ModeAgent,
 		PermissionMode: core.PermAcceptEdits,
 		Worktree:       worktree,
@@ -228,7 +224,6 @@ func TestInvoke_BinPathWithSpace(t *testing.T) {
 	// Use an explicit bin path that contains a space.
 	a := claude.New(claude.Options{Bin: "/Users/Some User/bin/claude"})
 	req := adapter.InvokeReq{
-		Bead:           core.Bead{ID: "mp-abc", Title: "Test"},
 		Mode:           core.ModeAgent,
 		PermissionMode: core.PermAcceptEdits,
 		Worktree:       worktree,

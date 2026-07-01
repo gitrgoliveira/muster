@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,9 +32,16 @@ func worktreePath(worktreesDir, beadID string) string {
 //   - If the worktree at <worktreesDir>/<beadID> already exists, it is returned as-is.
 //   - Otherwise, it is created via `git worktree add -b muster/<beadID> <path>`.
 //   - Returns an error if repoPath is not a git repository.
-func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
+//
+// ctx bounds every git subprocess Ensure spawns. Ensure is called from Dispatch
+// while the run reservation (State=StepActive) is already held; a hung git
+// call would otherwise pin the reservation indefinitely and make the bead
+// undispatchable until the server restarts, so the caller MUST supply a
+// deadline-carrying context. Cancellation propagates through
+// exec.CommandContext to kill the child git process.
+func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktree, error) {
 	// Validate that repoPath is a git repo.
-	if err := validateGitRepo(repoPath); err != nil {
+	if err := validateGitRepo(ctx, repoPath); err != nil {
 		return Worktree{}, err
 	}
 
@@ -53,7 +61,7 @@ func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
 			// change (or any other config drift), Ensure could silently
 			// return a worktree linked to a different repository — and the
 			// agent would then run in an unexpected checkout.
-			if err := existingWorktreeMatchesRepo(path, repoPath); err != nil {
+			if err := existingWorktreeMatchesRepo(ctx, path, repoPath); err != nil {
 				return Worktree{}, err
 			}
 			return Worktree{
@@ -71,23 +79,25 @@ func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
 		return Worktree{}, fmt.Errorf("worktree: stat %q: %w", path, err)
 	}
 
-	// Create parent directory if needed.
-	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+	// Create parent directory if needed. 0o700 keeps per-bead worktrees (which
+	// may hold prompt files with sensitive task context, and the agent's
+	// working checkout) unreadable by other local users.
+	if err := os.MkdirAll(worktreesDir, 0o700); err != nil {
 		return Worktree{}, fmt.Errorf("worktree: create worktrees dir: %w", err)
 	}
 
 	// Check if branch already exists (e.g., worktree was deleted manually but
 	// branch remains). If so, use --track form without -b.
-	if branchExists(repoPath, branch) {
+	if branchExists(ctx, repoPath, branch) {
 		// Recreate the worktree on the existing branch.
-		cmd := exec.Command("git", "worktree", "add", path, branch)
+		cmd := exec.CommandContext(ctx, "git", "worktree", "add", path, branch)
 		cmd.Dir = repoPath
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return Worktree{}, fmt.Errorf("worktree: git worktree add (existing branch): %w\n%s", err, out)
 		}
 	} else {
 		// Create a new branch and worktree.
-		cmd := exec.Command("git", "worktree", "add", "-b", branch, path)
+		cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branch, path)
 		cmd.Dir = repoPath
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return Worktree{}, fmt.Errorf("worktree: git worktree add -b %s: %w\n%s", branch, err, out)
@@ -103,8 +113,8 @@ func Ensure(worktreesDir, repoPath, beadID string) (Worktree, error) {
 }
 
 // validateGitRepo returns an error if path is not a git repository.
-func validateGitRepo(path string) error {
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+func validateGitRepo(ctx context.Context, path string) error {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
 	cmd.Dir = path
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -118,12 +128,12 @@ func validateGitRepo(path string) error {
 // directory" (the .git dir of the main checkout, which all linked worktrees
 // reference). Returns an error if they differ — the safe default in that case
 // is to refuse rather than reuse a worktree pointing at the wrong repo.
-func existingWorktreeMatchesRepo(wtPath, repoPath string) error {
-	repoCD, err := gitCommonDir(repoPath)
+func existingWorktreeMatchesRepo(ctx context.Context, wtPath, repoPath string) error {
+	repoCD, err := gitCommonDir(ctx, repoPath)
 	if err != nil {
 		return fmt.Errorf("worktree: resolve repo git-common-dir: %w", err)
 	}
-	wtCD, err := gitCommonDir(wtPath)
+	wtCD, err := gitCommonDir(ctx, wtPath)
 	if err != nil {
 		return fmt.Errorf("worktree: resolve worktree git-common-dir: %w", err)
 	}
@@ -136,8 +146,8 @@ func existingWorktreeMatchesRepo(wtPath, repoPath string) error {
 // gitCommonDir returns the absolute, cleaned path of `git rev-parse
 // --git-common-dir` run inside dir. The common-dir is the .git directory of
 // the main worktree; linked worktrees share the same value.
-func gitCommonDir(dir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+func gitCommonDir(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -169,8 +179,8 @@ func isWorktreeDir(path string) bool {
 }
 
 // branchExists returns true if branch exists in the repo.
-func branchExists(repoPath, branch string) bool {
-	cmd := exec.Command("git", "rev-parse", "--verify", branch)
+func branchExists(ctx context.Context, repoPath, branch string) bool {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", branch)
 	cmd.Dir = repoPath
 	return cmd.Run() == nil
 }

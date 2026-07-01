@@ -10,6 +10,7 @@ import (
 
 	"github.com/gitrgoliveira/muster/internal/adapter"
 	"github.com/gitrgoliveira/muster/internal/core"
+	"github.com/gitrgoliveira/muster/internal/shellquote"
 )
 
 // Options configures the claude Adapter.
@@ -164,9 +165,9 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 	// fragment cannot accidentally turn this into a shell-injection sink.
 	quotedMode := make([]string, len(modeArgs))
 	for i, a := range modeArgs {
-		quotedMode[i] = shellQuote(a)
+		quotedMode[i] = shellquote.Single(a)
 	}
-	claudeCmd := shellQuote(bin) + " " + strings.Join(quotedMode, " ") + " < " + shellQuote(promptRel)
+	claudeCmd := shellquote.Single(bin) + " " + strings.Join(quotedMode, " ") + " < " + shellquote.Single(promptRel)
 	argv := []string{"sh", "-c", claudeCmd}
 
 	return adapter.Spec{
@@ -183,10 +184,3 @@ func (a *Adapter) Login(_ context.Context) (adapter.LoginFlow, error) {
 
 // QuotaSource implements adapter.Adapter. M2 does not track quota.
 func (a *Adapter) QuotaSource() adapter.QuotaSource { return adapter.QuotaNone }
-
-// shellQuote wraps s in single quotes, escaping each embedded single quote
-// via the standard POSIX idiom: close-quote, backslash-escaped single quote,
-// reopen-quote (see the raw-string literal below for the exact bytes).
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}

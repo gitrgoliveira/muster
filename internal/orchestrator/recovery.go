@@ -25,6 +25,13 @@ var beadIDPattern = regexp.MustCompile(`^[a-z]+-[0-9a-z]+$`)
 // follow-up (the orchestrator has no bead-existence lookup). Only already-dead
 // sessions are reaped here.
 //
+// Concurrency precondition: recoverSession checks o.runs for an existing entry
+// (RLock) and later registers a new Run (separate Lock) as two distinct
+// critical sections, not one atomic check-and-register. This is safe only
+// because RecoverSessions runs once at startup, before the HTTP server
+// accepts requests — Dispatch cannot observe or race the gap. Do not call
+// RecoverSessions concurrently with request handling.
+//
 // Called once at startup (wired into main.go).
 func (o *Orchestrator) RecoverSessions(ctx context.Context) {
 	sessions, err := o.transport.List()

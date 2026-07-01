@@ -88,25 +88,6 @@ func TestRunlogStreamer_PreservesRawBytes(t *testing.T) {
 	}
 }
 
-func TestIsMusterMarker(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"normal output", false},
-		{"<muster:subbead foo>", true},
-		{"<muster:checkpoint>", true},
-		{"no marker here", false},
-		{"<muster:", true}, // partial prefix
-	}
-	for _, tt := range tests {
-		got := isMusterMarker(tt.input)
-		if got != tt.want {
-			t.Errorf("isMusterMarker(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestRunlogStreamer_NilPublish(t *testing.T) {
 	// Should not panic when publish is nil.
 	s := &runlogStreamer{beadID: "mp-abc", stepIdx: 0, publish: nil}

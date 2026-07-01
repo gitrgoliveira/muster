@@ -1,7 +1,6 @@
 package tmux
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -161,10 +160,4 @@ func (f *FallbackManager) Kill(name string) error {
 // List returns an empty slice — fallback has no persistent sessions to discover.
 func (f *FallbackManager) List() ([]Session, error) {
 	return nil, nil
-}
-
-// IsAttachUnavailable reports whether err (or any error in its chain) is
-// ErrAttachUnavailable. It is equivalent to errors.Is(err, ErrAttachUnavailable).
-func IsAttachUnavailable(err error) bool {
-	return errors.Is(err, ErrAttachUnavailable)
 }

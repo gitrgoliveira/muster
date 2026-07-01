@@ -40,7 +40,6 @@ type Mode struct {
 
 // InvokeReq carries all the information needed to build a launch Spec.
 type InvokeReq struct {
-	Bead           core.Bead
 	Mode           core.Mode
 	PermissionMode core.PermissionMode // user-supplied (FR-021); never defaulted by muster
 	Worktree       string              // cwd for the agent process
@@ -65,23 +64,6 @@ type Spec struct {
 // Only returned when Login is supported; otherwise Adapter returns ErrNotSupported.
 type LoginFlow struct {
 	Instructions string // human-readable instructions (e.g. "run: claude auth login")
-}
-
-// RunEventKind classifies RunEvent instances.
-type RunEventKind int
-
-const (
-	RunEventOutput RunEventKind = iota // agent produced pane output
-	RunEventOpened                     // session opened
-	RunEventClosed                     // session ended (carries ExitCode)
-)
-
-// RunEvent is emitted by the transport to the orchestrator. The orchestrator
-// fans output bytes to the WS hub as runlog.line frames.
-type RunEvent struct {
-	Kind     RunEventKind
-	Data     []byte // Output: raw pane bytes (ANSI preserved per plan D1)
-	ExitCode int    // Closed: process exit code
 }
 
 // Adapter is the stable seam between the orchestrator and a specific CLI agent.

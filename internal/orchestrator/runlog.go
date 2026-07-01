@@ -51,18 +51,3 @@ func (s *runlogStreamer) stream(r io.Reader) {
 		}
 	}
 }
-
-// musterMarkerTag prefix for special markers emitted in pane output.
-// FR-020: treated as inert (logged, not acted upon in M2).
-const musterMarkerTag = "<muster:"
-
-// isMusterMarker returns true if data contains a muster marker tag.
-// FR-020: markers are inert in M2.
-func isMusterMarker(data string) bool {
-	for i := 0; i < len(data)-len(musterMarkerTag)+1; i++ {
-		if data[i:i+len(musterMarkerTag)] == musterMarkerTag {
-			return true
-		}
-	}
-	return false
-}

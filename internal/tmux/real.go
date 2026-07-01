@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gitrgoliveira/muster/internal/shellquote"
 )
 
 // RealManager implements Manager by shelling out to the `tmux` binary.
@@ -154,7 +156,7 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 	// The -o flag means "only open a new pipe if no previous pipe is currently
 	// open", guarding against double-piping the same pane. pipe-pane already
 	// captures only pane output (not echoed input).
-	pipeCmd := "cat >> " + shellSingleQuote(fifoPath)
+	pipeCmd := "cat >> " + shellquote.Single(fifoPath)
 	_, err = m.run("pipe-pane", "-t", name, "-o", pipeCmd)
 	if err != nil {
 		_ = os.RemoveAll(fifoDir)
@@ -199,14 +201,6 @@ func mkfifo() (dir, path string, err error) {
 		return "", "", err
 	}
 	return dir, path, nil
-}
-
-// shellSingleQuote wraps s in single quotes, escaping each embedded single
-// quote via the standard POSIX idiom (close-quote, backslash-escaped single
-// quote, reopen-quote — see the raw-string literal below for the exact bytes).
-// Used for paths embedded in tmux pipe-cmd strings.
-func shellSingleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // Capture implements Manager. Returns pane scrollback via capture-pane.
@@ -286,9 +280,10 @@ func (m *RealManager) Kill(name string) error {
 func (m *RealManager) List() ([]Session, error) {
 	out, err := m.run("list-sessions", "-F", "#{session_name}")
 	if err != nil {
-		// tmux returns exit 1 when there are no sessions — treat that as empty list.
-		if strings.Contains(err.Error(), "no server running") ||
-			strings.Contains(out, "no server running") {
+		// tmux returns exit 1 when there are no sessions — treat that as empty
+		// list. tmux writes this message to stderr, which m.run folds into out
+		// (CombinedOutput); err.Error() only ever contains the exit-status string.
+		if strings.Contains(out, "no server running") {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("tmux list-sessions: %w", err)

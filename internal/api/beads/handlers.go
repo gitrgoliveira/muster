@@ -323,11 +323,22 @@ func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keys is forwarded verbatim to the running agent's tmux pane — bound its
+	// size so an oversized payload can't be used to flood the pane / pipe.
+	if req.Keys == "" || len(req.Keys) > maxSendKeysLen {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "keys must be non-empty and at most 4096 bytes")
+		return
+	}
+
 	if err := h.svc.SendKeys(r.Context(), id, idx, req.Keys); mapServiceError(w, r, err) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// maxSendKeysLen bounds the Send request's keys payload (forwarded verbatim
+// to the agent's tmux pane).
+const maxSendKeysLen = 4096
 
 // SendRequest is the body for POST /beads/{id}/steps/{idx}/send.
 type SendRequest struct {
