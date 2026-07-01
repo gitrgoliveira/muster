@@ -3,18 +3,11 @@ package orchestrator
 import (
 	"context"
 	"log/slog"
-	"regexp"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/tmux"
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
-
-// beadIDPattern validates a bead ID parsed from a tmux session name before we
-// trust it. Session names are user-controllable (the user can create arbitrary
-// `muster/*` tmux sessions), so a malformed/hostile name must not be registered
-// as a run. Format: lowercase prefix, hyphen, alphanumeric suffix (e.g. mp-abc).
-var beadIDPattern = regexp.MustCompile(`^[a-z]+-[0-9a-z]+$`)
 
 // RecoverSessions scans existing muster tmux sessions and re-attaches streaming.
 // For each surviving session it: validates the bead ID; kills sessions whose
@@ -56,8 +49,10 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 
 	// Security: the bead ID comes from a tmux session name, which is
 	// user-controllable. Reject anything that doesn't look like a real bead ID
-	// and kill the stray session rather than registering it as a run.
-	if !beadIDPattern.MatchString(beadID) {
+	// and kill the stray session rather than registering it as a run. Uses the
+	// same canonical validator as the HTTP handler's request-path check
+	// (core.ValidBeadID) so the two can never disagree on what a bead ID is.
+	if !core.ValidBeadID(beadID) {
 		slog.Warn("recovery: killing session with invalid bead ID", "session", sessionName, "beadID", beadID)
 		_ = o.transport.Kill(sessionName)
 		return

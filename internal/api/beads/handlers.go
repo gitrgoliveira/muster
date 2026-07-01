@@ -3,7 +3,6 @@ package beads
 import (
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -12,10 +11,6 @@ import (
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/go-chi/chi/v5"
 )
-
-// idPattern accepts real beads IDs: <prefix>-<suffix> where prefix is lowercase
-// alpha and suffix is alphanumeric (e.g. mp-kbj, muster-xyz, bd-0000).
-var idPattern = regexp.MustCompile(`^[a-z]+-[0-9a-z]+$`)
 
 // Handlers groups all bead-related HTTP handlers.
 type Handlers struct {
@@ -74,7 +69,7 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 
 // validateID checks the bead ID format. Returns false and writes 400 if invalid.
 func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
-	if !idPattern.MatchString(id) {
+	if !core.ValidBeadID(id) {
 		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "invalid bead ID format")
 		return false
 	}

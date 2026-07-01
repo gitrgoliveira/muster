@@ -180,6 +180,19 @@ func TestGet_400_BadIDFormat(t *testing.T) {
 	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
 }
 
+// TestGet_404_MultiHyphenID confirms a multi-hyphen bead ID (e.g. a real bd
+// molecule bead like mp-mol-4gl) passes the ID-format allow-list rather than
+// being rejected as malformed — it reaches the store and returns 404 (not
+// found), not 400 (invalid format).
+func TestGet_404_MultiHyphenID(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doGet(t, srv, "/beads/mp-mol-4gl")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, "BEAD_NOT_FOUND", errorCode(t, resp))
+}
+
 // ── Create — validation passes before CLI check ───────────────────────
 
 func TestCreate_400_MissingTitle(t *testing.T) {
