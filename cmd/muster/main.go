@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -230,13 +229,13 @@ func main() {
 		}
 	}
 
-	// Build orchestrator.
-	orcMap := make(orchestrator.RepoMap, len(repoMap))
-	maps.Copy(orcMap, repoMap)
+	// Build orchestrator. config.RepoMap and orchestrator.RepoMap share the
+	// identical underlying type (map[string]string), so this is a plain type
+	// conversion (no copy).
 	orc := orchestrator.New(orchestrator.Config{
 		Adapters:        reg,
 		Transport:       transport,
-		RepoMap:         orcMap,
+		RepoMap:         orchestrator.RepoMap(repoMap),
 		WorktreesDir:    worktreesDir,
 		DefaultPermMode: defaultPermMode,
 		Publish:         func(f ws.Frame) { hub.Broadcast(f) },

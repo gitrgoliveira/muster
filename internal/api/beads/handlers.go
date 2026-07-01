@@ -81,6 +81,18 @@ func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
 	return true
 }
 
+// parseStepIdx parses and validates the {idx} path param shared by Attach and
+// Send. M2 only supports step 0, so any other value — malformed, negative, or
+// non-zero — writes a 404 (unknown step) and returns ok=false.
+func parseStepIdx(w http.ResponseWriter, r *http.Request, idxStr string) (idx int, ok bool) {
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil || idx != 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return 0, false
+	}
+	return idx, true
+}
+
 // decodeJSON decodes the request body with DisallowUnknownFields. On error,
 // it writes the appropriate error response and returns false.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
@@ -274,18 +286,8 @@ func (h *Handlers) Attach(w http.ResponseWriter, r *http.Request) {
 	if !validateID(w, r, id) {
 		return
 	}
-	idxStr := chi.URLParam(r, "idx")
-
-	// Parse step index.
-	idx, err := strconv.Atoi(idxStr)
-	if err != nil || idx < 0 {
-		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
-		return
-	}
-
-	// M2: only idx=0 is valid.
-	if idx != 0 {
-		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+	idx, ok := parseStepIdx(w, r, chi.URLParam(r, "idx"))
+	if !ok {
 		return
 	}
 
@@ -303,18 +305,8 @@ func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
 	if !validateID(w, r, id) {
 		return
 	}
-	idxStr := chi.URLParam(r, "idx")
-
-	// Parse step index.
-	idx, parseErr := strconv.Atoi(idxStr)
-	if parseErr != nil || idx < 0 {
-		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
-		return
-	}
-
-	// M2: only idx=0 is valid.
-	if idx != 0 {
-		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+	idx, ok := parseStepIdx(w, r, chi.URLParam(r, "idx"))
+	if !ok {
 		return
 	}
 

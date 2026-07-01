@@ -86,6 +86,14 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 	if err := os.MkdirAll(worktreesDir, 0o700); err != nil {
 		return Worktree{}, fmt.Errorf("worktree: create worktrees dir: %w", err)
 	}
+	// MkdirAll only applies the mode to directories it actually creates — if
+	// worktreesDir already existed (e.g. a shared default like
+	// <os.TempDir()>/muster/worktrees pre-planted by another local user, or
+	// created earlier under a looser umask), it's silently reused as-is.
+	// Chmod unconditionally to tighten it regardless of who created it.
+	if err := os.Chmod(worktreesDir, 0o700); err != nil {
+		return Worktree{}, fmt.Errorf("worktree: chmod worktrees dir: %w", err)
+	}
 
 	// Check if branch already exists (e.g., worktree was deleted manually but
 	// branch remains). If so, use --track form without -b.

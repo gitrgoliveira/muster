@@ -8,6 +8,34 @@ import (
 	"testing"
 )
 
+// TestEnsure_TightensPreExistingWorktreesDirPermissions verifies that Ensure
+// tightens worktreesDir's permissions to 0o700 even when the directory
+// already existed with looser permissions — e.g. a shared default like
+// <os.TempDir()>/muster/worktrees pre-planted by another local user, or
+// created earlier under a looser umask. os.MkdirAll alone would silently
+// reuse such a directory as-is, since it only applies the mode to
+// directories it actually creates.
+func TestEnsure_TightensPreExistingWorktreesDirPermissions(t *testing.T) {
+	repoPath := initGitRepo(t)
+	parent := t.TempDir()
+	worktreesDir := filepath.Join(parent, "worktrees")
+	if err := os.Mkdir(worktreesDir, 0o755); err != nil {
+		t.Fatalf("pre-create worktreesDir: %v", err)
+	}
+
+	if _, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-abc"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	info, err := os.Stat(worktreesDir)
+	if err != nil {
+		t.Fatalf("stat worktreesDir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("worktreesDir perm want 0o700 got %o", got)
+	}
+}
+
 func TestEnsure_Create(t *testing.T) {
 	repoPath := initGitRepo(t)
 	worktreesDir := t.TempDir()

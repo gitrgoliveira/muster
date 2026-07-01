@@ -203,7 +203,13 @@ func wrapOrchestratorError(err error) *ServiceError {
 	if errors.As(err, &se) {
 		return se
 	}
-	return &ServiceError{Code: CodeInternal, Message: err.Error()}
+	// Unrecognized orchestrator errors (e.g. wrapped worktree/git, tmux spawn,
+	// or adapter invoke failures) can carry filesystem paths or subprocess
+	// stderr. Log the detail server-side and return a generic message to the
+	// client, mirroring wrapCLIError's generic fallback for unmatched exit
+	// codes below.
+	slog.Error("orchestrator dispatch: internal error", "err", err)
+	return &ServiceError{Code: CodeInternal, Message: "dispatch failed due to an internal error"}
 }
 
 // wrapCLIError maps *bdshell.CLIError exit codes to service error codes.
