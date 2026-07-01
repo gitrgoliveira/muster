@@ -10,7 +10,7 @@ $ claude auth status --json  # JSON is the DEFAULT; exit 0
 {"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty",
  "subscriptionType": "max", "email": "...", "orgId": "...", "orgName": "..."}
 ```
-- `Installed` ← `claude` resolves on `$PATH` (or `--claude-bin`).
+- `Installed` ← `claude` resolves on `$PATH` (or an explicit path via the adapter's `Options.Bin` seam; not exposed as a CLI flag in M2).
 - `Version` ← parse `claude --version`.
 - `LoggedIn` ← `claude auth status --json` → `.loggedIn`.
 

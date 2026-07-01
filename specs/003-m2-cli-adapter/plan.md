@@ -21,7 +21,7 @@ M2 makes a dispatched bead *execute*. `POST /api/v1/beads/{id}/dispatch` (a no-o
 | `claude` (host: 2.1.145) | external binary | the one M2 adapter |
 | `os/exec`, `bufio`, `context` | stdlib | process mgmt, stream scanning |
 
-> No new `go.mod` entries. Like M1's `bd` bridge, all three tools are shelled out to and probed at startup. This keeps the single-binary constitution gate intact.
+> No new `go.mod` entries. Like M1's `bd` bridge, all three tools are shelled out to (tmux and `claude` are also probed at startup; git is used at run time but not probed). This keeps the single-binary constitution gate intact.
 
 **Storage**: none new. Runlog is **transient** (streamed; `capture-pane` for catch-up). Worktrees live on disk under `--worktrees-dir`, managed by git, not a muster store. Beads DB remains the source of truth for issue state (unchanged from M1).
 
@@ -97,7 +97,7 @@ The M1 tree is preserved. M2 adds four packages and extends three existing files
 ```text
 cmd/muster/
 └── main.go              # CHANGED: parse --repo (repeatable prefix=path), --worktrees-dir,
-                         #          --run-timeout, --default-permission-mode; probe tmux/git/claude;
+                         #          --run-timeout, --default-permission-mode; probe tmux/claude (git used at run time);
                          #          build Orchestrator; restart-recovery scan; wire into services
 
 internal/

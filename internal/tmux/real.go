@@ -351,8 +351,10 @@ func (m *RealManager) List() ([]Session, error) {
 	out, err := m.run("list-sessions", "-F", "#{session_name} #{pane_id}")
 	if err != nil {
 		// tmux returns exit 1 when there are no sessions — treat that as empty
-		// list. tmux writes this message to stderr, which m.run folds into out
-		// (CombinedOutput); err.Error() only ever contains the exit-status string.
+		// list. The "no server running" text arrives via out (m.run folds
+		// stderr into it through CombinedOutput), which is why the match is on
+		// out, not err. err itself may be an *exec.ExitError or a resolve/start
+		// error (e.g. "tmux not found") whose text we don't rely on here.
 		if strings.Contains(out, "no server running") {
 			return nil, nil
 		}

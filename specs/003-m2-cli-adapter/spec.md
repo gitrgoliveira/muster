@@ -52,7 +52,9 @@ A user calls `POST /api/v1/beads/{id}/dispatch` with `agent: "claude"` and a mod
 1. **Given** the bead's prefix maps to a valid git repo and `claude` is installed and authenticated, **When** a user dispatches bead `mp-abc` with `{agent:"claude", mode:"agent", permissionMode:"acceptEdits"}`, **Then** muster resolves the `mp` → repo mapping, creates a worktree (branch `muster/mp-abc`) from that repo, writes the prompt file, launches Claude Code in it with `--permission-mode acceptEdits`, returns `202 Accepted` with the bead in `running`, and emits `tmux.session.opened`.
 2. **Given** a dispatch is in progress for a bead, **When** the same bead is dispatched again, **Then** muster rejects the second dispatch with `409 CONFLICT` (one active run per bead in M2) rather than spawning a duplicate.
 3. **Given** the bead's prefix has no configured repo mapping, **When** a user dispatches it, **Then** muster returns `400`/`422` with `no source repo configured for prefix "<prefix>"` and launches nothing.
-4. **Given** the agent finishes with exit code 0, **Then** the step is marked `done` and the bead advances to `review`; **Given** a non-zero exit, **Then** the step is marked `failed` and the bead's status reflects the failure (no automatic retry/loop in M2).
+4. **Given** the agent finishes with exit code 0, **Then** the step is marked `done` and the run's outcome is recorded on the bead (see the M2 note below — completion is recorded via an appended note + `bead.updated`, not a persisted `review` column move); **Given** a non-zero exit, **Then** the step is marked `failed` and the failure is likewise recorded on the bead (no automatic retry/loop in M2).
+
+   > **M2 note:** beads has no distinct `review` status (it folds to `in_progress`), so M2 cannot persist a `review` column move on completion. Completion is instead recorded as an appended note plus a `bead.updated` broadcast, leaving the column unchanged. The literal "advances to `review`" wording in FR-013/SC-007 is a documented deviation with a filed follow-up (a persisted review state needs an M1 model change).
 
 ---
 
@@ -183,7 +185,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 - **FR-010**: System MUST broadcast new WebSocket event types — `runlog.line`, `tmux.session.opened`, `tmux.session.closed` — in addition to (and without breaking) the M1 `bead.*` events.
 - **FR-011**: System MUST expose `GET /api/v1/beads/{id}/steps/{idx}/attach` returning the tmux attach command and pane info (or attach-unavailable + reason), and `POST /api/v1/beads/{id}/steps/{idx}/send` to forward keystrokes to the live pane. In M2 only `idx=0` is valid.
 - **FR-012**: System MUST support catch-up in tmux mode by replaying pane scrollback via `capture-pane` for a client connecting mid-run or after reload, before live lines resume. In the tmux-absent fallback, catch-up of earlier output is not provided (live-from-connect only) — a documented limitation.
-- **FR-013**: On agent exit, System MUST mark the step `done` (exit 0) or `failed` (non-zero) and transition the bead accordingly (exit 0 → `review`); M2 performs no automatic retry/loop. Because a tmux session that runs the agent directly vanishes on exit without surfacing the code, System MUST capture the exit status via a wrapper that records `$?` OR via tmux `remain-on-exit` + `#{pane_dead_status}` (mechanism pinned in the plan; spike identified both).
+- **FR-013**: On agent exit, System MUST mark the step `done` (exit 0) or `failed` (non-zero) and record the outcome on the bead (exit 0 → intended `review`; **M2 deviation:** recorded via an appended note + `bead.updated`, no persisted `review` column — see the M2 note under Acceptance Scenarios); M2 performs no automatic retry/loop. Because a tmux session that runs the agent directly vanishes on exit without surfacing the code, System MUST capture the exit status via a wrapper that records `$?` OR via tmux `remain-on-exit` + `#{pane_dead_status}` (mechanism pinned in the plan; spike identified both).
 - **FR-014**: On startup, System MUST enumerate surviving `muster/*` tmux sessions, re-associate each with its bead/step, mark running steps `running`, and resume streaming. Sessions with no matching live bead/step MUST be killed after a grace period.
 - **FR-015**: System MUST detect the `claude` adapter (presence + version) and tmux (presence + version) at startup and report `tmuxAvailable`, `tmuxVersion`, the detected adapter(s) with versions, and `runningCount` via `GET /api/v1/orchestrator/status`.
 - **FR-016**: System MUST detect and report the `claude` adapter's authentication state by shelling `claude auth status --json` (JSON is the default; parse `loggedIn`; pinned by spike). System MUST NOT perform, proxy, or store credentials for login; when unauthenticated, it returns an actionable message directing the user to run `claude auth login` out-of-band. (`Adapter.Login` may be a no-op / `ErrNotSupported` in M2.)
@@ -233,7 +235,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 - **SC-004**: Two beads dispatched concurrently run in two isolated worktrees; file changes from one are not visible in the other or in the main checkout.
 - **SC-005**: After muster is killed and restarted while an agent runs, the still-running agent is rediscovered and its streaming resumes within **5 seconds** of restart, with no loss of the agent process.
 - **SC-006**: With tmux uninstalled, a dispatched bead still runs to completion with runlog/WS streaming intact, and attach reports unavailable with a clear reason.
-- **SC-007**: On agent exit, the bead reaches `review` (exit 0) or a failed state (non-zero), verifiable via the M1 read endpoints; the agent's output was observable in real time via `runlog.line` (and via `capture-pane` catch-up while the session lived).
+- **SC-007**: On agent exit, the run's outcome is recorded on the bead (exit 0 vs non-zero), verifiable via the M1 read endpoints; the agent's output was observable in real time via `runlog.line` (and via `capture-pane` catch-up while the session lived). **M2 deviation:** the literal "reaches `review`" is recorded as an appended note + `bead.updated` rather than a persisted `review` column move (see the M2 note under Acceptance Scenarios).
 - **SC-008**: A dispatch whose bead prefix has no repo mapping, or to an unavailable/uninstalled/unauthenticated adapter, returns a clear actionable error and never leaves a half-started session or worktree.
 - **SC-009**: `go test -race ./...` passes — no data races in the new streaming/session/runlog paths.
 
@@ -262,7 +264,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 - A **runlog** capture/streaming path feeding the WS hub (no durable store in M2).
 - A **minimal worktree** helper (`git worktree add`/reuse) — a thin precursor to M3's `wt.Backend`.
 - New WS event types and the `/steps/{idx}/attach` + `/steps/{idx}/send` endpoints wired into the M1 router.
-- `cmd/muster/main.go` wiring: probe tmux/git/`claude` at startup; parse `--repo`; restart-recovery scan.
+- `cmd/muster/main.go` wiring: probe tmux/`claude` at startup (git is shelled out at run time, not probed); parse `--repo`; restart-recovery scan.
 
 ### New Configuration (anticipated)
 

@@ -52,7 +52,19 @@ func main() {
 	var repoFlagList repoFlags
 	fs.Var(&repoFlagList, "repo", "repeatable: map bead-ID prefix to repo path (e.g. mp=/path/to/repo)")
 	worktreesDirFlag := fs.String("worktrees-dir", "", "directory for per-bead git worktrees (default: ~/.muster/worktrees)")
-	runTimeoutFlag := fs.Duration("run-timeout", 0, "optional per-run timeout (e.g. 30m); 0 = no timeout")
+	// --run-timeout defaults from MUSTER_RUN_TIMEOUT when the flag is not given
+	// (parity with the other M2 flags, and with FR-017's documented env
+	// fallback). An unparseable env value is warned about and ignored rather
+	// than aborting startup.
+	runTimeoutDefault := time.Duration(0)
+	if v := os.Getenv("MUSTER_RUN_TIMEOUT"); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil {
+			runTimeoutDefault = d
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: invalid MUSTER_RUN_TIMEOUT %q: %v (ignoring)\n", v, perr)
+		}
+	}
+	runTimeoutFlag := fs.Duration("run-timeout", runTimeoutDefault, "optional per-run timeout (e.g. 30m); 0 = no timeout (env: MUSTER_RUN_TIMEOUT)")
 	defaultPermModeFlag := fs.String("default-permission-mode", os.Getenv("MUSTER_DEFAULT_PERMISSION_MODE"), "default claude permission mode (acceptEdits, dontAsk, etc.)")
 
 	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles the error

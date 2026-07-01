@@ -55,8 +55,8 @@ var ErrUnsupportedMode = errors.New("unsupported mode for adapter")
 //   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt.
 type Run struct {
 	BeadID         string
-	StepIdx        int // always 0 in M2
-	Loop           int // always 0 in M2
+	StepIdx        int // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
+	Loop           int // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode

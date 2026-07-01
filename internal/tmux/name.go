@@ -16,7 +16,15 @@ func SessionName(beadID string, stepIdx, loop int) string {
 }
 
 // ParseSessionName parses a tmux session name produced by SessionName.
-// Returns an error if the name does not match the expected format.
+//
+// It enforces the structural shape only: the muster/ prefix must be present,
+// there must be at least three slash-separated segments, and the trailing two
+// (stepIdx, loop) must parse as integers. It does NOT reject values SessionName
+// would never emit — negative or non-canonical integers (parsed via
+// strconv.Atoi) and bead IDs that wouldn't pass core.ValidBeadID both parse
+// successfully. Callers needing those guarantees validate separately (recovery
+// runs the bead ID through core.ValidBeadID). Returns an error only when the
+// structural shape above is violated.
 func ParseSessionName(name string) (beadID string, stepIdx, loop int, err error) {
 	if !strings.HasPrefix(name, sessionPrefix) {
 		return "", 0, 0, fmt.Errorf("session name %q does not start with %q", name, sessionPrefix)
