@@ -45,13 +45,13 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 
 ```bash
 make build        # produces bin/muster
-make test         # go test ./... (fakes only — no real claude/tmux)
+make test         # go test ./... (claude always faked; real-tmux tests run if tmux is present, else skip)
 make cover-check  # coverage gates
 make lint         # gofmt + go vet + golangci-lint
 make test-e2e     # real end-to-end M2 run (needs claude logged in + tmux)
 ```
 
-`make test` uses fake `claude`/`tmux` binaries, so it needs neither installed. `make test-e2e` (build-tagged, excluded from the default suite) drives a real dispatch against `claude` + `tmux` — see the [M2 quickstart](specs/003-m2-cli-adapter/quickstart.md). The `test-e2e` target and the underlying `//go:build e2e` test ship with the M2 orchestrator stack (stack 3 of the M2 PR series); on a tree that has only the docs/foundation stacks merged the target is absent, and `go test -tags=e2e -run TestE2E ./internal/orchestrator/` is the manual equivalent.
+`make test` never *requires* `claude` or `tmux` to be installed: `claude` is always faked, and the handful of integration tests that exercise the real `tmux` transport skip automatically when a supported `tmux` (>= 3.2) isn't present — but they **do** run against a real `tmux` when one is available, so they aren't fakes-only. `make test-e2e` (build-tagged, excluded from the default suite) drives a real dispatch against `claude` + `tmux` — see the [M2 quickstart](specs/003-m2-cli-adapter/quickstart.md). The `test-e2e` target and the underlying `//go:build e2e` test ship with the M2 orchestrator stack (stack 3 of the M2 PR series); on a tree that has only the docs/foundation stacks merged the target is absent, and `go test -tags=e2e -run TestE2E ./internal/orchestrator/` is the manual equivalent.
 
 ## Multi-repo setup
 
