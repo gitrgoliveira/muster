@@ -196,9 +196,15 @@ func main() {
 	reg := adapter.NewRegistryWithDefaults(claudeAdapter)
 
 	var adapterInfos []health.AdapterInfo
-	detectCtx, detectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	for _, a := range reg.All() {
+		// Per-adapter deadline: a slow/hung Detect on one adapter must not eat
+		// into the budget of the others. With a single shared context, an early
+		// hang would leave later adapters probed against an already-expired
+		// context, misreporting Version/LoggedIn. This matters as the registry
+		// grows beyond M2's single claude adapter (M5+).
+		detectCtx, detectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		result, derr := a.Detect(detectCtx)
+		detectCancel()
 		if derr != nil {
 			// Non-fatal: still report the adapter, but log so operators can tell
 			// "probe failed / timed out" apart from a genuine loggedIn=false.
@@ -210,7 +216,6 @@ func main() {
 			LoggedIn: result.LoggedIn,
 		})
 	}
-	detectCancel()
 
 	// onComplete records an agent run's outcome on its bead when the run exits
 	// (FR-013/SC-007). M2 limitation: beads has no distinct "review" status
