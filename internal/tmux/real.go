@@ -345,9 +345,9 @@ func (m *RealManager) Kill(name string) error {
 // List implements Manager. Returns all muster-owned sessions from the default socket.
 func (m *RealManager) List() ([]Session, error) {
 	// #{session_name} #{pane_id}: session names never contain whitespace
-	// (validated against beadIDPattern before use — see recovery.go), so a
-	// single split on the first space is safe and avoids a per-session
-	// subprocess just to learn the pane id for recovered sessions.
+	// (the bead ID is validated via core.ValidBeadID before use — see
+	// recovery.go), so a single split on the first space is safe and avoids a
+	// per-session subprocess just to learn the pane id for recovered sessions.
 	out, err := m.run("list-sessions", "-F", "#{session_name} #{pane_id}")
 	if err != nil {
 		// tmux returns exit 1 when there are no sessions — treat that as empty

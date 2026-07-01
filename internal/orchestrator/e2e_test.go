@@ -32,13 +32,13 @@ import (
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
 
-// e2eBeadID is the bead ID used throughout this test. It must match the
-// validated bead-ID format `^[a-z]+-[0-9a-z]+$` (see idPattern in
-// internal/api/beads/handlers.go and beadIDPattern in
-// internal/orchestrator/recovery.go) so the test exercises a representative
-// ID: a suffix with a second hyphen would fail that validation and would be
-// skipped by restart recovery. The "mp" prefix is mapped to the temp repo in
-// the orchestrator config below.
+// e2eBeadID is the bead ID used throughout this test. It must satisfy the
+// canonical bead-ID validator core.ValidBeadID — the single format shared by
+// the HTTP handler's request-path allow-list and restart recovery's
+// session-name validation — so the test exercises a representative ID that
+// won't be rejected by the API or skipped/killed by recovery. "mp-e2e01" is a
+// valid single-segment ID; multi-segment IDs like "mp-mol-4gl" are also valid.
+// The "mp" prefix is mapped to the temp repo in the orchestrator config below.
 const e2eBeadID = "mp-e2e01"
 
 // checkE2EPrerequisites skips the test if claude or tmux is absent/unauthed.
