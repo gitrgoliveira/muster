@@ -63,6 +63,7 @@ func (o *Orchestrator) GetAttach(beadID string, stepIdx int) (*services.AttachRe
 		Available: true,
 		Command:   cmd,
 		Session:   run.Session,
+		Pane:      run.Pane,
 	}, nil
 }
 

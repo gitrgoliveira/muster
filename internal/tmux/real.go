@@ -140,6 +140,16 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 		return nil, fmt.Errorf("tmux set-option remain-on-exit: %w", err)
 	}
 
+	// Query the pane ID now, before respawn-pane. respawn-pane -k reuses the
+	// existing pane (kills the process inside it and starts a new one) rather
+	// than creating a new one, so the pane ID is stable across the respawn —
+	// verified with `tmux display-message` before/after respawn-pane in
+	// manual testing. Best-effort: a failure here must not fail the whole
+	// Spawn (the pane ID is only used to populate the attach response's
+	// informational `pane` field).
+	paneID, _ := m.run("display-message", "-p", "-t", name, "#{pane_id}")
+	paneID = strings.TrimSpace(paneID)
+
 	// Respawn the pane with the real command, now that it will persist on exit.
 	respawnArgs := []string{"respawn-pane", "-k", "-t", name}
 	if cwd != "" {
@@ -163,6 +173,7 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 		BeadID:    beadID,
 		StepIdx:   stepIdx,
 		Loop:      loop,
+		Pane:      paneID,
 		StartedAt: time.Now(),
 	}, nil
 }
@@ -329,7 +340,11 @@ func (m *RealManager) Kill(name string) error {
 
 // List implements Manager. Returns all muster-owned sessions from the default socket.
 func (m *RealManager) List() ([]Session, error) {
-	out, err := m.run("list-sessions", "-F", "#{session_name}")
+	// #{session_name} #{pane_id}: session names never contain whitespace
+	// (validated against beadIDPattern before use — see recovery.go), so a
+	// single split on the first space is safe and avoids a per-session
+	// subprocess just to learn the pane id for recovered sessions.
+	out, err := m.run("list-sessions", "-F", "#{session_name} #{pane_id}")
 	if err != nil {
 		// tmux returns exit 1 when there are no sessions — treat that as empty
 		// list. tmux writes this message to stderr, which m.run folds into out
@@ -343,7 +358,8 @@ func (m *RealManager) List() ([]Session, error) {
 	var sessions []Session
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
-		name := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(scanner.Text())
+		name, pane, _ := strings.Cut(line, " ")
 		if !IsMusterSession(name) {
 			continue
 		}
@@ -356,6 +372,7 @@ func (m *RealManager) List() ([]Session, error) {
 			BeadID:  beadID,
 			StepIdx: stepIdx,
 			Loop:    loop,
+			Pane:    pane,
 		})
 	}
 	return sessions, scanner.Err()

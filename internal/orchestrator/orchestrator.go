@@ -61,6 +61,7 @@ type Run struct {
 	PermissionMode core.PermissionMode
 	Worktree       string          // absolute path to the worktree
 	Session        string          // tmux session name (empty in fallback)
+	Pane           string          // tmux pane id, e.g. "%3" (empty in fallback; informational only)
 	State          core.StepStatus // running | done | failed | cancelled
 	ExitCode       int
 	StartedAt      time.Time
@@ -454,6 +455,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	run.PermissionMode = pm
 	run.Worktree = wt.Path
 	run.Session = sess.Name
+	run.Pane = sess.Pane
 	run.State = core.StepActive
 	run.cancel = runCancel
 	o.mu.Unlock()
@@ -601,8 +603,26 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// not a distinct persisted status (it folds to in_progress per the beads
 	// mapper), so the writeback records a note + bead.updated rather than moving
 	// the bead to a review column.
+	//
+	// OnComplete is a caller-supplied extension point (wired to a bd CLI
+	// shell-out + WS broadcast in main.go) running on this run's watcher
+	// goroutine. A panic there — a bug in the CLI writeback path, a future
+	// caller's callback, etc. — would otherwise be unhandled and crash the
+	// entire muster process, taking down every other in-flight run along with
+	// it. Recover and log instead: this run's own completion has already been
+	// fully processed (state flipped, session killed, event published) by the
+	// time OnComplete runs, so a failure here only means the bead never got
+	// its outcome note, not a corrupted run.
 	if o.onComplete != nil {
-		o.onComplete(run.BeadID, exitCode, state == core.StepDone)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("onComplete panicked; recovered to protect the watcher goroutine",
+						"bead", run.BeadID, "panic", r)
+				}
+			}()
+			o.onComplete(run.BeadID, exitCode, state == core.StepDone)
+		}()
 	}
 
 	// Evict this run from the registry after the retention window so a

@@ -226,6 +226,27 @@ func TestRealTmuxManager_Spawn_CallsNewSession(t *testing.T) {
 	}
 }
 
+// TestRealTmuxManager_Spawn_PopulatesPane verifies Spawn queries the pane ID
+// via `display-message -p "#{pane_id}"` and stores it on the returned
+// Session, so GetAttach can surface it in services.AttachResponse.Pane
+// (previously always empty — see the Copilot finding this fixes).
+func TestRealTmuxManager_Spawn_PopulatesPane(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	setupFakeTmux(t)
+	t.Setenv("FAKE_TMUX_OUTPUT_DISPLAY_MESSAGE", "%7\n")
+
+	m := NewRealManager("")
+	sess, err := m.Spawn("muster/mp-abc/0/0", t.TempDir(), nil, []string{"sh", "-c", "echo hello"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if sess.Pane != "%7" {
+		t.Errorf("Session.Pane want %%7 got %q", sess.Pane)
+	}
+}
+
 func TestRealTmuxManager_Kill_CallsKillSession(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("shell-script fake tmux requires unix")
@@ -335,7 +356,7 @@ func TestRealTmuxManager_List(t *testing.T) {
 	setupFakeTmux(t)
 
 	outputFile := filepath.Join(t.TempDir(), "list_output")
-	content := "muster/mp-abc/0/0\nmuster/bd-0001/0/0\nother-session\n"
+	content := "muster/mp-abc/0/0 %0\nmuster/bd-0001/0/0 %2\nother-session %5\n"
 	if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -352,17 +373,21 @@ func TestRealTmuxManager_List(t *testing.T) {
 		t.Errorf("want 2 muster sessions, got %d: %v", len(sessions), sessions)
 	}
 
-	names := make(map[string]bool)
+	byName := make(map[string]Session)
 	for _, s := range sessions {
-		names[s.Name] = true
+		byName[s.Name] = s
 	}
-	if !names["muster/mp-abc/0/0"] {
+	if s, ok := byName["muster/mp-abc/0/0"]; !ok {
 		t.Error("missing muster/mp-abc/0/0")
+	} else if s.Pane != "%0" {
+		t.Errorf("Pane want %%0 got %q", s.Pane)
 	}
-	if !names["muster/bd-0001/0/0"] {
+	if s, ok := byName["muster/bd-0001/0/0"]; !ok {
 		t.Error("missing muster/bd-0001/0/0")
+	} else if s.Pane != "%2" {
+		t.Errorf("Pane want %%2 got %q", s.Pane)
 	}
-	if names["other-session"] {
+	if _, ok := byName["other-session"]; ok {
 		t.Error("other-session should be filtered out")
 	}
 }

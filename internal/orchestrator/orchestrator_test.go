@@ -32,6 +32,7 @@ type completion struct {
 // controllable results.
 type fakeTransport struct {
 	spawnErr       error
+	spawnPane      string // optional: Session.Pane to report from Spawn
 	deadCode       int
 	deadDead       bool
 	deadErr        error
@@ -70,6 +71,7 @@ func (f *fakeTransport) Spawn(name, cwd string, env, argv []string) (*tmux.Sessi
 	}
 	sess := &tmux.Session{
 		Name:      name,
+		Pane:      f.spawnPane,
 		StartedAt: time.Now(),
 	}
 	f.spawnedSession = sess
@@ -178,6 +180,40 @@ func TestDispatch_HappyPath(t *testing.T) {
 	}
 	if run.State != core.StepActive {
 		t.Errorf("run state want active got %q", run.State)
+	}
+}
+
+// TestGetAttach_PopulatesPane verifies GetAttach surfaces the tmux pane ID
+// the transport reported at Spawn time — services.AttachResponse.Pane was
+// previously always empty (see the Copilot finding this fixes).
+func TestGetAttach_PopulatesPane(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	o, transport := newOrchestratorForTest(t, repoPath)
+	transport.spawnPane = "%3"
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-pane",
+		BeadTitle:      "Test task",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+	if _, err := o.Dispatch(context.Background(), req); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	resp, err := o.GetAttach("mp-pane", 0)
+	if err != nil {
+		t.Fatalf("GetAttach: %v", err)
+	}
+	if !resp.Available {
+		t.Fatalf("Available want true got false, reason: %q", resp.Reason)
+	}
+	if resp.Pane != "%3" {
+		t.Errorf("Pane want %%3 got %q", resp.Pane)
 	}
 }
 
@@ -446,6 +482,78 @@ func TestDispatch_OnComplete_Success(t *testing.T) {
 	}
 	if got.exitCode != 0 {
 		t.Errorf("exitCode want 0 got %d", got.exitCode)
+	}
+}
+
+// TestDispatch_OnComplete_PanicRecovered verifies that a panic inside the
+// caller-supplied OnComplete callback is recovered on the watcher goroutine
+// instead of crashing the whole process (OnComplete is an extension point;
+// a bug in it must not take down every other in-flight run).
+func TestDispatch_OnComplete_PanicRecovered(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+
+	transport := &fakeTransport{deadDead: true, deadCode: 0}
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	// OnComplete panics only for the first bead; the second dispatch's
+	// completion must still be observed cleanly, proving the panic didn't
+	// take down the watcher goroutine machinery for other runs.
+	panicked := make(chan struct{})
+	completedCleanly := make(chan struct{})
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    transport,
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+		OnComplete: func(beadID string, exitCode int, success bool) {
+			if beadID == "mp-panic" {
+				close(panicked)
+				panic("boom: simulated bug in OnComplete")
+			}
+			close(completedCleanly)
+		},
+	})
+
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-panic",
+		BeadTitle:      "Test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	select {
+	case <-panicked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnComplete was not called within timeout")
+	}
+
+	// The orchestrator must still be usable: a second, unrelated dispatch's
+	// OnComplete must still fire normally. If the panic were unrecovered, the
+	// whole test binary would have already crashed before reaching this point.
+	_, err = o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-after-panic",
+		BeadTitle:      "Test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch after a recovered OnComplete panic should still succeed: %v", err)
+	}
+
+	select {
+	case <-completedCleanly:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second dispatch's OnComplete was not called within timeout")
 	}
 }
 

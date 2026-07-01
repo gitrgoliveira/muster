@@ -96,6 +96,7 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 		StepIdx:   sess.StepIdx,
 		Loop:      sess.Loop,
 		Session:   sessionName,
+		Pane:      sess.Pane,
 		State:     core.StepActive,
 		StartedAt: sess.StartedAt,
 		cancel:    runCancel,
