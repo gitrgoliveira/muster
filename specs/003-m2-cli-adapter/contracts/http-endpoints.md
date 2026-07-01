@@ -19,9 +19,9 @@ Responses:
 |---|---|
 | `202 Accepted` | run launched; body = the bead in `running`. Run proceeds async (intentional change from M1's stub `200` — see note above). |
 | `409 CONFLICT` | a run is already active for this bead (one per bead in M2) |
-| `422 UNPROCESSABLE_ENTITY` | bead prefix has no repo mapping; or unknown agent/mode/permissionMode; or no permissionMode and no default |
-| `400 BAD_REQUEST` | malformed body |
-| `501 NOT_IMPLEMENTED` | adapter not installed |
+| `400 BAD_REQUEST` | malformed body; or `INVALID_REQUEST`: unknown/invalid `agent`, `mode`, or `permissionMode` value; or no `permissionMode` and no `--default-permission-mode` configured |
+| `422 UNPROCESSABLE_ENTITY` | `UNMAPPED_PREFIX`: bead prefix has no `--repo` mapping |
+| `501 NOT_IMPLEMENTED` | `ADAPTER_NOT_FOUND`: agent not registered; or `ADAPTER_NOT_INSTALLED`: binary not found on PATH |
 | `409`/error | adapter installed but `loggedIn=false` → message: run `claude auth login` |
 
 Side effects (happy path): resolve repo (prefix map) → `git worktree add` (or reuse) → write `.muster-prompt-0.txt` → tmux `Spawn` → emit `tmux.session.opened` → bead column → `running`.

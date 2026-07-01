@@ -37,4 +37,4 @@ Invariants:
 
 ## Registry
 
-`adapter.Registry` maps `core.AgentID → Adapter`. M2 registers `claude` only. Dispatch to an unregistered/undetected agent → `422`/`501`-style error (FR-002, US5).
+`adapter.Registry` maps `core.AgentID → Adapter`. M2 registers `claude` only. Dispatch to an unregistered agent → `501 ADAPTER_NOT_FOUND`; a registered agent whose binary isn't installed → `501 ADAPTER_NOT_INSTALLED` (FR-002, US5).
