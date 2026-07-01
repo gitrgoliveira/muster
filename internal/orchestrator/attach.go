@@ -28,6 +28,19 @@ func (o *Orchestrator) GetAttach(beadID string, stepIdx int) (*services.AttachRe
 		}, nil
 	}
 
+	if run.Session == "" {
+		// Dispatch registers a StepActive reservation before the tmux session
+		// name is known (it's set only after Detect/worktree.Ensure/Invoke/Spawn
+		// all succeed). Attaching during that window would otherwise build a
+		// command against an empty session name (RealManager.Attach never
+		// errors — it just string-concatenates), reporting Available: true
+		// with a bogus/unsafe "tmux attach -t " command.
+		return &services.AttachResponse{
+			Available: false,
+			Reason:    "step is starting (tmux session not yet available)",
+		}, nil
+	}
+
 	if isFallbackTransport(o.transport) {
 		// Fallback mode: no tmux session to attach to. (run.Session is non-empty
 		// in fallback too — FallbackManager keys its in-memory sessions by name —
@@ -68,6 +81,18 @@ func (o *Orchestrator) SendKeys(beadID string, stepIdx int, keys string) error {
 		return &services.ServiceError{
 			Code:    services.CodeInvalidState,
 			Message: "step is not currently running",
+		}
+	}
+
+	if run.Session == "" {
+		// Same reservation-window gap as GetAttach: Dispatch registers a
+		// StepActive reservation before the tmux session name is known.
+		// Rejecting here (instead of forwarding an empty name to the
+		// transport, which fails with a confusing tmux error) gives the
+		// client a clear, retryable "not ready yet" signal.
+		return &services.ServiceError{
+			Code:    services.CodeInvalidState,
+			Message: "step is starting (tmux session not yet available)",
 		}
 	}
 

@@ -99,6 +99,7 @@ type Orchestrator struct {
 	defaultPermMode core.PermissionMode
 	publish         Publisher
 	runTimeout      time.Duration // 0 = no timeout
+	runRetention    time.Duration // how long a finished run stays in o.runs before eviction
 
 	// onComplete is invoked (nil-guarded) when a run finishes — on normal exit
 	// (success = exit 0) and on the timeout/cancel path (exitCode -1, success
@@ -133,14 +134,29 @@ type Config struct {
 	Publish         Publisher
 	RunTimeout      time.Duration // 0 = no timeout (FR-017: opt-in only)
 
+	// RunRetention bounds how long a finished run's entry stays in the
+	// in-memory registry (o.runs) after completion, so a long-lived server
+	// does not accumulate one entry per bead ever dispatched, unbounded.
+	// GetRun/RunCount remain valid for this long after a run finishes (useful
+	// for the API/UI to show a just-finished run's outcome). 0 = use
+	// defaultRunRetention.
+	RunRetention time.Duration
+
 	// OnComplete, if set, is called when a run finishes (success = exit 0).
 	// Wired in main.go to record the agent-run outcome on the bead (FR-013):
 	// a note + bead.updated frame. It runs on the watcher goroutine.
 	OnComplete func(beadID string, exitCode int, success bool)
 }
 
+// defaultRunRetention is used when Config.RunRetention is unset (0).
+const defaultRunRetention = 1 * time.Hour
+
 // New creates a new Orchestrator.
 func New(cfg Config) *Orchestrator {
+	runRetention := cfg.RunRetention
+	if runRetention <= 0 {
+		runRetention = defaultRunRetention
+	}
 	return &Orchestrator{
 		runs:            make(map[string]*Run),
 		adapters:        cfg.Adapters,
@@ -150,6 +166,7 @@ func New(cfg Config) *Orchestrator {
 		defaultPermMode: cfg.DefaultPermMode,
 		publish:         cfg.Publish,
 		runTimeout:      cfg.RunTimeout,
+		runRetention:    runRetention,
 		onComplete:      cfg.OnComplete,
 	}
 }
@@ -191,6 +208,26 @@ func (o *Orchestrator) removeRun(beadID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.runs, beadID)
+}
+
+// scheduleRunEviction removes a finished run from the registry after
+// o.runRetention has elapsed, so a long-lived server does not accumulate one
+// o.runs entry per bead ever dispatched, unbounded — only StepActive runs are
+// needed for concurrency control (Dispatch's duplicate check) and attach/send,
+// but GetRun/RunCount stay valid for finished runs briefly (debugging, tests,
+// and the API/UI showing a just-finished run's outcome).
+//
+// Guarded by pointer identity: if the bead is re-dispatched (a new *Run
+// registered under the same beadID) before the eviction fires, the delete is
+// a no-op — it must never remove a run that isn't the one that finished.
+func (o *Orchestrator) scheduleRunEviction(run *Run) {
+	time.AfterFunc(o.runRetention, func() {
+		o.mu.Lock()
+		if cur, ok := o.runs[run.BeadID]; ok && cur == run {
+			delete(o.runs, run.BeadID)
+		}
+		o.mu.Unlock()
+	})
 }
 
 // resolvePermMode returns the effective permission mode, applying the default
@@ -567,6 +604,10 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	if o.onComplete != nil {
 		o.onComplete(run.BeadID, exitCode, state == core.StepDone)
 	}
+
+	// Evict this run from the registry after the retention window so a
+	// long-lived server doesn't accumulate an entry per bead ever dispatched.
+	o.scheduleRunEviction(run)
 }
 
 // buildPrompt assembles the bead title and description into a prompt string.

@@ -449,6 +449,66 @@ func TestDispatch_OnComplete_Success(t *testing.T) {
 	}
 }
 
+// TestDispatch_RunEviction verifies a finished run stays visible via GetRun
+// immediately after completion (so debugging/tests/the API can observe the
+// outcome), but is evicted from the registry once RunRetention elapses — the
+// registry must not accumulate one entry per bead ever dispatched, unbounded.
+func TestDispatch_RunEviction(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+
+	transport := &fakeTransport{deadDead: true, deadCode: 0}
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	done := make(chan struct{})
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    transport,
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+		RunRetention: 20 * time.Millisecond,
+		OnComplete: func(beadID string, exitCode int, success bool) {
+			close(done)
+		},
+	})
+
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-evict",
+		BeadTitle:      "Test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnComplete was not called within timeout")
+	}
+
+	// Immediately after completion, the run is still visible.
+	if run := o.GetRun("mp-evict"); run == nil {
+		t.Fatal("GetRun should return the finished run immediately after completion")
+	}
+
+	// After RunRetention elapses, it must be evicted.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if o.GetRun("mp-evict") == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("run should have been evicted from the registry after RunRetention elapsed")
+}
+
 // TestDispatch_OnComplete_Timeout verifies that the run-timeout/cancel branch
 // calls OnComplete with exitCode -1 and success=false (FR-013).
 func TestDispatch_OnComplete_Timeout(t *testing.T) {

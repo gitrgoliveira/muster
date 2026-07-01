@@ -99,6 +99,90 @@ func TestRealTmuxManager_Detect_NotFound(t *testing.T) {
 	}
 }
 
+func TestRealTmuxManager_Detect_BelowVersionFloor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	setupFakeTmux(t)
+
+	versionFile := filepath.Join(t.TempDir(), "version_output")
+	if err := os.WriteFile(versionFile, []byte("tmux 3.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", versionFile)
+
+	m := NewRealManager("")
+	_, err := m.Detect()
+	if err == nil {
+		t.Fatal("Detect should return an error for a tmux version below the 3.2 floor")
+	}
+}
+
+func TestRealTmuxManager_Detect_AtVersionFloor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	setupFakeTmux(t)
+
+	versionFile := filepath.Join(t.TempDir(), "version_output")
+	if err := os.WriteFile(versionFile, []byte("tmux 3.2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", versionFile)
+
+	m := NewRealManager("")
+	version, err := m.Detect()
+	if err != nil {
+		t.Fatalf("Detect should accept exactly the floor version, got: %v", err)
+	}
+	if version == "" {
+		t.Error("version should not be empty")
+	}
+}
+
+func TestRealTmuxManager_Detect_UnparseableVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	setupFakeTmux(t)
+
+	versionFile := filepath.Join(t.TempDir(), "version_output")
+	if err := os.WriteFile(versionFile, []byte("not a version string\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", versionFile)
+
+	m := NewRealManager("")
+	_, err := m.Detect()
+	if err == nil {
+		t.Fatal("Detect should fail closed when the version can't be parsed")
+	}
+}
+
+func TestParseTmuxVersion(t *testing.T) {
+	tests := []struct {
+		in        string
+		wantMajor int
+		wantMinor int
+		wantOK    bool
+	}{
+		{"tmux 3.6b", 3, 6, true},
+		{"tmux 3.2a", 3, 2, true},
+		{"tmux 3.2", 3, 2, true},
+		{"tmux next-3.4", 3, 4, true},
+		{"tmux openbsd-6.3", 6, 3, true},
+		{"no version here", 0, 0, false},
+		{"", 0, 0, false},
+	}
+	for _, tt := range tests {
+		major, minor, ok := parseTmuxVersion(tt.in)
+		if ok != tt.wantOK || major != tt.wantMajor || minor != tt.wantMinor {
+			t.Errorf("parseTmuxVersion(%q) = (%d, %d, %v), want (%d, %d, %v)",
+				tt.in, major, minor, ok, tt.wantMajor, tt.wantMinor, tt.wantOK)
+		}
+	}
+}
+
 func TestRealTmuxManager_Spawn_CallsNewSession(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("shell-script fake tmux requires unix")

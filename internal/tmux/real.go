@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -45,15 +46,54 @@ func (m *RealManager) run(args ...string) (string, error) {
 	return string(out), err
 }
 
-// Detect implements Manager. Returns the tmux version string or an error if
-// tmux is not available.
+// minTmuxMajor and minTmuxMinor are the supported tmux version floor (FR-007,
+// spike-verified against 3.6b — see specs/003-m2-cli-adapter/research.md).
+// Below this floor, pipe-pane/remain-on-exit/pane_dead_status semantics this
+// package relies on may differ in ways that surface as confusing failures
+// much later (mid-run) rather than as a clean startup fallback.
+const minTmuxMajor, minTmuxMinor = 3, 2
+
+// tmuxVersionRe extracts the first "<major>.<minor>" pair from `tmux -V`
+// output. Covers the common formats ("tmux 3.6b", "tmux 3.2a", "tmux next-3.4")
+// without needing to special-case vendor suffixes/prefixes.
+var tmuxVersionRe = regexp.MustCompile(`(\d+)\.(\d+)`)
+
+// Detect implements Manager. Returns the tmux version string, or an error if
+// tmux is not available, its version can't be parsed, or it is below the
+// supported floor (>= 3.2). Any error here is treated by the caller as "tmux
+// unavailable" and falls back to the direct-exec transport (see
+// cmd/muster/main.go), so failing closed on an unparseable version is the
+// safe default — better an unnecessary fallback than silently trusting an
+// unverified version.
 func (m *RealManager) Detect() (string, error) {
 	out, err := m.run("-V")
 	if err != nil {
 		return "", fmt.Errorf("tmux detect: %w", err)
 	}
 	version := strings.TrimSpace(out)
+	major, minor, ok := parseTmuxVersion(version)
+	if !ok {
+		return "", fmt.Errorf("tmux detect: could not parse a version number from %q (want >= %d.%d)", version, minTmuxMajor, minTmuxMinor)
+	}
+	if major < minTmuxMajor || (major == minTmuxMajor && minor < minTmuxMinor) {
+		return "", fmt.Errorf("tmux detect: version %q is below the supported floor (>= %d.%d)", version, minTmuxMajor, minTmuxMinor)
+	}
 	return version, nil
+}
+
+// parseTmuxVersion extracts the major.minor version from a `tmux -V` output
+// string (e.g. "tmux 3.6b" -> 3, 6, true).
+func parseTmuxVersion(s string) (major, minor int, ok bool) {
+	m := tmuxVersionRe.FindStringSubmatch(s)
+	if m == nil {
+		return 0, 0, false
+	}
+	major, err1 := strconv.Atoi(m[1])
+	minor, err2 := strconv.Atoi(m[2])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 // Spawn implements Manager. Creates a new tmux session on the default socket

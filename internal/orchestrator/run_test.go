@@ -6,6 +6,47 @@ import (
 	"github.com/gitrgoliveira/muster/internal/core"
 )
 
+// TestGetAttach_ReservationWindow verifies GetAttach rejects a run that is
+// StepActive but has not yet been assigned a tmux Session name — the window
+// between Dispatch registering the reservation and the tmux session actually
+// spawning. Without this check, RealManager.Attach never errors (it just
+// string-concatenates the session name), so an empty Session would report
+// Available: true with a bogus "tmux attach -t " command.
+func TestGetAttach_ReservationWindow(t *testing.T) {
+	o := New(Config{RepoMap: RepoMap{"mp": "/tmp/repo"}})
+
+	run := &Run{BeadID: "mp-starting", State: core.StepActive, Session: ""}
+	o.mu.Lock()
+	o.registerRun(run)
+	o.mu.Unlock()
+
+	resp, err := o.GetAttach("mp-starting", 0)
+	if err != nil {
+		t.Fatalf("GetAttach: %v", err)
+	}
+	if resp.Available {
+		t.Errorf("Available should be false while Session is empty, got command %q", resp.Command)
+	}
+}
+
+// TestSendKeys_ReservationWindow is the SendKeys analogue of
+// TestGetAttach_ReservationWindow: a StepActive run with no Session yet must
+// be rejected with a clear error rather than forwarding an empty session name
+// to the transport.
+func TestSendKeys_ReservationWindow(t *testing.T) {
+	o := New(Config{RepoMap: RepoMap{"mp": "/tmp/repo"}})
+
+	run := &Run{BeadID: "mp-starting", State: core.StepActive, Session: ""}
+	o.mu.Lock()
+	o.registerRun(run)
+	o.mu.Unlock()
+
+	err := o.SendKeys("mp-starting", 0, "y\n")
+	if err == nil {
+		t.Fatal("SendKeys should reject a run with no Session yet")
+	}
+}
+
 func TestRunRegistry_OneActivePerBead(t *testing.T) {
 	o := New(Config{
 		Adapters:  nil,
