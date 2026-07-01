@@ -87,6 +87,41 @@ func TestEnsure_NonGitRepoError(t *testing.T) {
 	}
 }
 
+func TestEnsure_CleansUpAfterFailedCreate(t *testing.T) {
+	// If `git worktree add` fails or is killed mid-flight (e.g. the caller's
+	// ctx expires), Ensure must not leave a half-created directory behind:
+	// left behind, it could either be silently trusted as a complete
+	// worktree by a later call's reuse fast-path, or (if git never wrote the
+	// gitlink) permanently block reuse. Simulate a kill via an
+	// already-cancelled context.
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+	path := filepath.Join(worktreesDir, "mp-killed")
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := Ensure(cancelledCtx, worktreesDir, repoPath, "mp-killed")
+	if err == nil {
+		t.Fatal("want error from Ensure with an already-cancelled context, got nil")
+	}
+
+	// The half-created directory must not linger.
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("worktree path %q should not exist after a failed create, stat err: %v", path, statErr)
+	}
+
+	// A subsequent Ensure call with a healthy context must succeed cleanly —
+	// the bead must not be permanently stuck because of the earlier failure.
+	wt, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-killed")
+	if err != nil {
+		t.Fatalf("Ensure after failed create should succeed, got: %v", err)
+	}
+	if _, statErr := os.Stat(wt.Path); statErr != nil {
+		t.Errorf("worktree should exist after successful retry: %v", statErr)
+	}
+}
+
 func TestEnsure_ManuallyDeletedWorktree(t *testing.T) {
 	// If the branch exists but the worktree directory was manually deleted,
 	// Ensure should recreate it on the existing branch.

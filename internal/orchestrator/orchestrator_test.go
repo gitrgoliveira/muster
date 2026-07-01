@@ -181,6 +181,43 @@ func TestDispatch_HappyPath(t *testing.T) {
 	}
 }
 
+func TestDispatch_ClientDisconnect_DoesNotAbortDetectOrEnsure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	// Dispatch derives its internal Detect/Ensure timeouts from the caller's
+	// ctx (the HTTP request context in production, which net/http cancels on
+	// client disconnect) via context.WithoutCancel. If that detachment
+	// regresses, a caller-cancelled ctx would propagate into the derived
+	// timeout contexts and exec.CommandContext would SIGKILL the in-flight
+	// `claude`/`git` subprocess — indistinguishable from a genuinely hung
+	// probe, but triggerable by any client just closing its connection.
+	// Simulate that by passing an already-cancelled ctx straight into
+	// Dispatch and asserting it still succeeds.
+	repoPath := initGitRepo(t)
+	o, transport := newOrchestratorForTest(t, repoPath)
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-abc",
+		BeadTitle:      "Test task",
+		BeadDesc:       "Do the thing",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := o.Dispatch(cancelledCtx, req)
+	if err != nil {
+		t.Fatalf("Dispatch with an already-cancelled parent ctx should still succeed (Detect/Ensure must not inherit cancellation), got: %v", err)
+	}
+	if transport.spawnedSession == nil {
+		t.Error("expected transport.Spawn to have been called")
+	}
+}
+
 func TestDispatch_409_DuplicateRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires unix shell")

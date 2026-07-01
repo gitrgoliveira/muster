@@ -93,6 +93,7 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 		cmd := exec.CommandContext(ctx, "git", "worktree", "add", path, branch)
 		cmd.Dir = repoPath
 		if out, err := cmd.CombinedOutput(); err != nil {
+			cleanupFailedCreate(repoPath, path)
 			return Worktree{}, fmt.Errorf("worktree: git worktree add (existing branch): %w\n%s", err, out)
 		}
 	} else {
@@ -100,6 +101,7 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 		cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branch, path)
 		cmd.Dir = repoPath
 		if out, err := cmd.CombinedOutput(); err != nil {
+			cleanupFailedCreate(repoPath, path)
 			return Worktree{}, fmt.Errorf("worktree: git worktree add -b %s: %w\n%s", branch, err, out)
 		}
 	}
@@ -110,6 +112,35 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 		Branch:   branch,
 		RepoPath: repoPath,
 	}, nil
+}
+
+// cleanupFailedCreate best-effort removes a half-created worktree directory
+// after `git worktree add` fails or is cancelled/killed mid-checkout. git
+// writes the worktree's `.git` gitlink file (and registers it in
+// `.git/worktrees/<name>`) BEFORE performing the file checkout, so a process
+// killed at the wrong moment — e.g. by ctx's own deadline via
+// exec.CommandContext's SIGKILL — can leave a directory that looks like a
+// complete worktree (isWorktreeDir would return true) but has an incomplete
+// checkout. Without this cleanup, a later Ensure call for the same beadID
+// would either silently reuse the corrupted directory as if it were valid,
+// or (if the gitlink itself never got written) permanently refuse to reuse
+// OR recreate it — both are worse than a best-effort removal here.
+//
+// Uses context.Background(), not the caller's ctx: cleanup must still run
+// when the failure IS the caller's ctx expiring/being cancelled.
+func cleanupFailedCreate(repoPath, path string) {
+	removeCmd := exec.CommandContext(context.Background(), "git", "worktree", "remove", "--force", path)
+	removeCmd.Dir = repoPath
+	if removeCmd.Run() == nil {
+		return
+	}
+	// `git worktree remove` itself can fail on a sufficiently mangled
+	// half-created directory (e.g. no gitlink was ever written). Fall back to
+	// a raw removal plus prune to drop the stale admin entry.
+	_ = os.RemoveAll(path)
+	pruneCmd := exec.CommandContext(context.Background(), "git", "worktree", "prune")
+	pruneCmd.Dir = repoPath
+	_ = pruneCmd.Run()
 }
 
 // validateGitRepo returns an error if path is not a git repository.

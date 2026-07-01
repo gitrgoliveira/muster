@@ -318,8 +318,13 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// independent short deadline so a hung claude binary or slow HTTP client
 	// cannot pin the run reservation (`State=StepActive`, registered above)
 	// indefinitely — otherwise the bead would remain undispatchable until the
-	// server restarts.
-	detectCtx, detectCancel := context.WithTimeout(ctx, 10*time.Second)
+	// server restarts. context.WithoutCancel detaches from ctx's cancellation
+	// (ctx is the HTTP request context; a client disconnect cancels it) so
+	// only OUR deadline can end the probe — a disconnecting client must not
+	// be able to SIGKILL an in-flight `claude` subprocess via
+	// exec.CommandContext, which would otherwise be indistinguishable from a
+	// hung probe.
+	detectCtx, detectCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	detectResult, err := adp.Detect(detectCtx)
 	detectCancel()
 	if err != nil {
@@ -356,7 +361,16 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// short deadline for the same reason as the Detect probe above: a hung
 	// `git rev-parse` / `git worktree add` (e.g. against a slow NFS mount or a
 	// stuck `.git` lock) would otherwise hold the run reservation forever.
-	ensureCtx, ensureCancel := context.WithTimeout(ctx, 30*time.Second)
+	// context.WithoutCancel detaches from ctx's cancellation for the same
+	// reason as the Detect probe above: a client disconnect must not
+	// SIGKILL a `git worktree add` mid-checkout via exec.CommandContext —
+	// git writes the worktree's `.git` gitlink file before the checkout
+	// completes, so a kill at the wrong moment would leave a directory that
+	// LOOKS like a complete worktree (isWorktreeDir returns true) but has an
+	// incomplete file checkout, and Ensure's reuse fast-path has no way to
+	// distinguish that from a legitimately-reusable worktree. Only OUR
+	// deadline (a genuinely hung subprocess) should be able to trigger this.
+	ensureCtx, ensureCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	wt, err := worktree.Ensure(ensureCtx, o.worktreesDir, repoPath, req.BeadID)
 	ensureCancel()
 	if err != nil {
