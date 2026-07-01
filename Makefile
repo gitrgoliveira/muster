@@ -65,7 +65,7 @@ test-e2e:
 help:
 	@echo "Available targets:"
 	@echo "  build        - Build the muster binary"
-	@echo "  test         - Run unit/integration tests (fakes only; no real claude/network)"
+	@echo "  test         - Run unit/integration tests (claude always faked; real-tmux tests run if tmux present, else skip)"
 	@echo "  test-e2e     - Run real end-to-end M2 test (needs: claude logged in + tmux)"
 	@echo "                 Uses Max plan usage allowance. Skips if unavailable."
 	@echo "  cover        - Generate and print test coverage"
