@@ -310,24 +310,18 @@ func main() {
 
 	handler := api.NewRouter(svc, hub, UI, statusCfg)
 
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "listen: %v\n", err)
-			os.Exit(1)
-		}
-	}()
-
-	// Start file watcher for embedded mode.
-	watcherOut := make(chan store.WatcherEvent, 32)
+	// Signal context — shared by the embedded-mode watcher below and by the
+	// graceful-shutdown wait at the end of main.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Start the embedded-mode file watcher BEFORE the HTTP server begins
+	// accepting requests. In embedded mode, dispatch/completion rely on the
+	// watcher to observe the real bd-CLI jsonl write and fan a bead.updated
+	// frame into the WS hub (publishOnWrite is off there). If the server
+	// accepted a dispatch — or a run completed — in the window before the
+	// watcher was running, that write could be missed by connected WS clients.
+	watcherOut := make(chan store.WatcherEvent, 32)
 	if cfg.Mode == "embedded" {
 		jsonlPath := filepath.Join(beadsDir, "issues.jsonl")
 		w := store.NewWatcher(backend, jsonlPath, watcherOut)
@@ -367,6 +361,20 @@ func main() {
 			}
 		}()
 	}
+
+	// Now that the watcher is running (embedded mode), start accepting requests.
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "listen: %v\n", err)
+			os.Exit(1)
+		}
+	}()
 
 	<-ctx.Done()
 	stop()

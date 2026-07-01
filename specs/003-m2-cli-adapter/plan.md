@@ -49,7 +49,7 @@ Checked against the ratified `.specify/memory/constitution.md` (v1.0.0, 2026-05-
 
 | Principle | Status | Notes |
 |---|---|---|
-| I. Single binary, self-contained | PASS | `cmd/muster/` still one binary; tmux/git/claude are external runtime deps, probed not linked; **no new go.mod entries** |
+| I. Single binary, self-contained | PASS | `cmd/muster/` still one binary; tmux/git/claude are external runtime deps, shelled out not linked (tmux/claude probed at startup; git used at run time); **no new go.mod entries** |
 | II. Beads is the source of truth | PASS | Runlog transient; worktrees git-managed; issue state still via the `bd` write path. muster owns no new durable state |
 | III. Layered architecture, thin handlers | PASS | Orchestration is its own vertical (`adapter`/`tmux`/`worktree`/`orchestrator`); handlers parse→delegate→render |
 | IV. Test-first, per-layer coverage | PASS | TDD ordering + per-package coverage gates below; `-race` clean; fake tmux/claude + real-tmux integration test |
