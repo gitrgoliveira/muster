@@ -60,6 +60,8 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
 	case services.CodeAdapterNotLoggedIn:
 		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
+	case services.CodeAttachUnavailable:
+		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
 	default:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	}

@@ -2,6 +2,7 @@ package ws
 
 import (
 	"log/slog"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +20,10 @@ type Hub struct {
 
 	clients      map[*Client]bool
 	beadsVersion string
+
+	// dropped counts frames dropped because the ingress buffer was full (see
+	// Broadcast). Atomic: incremented from arbitrary producer goroutines.
+	dropped atomic.Uint64
 }
 
 // NewHub constructs a Hub. beadsVersion is injected from seed data and
@@ -67,10 +72,27 @@ func (h *Hub) Run() {
 	}
 }
 
-// Broadcast sends f to all connected clients asynchronously.
+// Broadcast enqueues f for fan-out to all connected clients. It is
+// non-blocking: if the ingress buffer is full it drops the frame rather than
+// blocking the caller. This matters because callers include the runlog
+// transport reader goroutine — a blocking send here would stall that reader
+// when the hub is backed up, and the backpressure could propagate through the
+// tmux FIFO to the agent itself. Per-client backpressure is likewise handled
+// by dropping in Run's fan-out. WS is best-effort; clients recover missed
+// state by re-fetching (and runlog scrollback via capture-pane).
 func (h *Hub) Broadcast(f Frame) {
-	h.broadcast <- f
+	select {
+	case h.broadcast <- f:
+	default:
+		if n := h.dropped.Add(1); n == 1 || n%256 == 0 {
+			slog.Warn("ws: broadcast ingress buffer full, dropping frame(s)", "type", f.Type, "totalDropped", n)
+		}
+	}
 }
+
+// DroppedFrames returns the number of frames dropped by Broadcast because the
+// ingress buffer was full. Exposed for observability (e.g. status/metrics).
+func (h *Hub) DroppedFrames() uint64 { return h.dropped.Load() }
 
 func (h *Hub) sendHello(c *Client) {
 	hello := Frame{

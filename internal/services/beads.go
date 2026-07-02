@@ -40,6 +40,7 @@ const (
 	CodeAdapterNotFound     = "ADAPTER_NOT_FOUND"     // 501
 	CodeAdapterNotInstalled = "ADAPTER_NOT_INSTALLED" // 501
 	CodeAdapterNotLoggedIn  = "ADAPTER_NOT_LOGGED_IN" // 409 (need to run `claude auth login`)
+	CodeAttachUnavailable   = "ATTACH_UNAVAILABLE"    // 501 (attach/send feature not configured)
 )
 
 // ServiceError wraps a validation or state error with a code understood by
@@ -620,11 +621,12 @@ func (svc *BeadService) SendKeys(ctx context.Context, beadID string, stepIdx int
 	if svc.attacher != nil {
 		return svc.attacher.SendKeys(beadID, stepIdx, keys)
 	}
-	// No attacher wired in: this isn't a transient backend outage (which is
-	// what CodeCLIUnavailable/503 signals to clients) — the feature is simply
-	// not configured, matching the CodeCLIMissing/501 the legacy bd-CLI paths
-	// use when svc.cli is nil.
-	return &ServiceError{Code: CodeCLIMissing, Message: "send not available"}
+	// No attacher wired in: the attach/send (tmux session) feature isn't
+	// available in this configuration. Use a dedicated code rather than
+	// BD_CLI_MISSING (which wrongly points the client at the bd CLI) or
+	// BD_CLI_UNAVAILABLE/503 (which wrongly implies a transient outage). Maps
+	// to 501 Not Implemented.
+	return &ServiceError{Code: CodeAttachUnavailable, Message: "send not available: this muster instance has no tmux session transport"}
 }
 
 // AddComment appends a comment via the CLI.

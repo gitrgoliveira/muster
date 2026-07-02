@@ -387,10 +387,10 @@ func TestDispatch_OrchestratorPath_EmbeddedMode_SkipsForcedPublishWhenPersisted(
 	}
 }
 
-// TestSendKeys_NoAttacher verifies that SendKeys reports CodeCLIMissing
-// (→ 501) rather than CodeCLIUnavailable (→ 503) when no SessionAttacher is
-// wired in: the feature is simply not configured, not a transient backend
-// outage, so clients shouldn't be told to retry.
+// TestSendKeys_NoAttacher verifies that SendKeys reports CodeAttachUnavailable
+// (→ 501) when no SessionAttacher is wired in: the attach/send feature simply
+// isn't available in this configuration — not the bd CLI being absent
+// (BD_CLI_MISSING) nor a transient outage (BD_CLI_UNAVAILABLE/503).
 func TestSendKeys_NoAttacher(t *testing.T) {
 	backend := store.NewMemoryBackend(store.SeedIssues())
 	svc := NewBeadService(backend, nil, nil)
@@ -403,8 +403,8 @@ func TestSendKeys_NoAttacher(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ServiceError, got %T", err)
 	}
-	if se.Code != CodeCLIMissing {
-		t.Errorf("code = %q, want %q", se.Code, CodeCLIMissing)
+	if se.Code != CodeAttachUnavailable {
+		t.Errorf("code = %q, want %q", se.Code, CodeAttachUnavailable)
 	}
 }
 
