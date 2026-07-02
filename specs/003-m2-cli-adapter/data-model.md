@@ -162,7 +162,7 @@ New `EventType`s: `EventRunlogLine="runlog.line"`, `EventTmuxOpened="tmux.sessio
 TmuxAvailable bool          `json:"tmuxAvailable"`
 TmuxVersion   string        `json:"tmuxVersion,omitempty"`
 RunningCount  int           `json:"runningCount"`
-Adapters      []AdapterInfo `json:"adapters,omitempty"` // {id, version, loggedIn}
+Adapters      []AdapterInfo `json:"adapters,omitempty"` // {id, installed, version, loggedIn}
 ```
 
 ## State transitions (bead column / step)

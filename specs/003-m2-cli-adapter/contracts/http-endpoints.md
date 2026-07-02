@@ -22,7 +22,7 @@ Responses:
 | `400 BAD_REQUEST` | malformed body; or `INVALID_REQUEST`: unknown/invalid `agent`, `mode`, or `permissionMode` value; or no `permissionMode` and no `--default-permission-mode` configured |
 | `422 UNPROCESSABLE_ENTITY` | `UNMAPPED_PREFIX`: bead prefix has no `--repo` mapping |
 | `501 NOT_IMPLEMENTED` | `ADAPTER_NOT_FOUND`: agent not registered; or `ADAPTER_NOT_INSTALLED`: binary not found on PATH |
-| `409`/error | adapter installed but `loggedIn=false` → message: run `claude auth login` |
+| `409 CONFLICT` (`ADAPTER_NOT_LOGGED_IN`) | adapter installed but `loggedIn=false` → message: run `claude auth login` |
 
 Side effects (happy path): resolve repo (prefix map) → `git worktree add` (or reuse) → write `.muster-prompt-0.txt` → tmux `Spawn` → emit `tmux.session.opened` → bead column → `running`.
 
@@ -49,6 +49,6 @@ Request `{ "keys": "y\n" }` → forwards to the live pane via `send-keys`.
 Adds to the M1 body:
 ```json
 { "tmuxAvailable": true, "tmuxVersion": "3.6b", "runningCount": 2,
-  "adapters": [ { "id": "claude", "version": "2.1.145", "loggedIn": true } ] }
+  "adapters": [ { "id": "claude", "installed": true, "version": "2.1.145", "loggedIn": true } ] }
 ```
 All M1 fields retained.
