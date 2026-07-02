@@ -58,16 +58,29 @@ func main() {
 	// than aborting startup.
 	runTimeoutDefault := time.Duration(0)
 	if v := os.Getenv("MUSTER_RUN_TIMEOUT"); v != "" {
-		if d, perr := time.ParseDuration(v); perr == nil {
-			runTimeoutDefault = d
-		} else {
+		switch d, perr := time.ParseDuration(v); {
+		case perr != nil:
 			fmt.Fprintf(os.Stderr, "warning: invalid MUSTER_RUN_TIMEOUT %q: %v (ignoring)\n", v, perr)
+		case d < 0:
+			// A negative timeout would make context.WithTimeout fire
+			// immediately, timing out every dispatch. Ignore it.
+			fmt.Fprintf(os.Stderr, "warning: MUSTER_RUN_TIMEOUT %q is negative (ignoring)\n", v)
+		default:
+			runTimeoutDefault = d
 		}
 	}
 	runTimeoutFlag := fs.Duration("run-timeout", runTimeoutDefault, "optional per-run timeout (e.g. 30m); 0 = no timeout (env: MUSTER_RUN_TIMEOUT)")
 	defaultPermModeFlag := fs.String("default-permission-mode", os.Getenv("MUSTER_DEFAULT_PERMISSION_MODE"), "default claude permission mode (acceptEdits, dontAsk, etc.)")
 
 	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles the error
+
+	// An explicitly-passed negative --run-timeout would make every dispatch
+	// time out immediately (context.WithTimeout with a negative duration is
+	// already expired); fail fast rather than silently breaking dispatch.
+	if *runTimeoutFlag < 0 {
+		fmt.Fprintf(os.Stderr, "invalid --run-timeout %s: must not be negative\n", *runTimeoutFlag)
+		os.Exit(1)
+	}
 
 	// Validate addr format.
 	if _, _, err := net.SplitHostPort(*addr); err != nil {

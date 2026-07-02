@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gitrgoliveira/muster/internal/core"
@@ -515,12 +516,16 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// client retry would just hit ErrRunAlreadyActive/409.
 		persisted := false
 		if svc.cli != nil {
-			// Detach from the request context: the orchestrator run has already
-			// launched, so a client disconnect (which cancels ctx) must not
-			// abort this bd claim and leave the store showing the pre-dispatch
-			// column while the agent runs. context.WithoutCancel keeps any
-			// deadline the CLI applies internally but drops the cancellation.
-			if iss, err := svc.cli.Dispatch(context.WithoutCancel(ctx), id); err != nil {
+			// Detach from the request context's cancellation: the orchestrator
+			// run has already launched, so a client disconnect (which cancels
+			// ctx) must not abort this bd claim and leave the store showing the
+			// pre-dispatch column while the agent runs. context.WithoutCancel
+			// drops the deadline too, so re-apply an explicit one — otherwise a
+			// hung bd subprocess could block the request indefinitely.
+			claimCtx, claimCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			iss, err := svc.cli.Dispatch(claimCtx, id)
+			claimCancel()
+			if err != nil {
 				slog.Warn("Dispatch: orchestrator run started but persisting the running state failed; bead state may lag until the run completes", "bead", id, "err", err)
 			} else {
 				b := IssueToBead(&iss, svc.repo)
