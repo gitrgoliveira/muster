@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,6 +54,41 @@ func TestParseRepoFlag(t *testing.T) {
 		err := config.ParseRepoFlag(m, "mp=")
 		if err == nil {
 			t.Fatal("want error for empty path")
+		}
+	})
+
+	t.Run("leading tilde is expanded to home", func(t *testing.T) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("no home dir: %v", err)
+		}
+		// A shell never expands the ~ in `--repo mp=~/x` (not at word start),
+		// and MUSTER_REPO never goes through a shell, so ParseRepoFlag must do
+		// it — otherwise the path resolves relative to the cwd.
+		m := config.RepoMap{}
+		if err := config.ParseRepoFlag(m, "mp=~/repos/foo"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := filepath.Join(home, "repos", "foo")
+		if m["mp"] != want {
+			t.Errorf("want %q got %q", want, m["mp"])
+		}
+		// A bare "~" expands to the home dir itself.
+		m2 := config.RepoMap{}
+		if err := config.ParseRepoFlag(m2, "mp=~"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m2["mp"] != home {
+			t.Errorf("bare ~: want %q got %q", home, m2["mp"])
+		}
+		// A ~ NOT at the start (e.g. a real dir literally named "~x") is left
+		// alone — only a leading ~/~ / is treated as home.
+		m3 := config.RepoMap{}
+		if err := config.ParseRepoFlag(m3, "mp=/tmp/~nothome"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if strings.Contains(m3["mp"], home) && home != "/" {
+			t.Errorf("non-leading ~ should not expand: got %q", m3["mp"])
 		}
 	})
 }

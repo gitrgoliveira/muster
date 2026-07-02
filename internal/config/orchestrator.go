@@ -36,6 +36,19 @@ func ParseRepoFlag(m RepoMap, val string) error {
 	if path == "" {
 		return fmt.Errorf("invalid --repo value %q: path is empty", val)
 	}
+	// Expand a leading "~"/"~/" to the user's home dir. A shell won't expand it
+	// in `--repo mp=~/x` (the ~ isn't at the start of the word), and MUSTER_REPO
+	// never passes through a shell, so a literal "~/..." would otherwise be
+	// resolved relative to the cwd by filepath.Abs and silently mis-map the
+	// repo. ("~otheruser" is intentionally not expanded — it's uncommon and not
+	// portably resolvable.)
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, herr := os.UserHomeDir()
+		if herr != nil {
+			return fmt.Errorf("--repo %q: cannot expand ~: %w", val, herr)
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return fmt.Errorf("--repo %q: cannot resolve path: %w", val, err)

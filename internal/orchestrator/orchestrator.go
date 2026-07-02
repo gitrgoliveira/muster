@@ -346,6 +346,15 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		return nil, ErrInvalidBeadID
 	}
 
+	// A missing worktreesDir is a construction/wiring error (cmd/muster always
+	// sets it): worktree.Ensure would otherwise filepath.Join("", beadID) into
+	// a relative "./<beadID>" and create/reuse a worktree under the current
+	// working directory. Fail fast, before reserving a run, rather than
+	// scattering worktrees wherever the process happens to be running.
+	if o.worktreesDir == "" {
+		return nil, fmt.Errorf("orchestrator: worktreesDir is not configured")
+	}
+
 	// Resolve permission mode.
 	pm, err := o.resolvePermMode(req.Mode, req.PermissionMode)
 	if err != nil {

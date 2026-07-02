@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/adapter"
@@ -90,6 +91,31 @@ func TestServiceAttacher_GetAttach(t *testing.T) {
 	}
 	if resp.Available {
 		t.Error("available should be false with no running session")
+	}
+}
+
+// TestDispatch_RejectsEmptyWorktreesDir verifies Dispatch fails fast when the
+// orchestrator was constructed without a WorktreesDir, rather than letting
+// worktree.Ensure create a relative "./<beadID>" worktree under the cwd.
+func TestDispatch_RejectsEmptyWorktreesDir(t *testing.T) {
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": t.TempDir()},
+		WorktreesDir: "", // mis-wired
+	})
+
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-abc",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	})
+	if err == nil {
+		t.Fatal("want error for empty worktreesDir, got nil")
+	}
+	if !strings.Contains(err.Error(), "worktreesDir") {
+		t.Errorf("error %q should mention worktreesDir", err.Error())
 	}
 }
 
