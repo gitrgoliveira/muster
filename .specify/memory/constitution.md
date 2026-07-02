@@ -11,7 +11,7 @@
 
 ### I. Single Binary, Self-Contained
 
-Muster ships as **one Go binary** with the UI embedded (`go:embed`). It owns **no database of its own** and spawns **no daemons**. External tools it depends on (`bd`, `dolt`, `tmux`, `git`, the agent CLIs) are **runtime dependencies that are shelled out to** — the ones muster needs to verify up front (e.g. `tmux` and the agent CLIs) are probed at startup, while others (e.g. `git`) are used at run time only — never linked into the binary, never bundled. Adding a Go module that pulls a heavyweight transitive graph (e.g. embedding a database engine) is a constitution-level decision requiring justification in the plan's Complexity Tracking.
+Muster ships as **one Go binary** with the UI embedded (`go:embed`). It owns **no database of its own** and runs **no long-lived daemon of its own** — in remote mode it does invoke `bd dolt start` to launch the dolt SQL server, but that server is a shelled-out runtime dependency it manages, not a process linked into or bundled with the muster binary. External tools it depends on (`bd`, `dolt`, `tmux`, `git`, the agent CLIs) are **runtime dependencies that are shelled out to** — the ones muster needs to verify up front (e.g. `tmux` and the agent CLIs) are probed at startup, while others (e.g. `git`) are used at run time only — never linked into the binary, never bundled. Adding a Go module that pulls a heavyweight transitive graph (e.g. embedding a database engine) is a constitution-level decision requiring justification in the plan's Complexity Tracking.
 
 *Rationale*: keeps the binary small, the deployment a single artifact, and the dependency surface auditable. This is why M1 reads `issues.jsonl`/MySQL wire instead of importing Dolt.
 
