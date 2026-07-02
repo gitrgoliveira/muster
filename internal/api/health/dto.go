@@ -5,6 +5,16 @@ type HealthzResponse struct {
 	OK bool `json:"ok"`
 }
 
+// AdapterInfo describes a registered agent adapter's availability state.
+// Installed distinguishes "binary not on PATH" from "installed but not logged
+// in" — without it, both collapse to loggedIn=false and a version-less entry.
+type AdapterInfo struct {
+	ID        string `json:"id"`
+	Installed bool   `json:"installed"`
+	Version   string `json:"version,omitempty"`
+	LoggedIn  bool   `json:"loggedIn"`
+}
+
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.
 type OrchestratorStatusResponse struct {
 	Build         string `json:"build"`
@@ -18,4 +28,10 @@ type OrchestratorStatusResponse struct {
 	ReadSource    string `json:"readSource,omitempty"`
 	BdCLI         string `json:"bdCLI,omitempty"`
 	ProjectID     string `json:"projectID,omitempty"`
+
+	// M2 additions (FR-019: additive only).
+	TmuxAvailable bool          `json:"tmuxAvailable"`
+	TmuxVersion   string        `json:"tmuxVersion,omitempty"`
+	RunningCount  int           `json:"runningCount"`
+	Adapters      []AdapterInfo `json:"adapters,omitempty"`
 }
