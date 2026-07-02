@@ -155,3 +155,20 @@ func TestHub_SlowClientDropped(t *testing.T) {
 		return err != nil
 	}, 15*time.Second, 200*time.Millisecond, "expected client to be dropped by hub")
 }
+
+// TestHub_RunlogIngressDropIsNonBlocking verifies that runlog.line frames are
+// dropped non-blocking (and counted) when the hub's ingress buffer is full,
+// rather than blocking the caller — which is what keeps a backed-up hub from
+// stalling the tmux transport-reader goroutine. The hub's Run loop is
+// intentionally NOT started here so the 256-slot ingress channel fills up.
+func TestHub_RunlogIngressDropIsNonBlocking(t *testing.T) {
+	hub := ws.NewHub("0.9.1")
+	// Far more than the ingress buffer; if Broadcast blocked on a full buffer
+	// (instead of dropping), this loop would hang and the test would time out.
+	for i := 0; i < 1000; i++ {
+		hub.Broadcast(ws.Frame{Type: ws.EventRunlogLine})
+	}
+	if hub.DroppedFrames() == 0 {
+		t.Error("expected DroppedFrames() > 0 once the ingress buffer filled")
+	}
+}

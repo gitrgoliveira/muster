@@ -18,6 +18,9 @@ const (
 	CodeCLIValidation    = "UNPROCESSABLE_ENTITY"
 	CodeStoreUnavailable = "STORE_UNAVAILABLE"
 	CodeGatewayTimeout   = "GATEWAY_TIMEOUT"
+	// CodeAttachUnavailable: the attach/send (tmux session) feature isn't
+	// available in this configuration — distinct from BD_CLI_MISSING.
+	CodeAttachUnavailable = "ATTACH_UNAVAILABLE"
 )
 
 // ErrorResponse is the top-level JSON envelope returned for all error responses.
@@ -62,6 +65,8 @@ func httpStatusForCode(code string) int {
 		return http.StatusBadRequest
 	case CodeMethodNotAllowed:
 		return http.StatusMethodNotAllowed
+	case CodeAttachUnavailable:
+		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError
 	}

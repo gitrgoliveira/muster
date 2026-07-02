@@ -192,3 +192,27 @@ func (s FileStatus) Valid() bool {
 	}
 	return false
 }
+
+// PermissionMode controls the autonomy level passed to the claude CLI via
+// --permission-mode. Distinct from Mode (plan/agent/…): Mode is the
+// invocation profile; PermissionMode is the autonomy level.
+// Spike-verified (claude 2.1.145): these are the exact allowed values.
+type PermissionMode string
+
+const (
+	PermDefault           PermissionMode = "default"
+	PermAcceptEdits       PermissionMode = "acceptEdits"
+	PermDontAsk           PermissionMode = "dontAsk"
+	PermBypassPermissions PermissionMode = "bypassPermissions"
+	PermPlan              PermissionMode = "plan"
+	PermAuto              PermissionMode = "auto"
+)
+
+// Valid returns true if the permission mode is in the allow-list.
+func (p PermissionMode) Valid() bool {
+	switch p {
+	case PermDefault, PermAcceptEdits, PermDontAsk, PermBypassPermissions, PermPlan, PermAuto:
+		return true
+	}
+	return false
+}

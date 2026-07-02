@@ -4,28 +4,43 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
+	"github.com/gitrgoliveira/muster/internal/adapter"
+	adapterclaude "github.com/gitrgoliveira/muster/internal/adapter/claude"
 	api "github.com/gitrgoliveira/muster/internal/api"
 	"github.com/gitrgoliveira/muster/internal/api/health"
 	"github.com/gitrgoliveira/muster/internal/config"
+	"github.com/gitrgoliveira/muster/internal/core"
+	"github.com/gitrgoliveira/muster/internal/orchestrator"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/store/bdshell"
 	"github.com/gitrgoliveira/muster/internal/store/dolt"
 	"github.com/gitrgoliveira/muster/internal/store/jsonl"
+	"github.com/gitrgoliveira/muster/internal/tmux"
 	"github.com/gitrgoliveira/muster/internal/ws"
 )
+
+// repoFlags is a flag.Value that supports repeatable --repo flags.
+type repoFlags []string
+
+func (r *repoFlags) String() string     { return fmt.Sprintf("%v", *r) }
+func (r *repoFlags) Set(v string) error { *r = append(*r, v); return nil }
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		fmt.Fprintf(os.Stderr, "Usage: muster serve [--addr HOST:PORT] [--beads-dir DIR] [--bd-bin PATH]\n")
+		fmt.Fprintf(os.Stderr, "       [--repo PREFIX=PATH]... [--worktrees-dir DIR] [--run-timeout DURATION]\n")
+		fmt.Fprintf(os.Stderr, "       [--default-permission-mode MODE]\n")
 		os.Exit(1)
 	}
 
@@ -33,7 +48,40 @@ func main() {
 	addr := fs.String("addr", "127.0.0.1:7766", "listen address")
 	beadsDirFlag := fs.String("beads-dir", "", "path to beads directory (overrides $BEADS_DIR)")
 	bdBinFlag := fs.String("bd-bin", "", "path to bd binary (overrides $BD_BIN and PATH)")
+
+	// M2 flags.
+	var repoFlagList repoFlags
+	fs.Var(&repoFlagList, "repo", "repeatable: map bead-ID prefix to repo path (e.g. mp=/path/to/repo)")
+	worktreesDirFlag := fs.String("worktrees-dir", "", "directory for per-bead git worktrees (default: ~/.muster/worktrees)")
+	// --run-timeout defaults from MUSTER_RUN_TIMEOUT when the flag is not given
+	// (parity with the other M2 flags, and with FR-017's documented env
+	// fallback). An unparseable env value is warned about and ignored rather
+	// than aborting startup.
+	runTimeoutDefault := time.Duration(0)
+	if v := os.Getenv("MUSTER_RUN_TIMEOUT"); v != "" {
+		switch d, perr := time.ParseDuration(v); {
+		case perr != nil:
+			fmt.Fprintf(os.Stderr, "warning: invalid MUSTER_RUN_TIMEOUT %q: %v (ignoring)\n", v, perr)
+		case d < 0:
+			// A negative timeout would make context.WithTimeout fire
+			// immediately, timing out every dispatch. Ignore it.
+			fmt.Fprintf(os.Stderr, "warning: MUSTER_RUN_TIMEOUT %q is negative (ignoring)\n", v)
+		default:
+			runTimeoutDefault = d
+		}
+	}
+	runTimeoutFlag := fs.Duration("run-timeout", runTimeoutDefault, "optional per-run timeout (e.g. 30m); 0 = no timeout (env: MUSTER_RUN_TIMEOUT)")
+	defaultPermModeFlag := fs.String("default-permission-mode", os.Getenv("MUSTER_DEFAULT_PERMISSION_MODE"), "default claude permission mode (acceptEdits, dontAsk, etc.)")
+
 	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles the error
+
+	// An explicitly-passed negative --run-timeout would make every dispatch
+	// time out immediately (context.WithTimeout with a negative duration is
+	// already expired); fail fast rather than silently breaking dispatch.
+	if *runTimeoutFlag < 0 {
+		fmt.Fprintf(os.Stderr, "invalid --run-timeout %s: must not be negative\n", *runTimeoutFlag)
+		os.Exit(1)
+	}
 
 	// Validate addr format.
 	if _, _, err := net.SplitHostPort(*addr); err != nil {
@@ -61,6 +109,46 @@ func main() {
 		bdBin = os.Getenv("BD_BIN")
 	}
 	cfg.BdBin = bdBin
+
+	// Parse M2 repo map.
+	repoMap := config.RepoMap{}
+	for _, rv := range repoFlagList {
+		if err := config.ParseRepoFlag(repoMap, rv); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	// Also read MUSTER_REPO env.
+	if err := config.ParseRepoEnv(repoMap, os.Getenv("MUSTER_REPO")); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Resolve worktrees directory.
+	worktreesDir := *worktreesDirFlag
+	if worktreesDir == "" {
+		worktreesDir = os.Getenv("MUSTER_WORKTREES_DIR")
+	}
+	if worktreesDir == "" {
+		worktreesDir = config.DefaultWorktreesDir()
+	}
+
+	// Validate default permission mode if set.
+	var defaultPermMode core.PermissionMode
+	if *defaultPermModeFlag != "" {
+		pm := core.PermissionMode(*defaultPermModeFlag)
+		// Reject "plan" explicitly: PermissionMode.Valid() allow-lists it, but
+		// "plan" is only meaningful for plan-mode dispatch. As an operator
+		// default (applied to agent-mode dispatches that omit permissionMode)
+		// it would silently run agents in plan mode — the orchestrator rejects
+		// that at resolve time, so accepting it here would just defer a
+		// guaranteed failure. Fail fast at startup instead.
+		if !pm.Valid() || pm == core.PermPlan {
+			fmt.Fprintf(os.Stderr, "invalid --default-permission-mode %q (\"plan\" is only valid for plan-mode dispatch)\n", *defaultPermModeFlag)
+			os.Exit(1)
+		}
+		defaultPermMode = pm
+	}
 
 	const beadsVersion = "0.9.1"
 
@@ -108,6 +196,103 @@ func main() {
 		os.Exit(1)
 	}
 
+	// M2: Probe tmux availability. Defer printing the result until the startup
+	// banner below so the CLI output has a single, ordered block (probing here
+	// happens before the banner, so printing inline would emit a stray
+	// "tmux = ..." line ahead of "muster listening...").
+	var transport tmux.Manager
+	var tmuxAvailable bool
+	var tmuxVersion string
+	var tmuxDisplay string
+	realTransport := tmux.NewRealManager("")
+	if ver, err := realTransport.Detect(); err == nil {
+		transport = realTransport
+		tmuxAvailable = true
+		tmuxVersion = ver
+		tmuxDisplay = tmuxVersion
+	} else {
+		tmuxDisplay = fmt.Sprintf("not available (%v)", err)
+		transport = tmux.NewFallbackManager()
+	}
+
+	// M2: Probe adapters.
+	claudeAdapter := adapterclaude.New(adapterclaude.Options{})
+	reg := adapter.NewRegistryWithDefaults(claudeAdapter)
+
+	var adapterInfos []health.AdapterInfo
+	for _, a := range reg.All() {
+		// Per-adapter deadline: a slow/hung Detect on one adapter must not eat
+		// into the budget of the others. With a single shared context, an early
+		// hang would leave later adapters probed against an already-expired
+		// context, misreporting Version/LoggedIn. This matters as the registry
+		// grows beyond M2's single claude adapter (M5+).
+		detectCtx, detectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		result, derr := a.Detect(detectCtx)
+		detectCancel()
+		if derr != nil {
+			// Non-fatal: still report the adapter, but log so operators can tell
+			// "probe failed / timed out" apart from a genuine loggedIn=false.
+			slog.Warn("adapter Detect failed during startup status probe", "adapter", a.ID(), "err", derr)
+		}
+		adapterInfos = append(adapterInfos, health.AdapterInfo{
+			ID:        string(a.ID()),
+			Installed: result.Installed,
+			Version:   result.Version,
+			LoggedIn:  result.LoggedIn,
+		})
+	}
+	// reg.All() ranges over a map, so sort by ID to give /orchestrator/status a
+	// stable adapters order across runs.
+	sort.Slice(adapterInfos, func(i, j int) bool { return adapterInfos[i].ID < adapterInfos[j].ID })
+
+	// onComplete records an agent run's outcome on its bead when the run exits
+	// (FR-013/SC-007). M2 limitation: beads has no distinct "review" status
+	// (review folds to in_progress per the mapper), so we cannot move the bead
+	// to a review column. Instead we append a note describing the outcome and —
+	// in remote mode only — broadcast bead.updated so the UI reflects the
+	// change. In embedded mode the file watcher already fans the jsonl change
+	// into the WS hub; broadcasting here would double-announce. Runs on the
+	// orchestrator watcher goroutine — keep it non-blocking-safe.
+	doltDB := cfg.DoltDatabase
+	isRemoteMode := cfg.Mode == "remote"
+	onComplete := func(beadID string, exitCode int, runSucceeded bool) {
+		if cli == nil {
+			slog.Warn("onComplete: bd CLI unavailable; cannot record run outcome", "bead", beadID)
+			return
+		}
+		var note string
+		if runSucceeded {
+			note = "muster: agent run completed (exit 0) — awaiting review"
+		} else {
+			note = fmt.Sprintf("muster: agent run failed (exit %d)", exitCode)
+		}
+		noteCtx, noteCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer noteCancel()
+		iss, err := cli.AppendNote(noteCtx, beadID, note)
+		if err != nil {
+			slog.Warn("onComplete: failed to record run outcome on bead", "bead", beadID, "err", err)
+			return
+		}
+		if isRemoteMode {
+			bead := services.IssueToBead(&iss, doltDB)
+			hub.Broadcast(ws.Frame{Type: ws.EventBeadUpdated, Bead: &bead})
+		}
+	}
+
+	// Build orchestrator. config.RepoMap and orchestrator.RepoMap share the
+	// identical underlying type (map[string]string), so this is a plain type
+	// conversion (no copy).
+	orc := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap(repoMap),
+		WorktreesDir:    worktreesDir,
+		DefaultPermMode: defaultPermMode,
+		Publish:         func(f ws.Frame) { hub.Broadcast(f) },
+		RunTimeout:      *runTimeoutFlag,
+		OnComplete:      onComplete,
+	})
+
 	var svcCLI services.CLIRunner
 	if cli != nil {
 		svcCLI = cli
@@ -115,7 +300,14 @@ func main() {
 	// In remote mode no file watcher runs, so the service publishes WS frames
 	// directly on write. Embedded mode leaves this off — the watcher is the
 	// single WS source there.
-	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase, cfg.Mode == "remote")
+	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase, cfg.Mode == "remote").
+		WithOrchestrator(orc.AsServiceDispatcher()).
+		WithAttacher(orc.AsSessionAttacher())
+
+	// M2: Recovery scan — re-discover running sessions from before restart.
+	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	orc.RecoverSessions(recoveryCtx)
+	recoveryCancel()
 
 	// Print startup banner.
 	bdCLIDisplay := "(missing — write endpoints disabled)"
@@ -130,12 +322,51 @@ func main() {
 	fmt.Printf("  doltMode      = %s\n", cfg.Mode)
 	fmt.Printf("  readSource    = %s\n", cfg.ReadSource)
 	fmt.Printf("  bdCLI         = %s\n", bdCLIDisplay)
+	fmt.Printf("  tmux          = %s\n", tmuxDisplay)
+	fmt.Printf("  worktreesDir  = %s\n", worktreesDir)
+	if len(repoMap) > 0 {
+		// Sort keys so the banner is stable across runs (repoMap is a map).
+		keys := make([]string, 0, len(repoMap))
+		for k := range repoMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("  repo[%s]     = %s\n", k, repoMap[k])
+		}
+	}
 
-	// Start file watcher for embedded mode.
-	watcherOut := make(chan store.WatcherEvent, 32)
+	statusCfg := health.StatusConfig{
+		BeadsVersion:  beadsVersion,
+		BeadsDir:      cfg.BeadsDir,
+		ProjectID:     cfg.ProjectID,
+		DoltDatabase:  cfg.DoltDatabase,
+		DoltMode:      cfg.Mode,
+		ReadSource:    cfg.ReadSource,
+		BdCLI:         bdCLIDisplay,
+		SchemaVersion: cfg.SchemaVersion,
+		Pinger:        backend,
+		// M2 additions.
+		TmuxAvailable: tmuxAvailable,
+		TmuxVersion:   tmuxVersion,
+		Adapters:      adapterInfos,
+		RunCounter:    orc,
+	}
+
+	handler := api.NewRouter(svc, hub, UI, statusCfg)
+
+	// Signal context — shared by the embedded-mode watcher below and by the
+	// graceful-shutdown wait at the end of main.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Start the embedded-mode file watcher BEFORE the HTTP server begins
+	// accepting requests. In embedded mode, dispatch/completion rely on the
+	// watcher to observe the real bd-CLI jsonl write and fan a bead.updated
+	// frame into the WS hub (publishOnWrite is off there). If the server
+	// accepted a dispatch — or a run completed — in the window before the
+	// watcher was running, that write could be missed by connected WS clients.
+	watcherOut := make(chan store.WatcherEvent, 32)
 	if cfg.Mode == "embedded" {
 		jsonlPath := filepath.Join(beadsDir, "issues.jsonl")
 		w := store.NewWatcher(backend, jsonlPath, watcherOut)
@@ -146,8 +377,6 @@ func main() {
 		}()
 
 		// Fan watcher events into the WS hub.
-		// bead.created/updated frames include the full Bead payload (M0 WS contract);
-		// bead.deleted carries only the ID (the bead is gone).
 		go func() {
 			for {
 				select {
@@ -178,20 +407,7 @@ func main() {
 		}()
 	}
 
-	statusCfg := health.StatusConfig{
-		BeadsVersion:  beadsVersion,
-		BeadsDir:      cfg.BeadsDir,
-		ProjectID:     cfg.ProjectID,
-		DoltDatabase:  cfg.DoltDatabase,
-		DoltMode:      cfg.Mode,
-		ReadSource:    cfg.ReadSource,
-		BdCLI:         bdCLIDisplay,
-		SchemaVersion: cfg.SchemaVersion,
-		Pinger:        backend,
-	}
-
-	handler := api.NewRouter(svc, hub, UI, statusCfg)
-
+	// Now that the watcher is running (embedded mode), start accepting requests.
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           handler,
@@ -208,6 +424,8 @@ func main() {
 	<-ctx.Done()
 	stop()
 
+	// M2: Graceful shutdown does NOT kill agent tmux sessions (FR-018).
+	// Sessions are owned by the user's tmux server and survive restart.
 	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(drainCtx); err != nil {

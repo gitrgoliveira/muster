@@ -2,6 +2,7 @@ package beads_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +35,8 @@ func newTestServer(t *testing.T) *httptest.Server {
 	r.Post("/beads/{id}/move", h.Move)
 	r.Post("/beads/{id}/dispatch", h.Dispatch)
 	r.Post("/beads/{id}/comments", h.Comment)
+	r.Get("/beads/{id}/steps/{idx}/attach", h.Attach)
+	r.Post("/beads/{id}/steps/{idx}/send", h.Send)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -175,6 +178,19 @@ func TestGet_400_BadIDFormat(t *testing.T) {
 	resp := doGet(t, srv, "/beads/notanid")
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+// TestGet_404_MultiHyphenID confirms a multi-hyphen bead ID (e.g. a real bd
+// molecule bead like mp-mol-4gl) passes the ID-format allow-list rather than
+// being rejected as malformed — it reaches the store and returns 404 (not
+// found), not 400 (invalid format).
+func TestGet_404_MultiHyphenID(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doGet(t, srv, "/beads/mp-mol-4gl")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, "BEAD_NOT_FOUND", errorCode(t, resp))
 }
 
 // ── Create — validation passes before CLI check ───────────────────────
@@ -418,4 +434,192 @@ func TestComment_501_CLIMissing(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 	assert.Equal(t, "BD_CLI_MISSING", errorCode(t, resp))
+}
+
+// ── Dispatch M2 — orchestrator-backed error codes ─────────────────────
+
+// fakeOrchestratorDispatcher implements services.OrchestratorDispatcher for tests.
+type fakeOrchestratorDispatcher struct {
+	dispatchErr error
+	result      *core.Bead
+}
+
+func (f *fakeOrchestratorDispatcher) Dispatch(_ context.Context, _ services.OrchestratorDispatchRequest) (*core.Bead, error) {
+	if f.dispatchErr != nil {
+		return nil, f.dispatchErr
+	}
+	if f.result != nil {
+		return f.result, nil
+	}
+	return &core.Bead{ID: "mp-aaa", Column: core.ColRunning}, nil
+}
+
+// newTestServerWithOrchestrator creates a test server wired with a fake orchestrator.
+func newTestServerWithOrchestrator(t *testing.T, orch services.OrchestratorDispatcher) *httptest.Server {
+	t.Helper()
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	pub := services.Publisher(func(f ws.Frame) {})
+	svc := services.NewBeadService(backend, nil, pub).WithOrchestrator(orch)
+	h := beads.NewHandlers(svc)
+	r := chi.NewRouter()
+	r.Post("/beads/{id}/dispatch", h.Dispatch)
+	r.Get("/beads/{id}", h.Get)
+	r.Get("/beads/{id}/steps/{idx}/attach", h.Attach)
+	r.Post("/beads/{id}/steps/{idx}/send", h.Send)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestDispatch_202_WithOrchestrator(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{result: &core.Bead{
+		ID:     "mp-aaa",
+		Column: core.ColRunning,
+	}}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/dispatch", map[string]interface{}{
+		"agent":          "claude",
+		"mode":           "agent",
+		"permissionMode": "acceptEdits",
+	})
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+}
+
+func TestDispatch_409_RunAlreadyActive(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{
+		dispatchErr: &services.ServiceError{Code: services.CodeRunAlreadyActive, Message: "run already active for bead"},
+	}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/dispatch", map[string]interface{}{
+		"agent":          "claude",
+		"mode":           "agent",
+		"permissionMode": "acceptEdits",
+	})
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	assert.Equal(t, "RUN_ALREADY_ACTIVE", errorCode(t, resp))
+}
+
+func TestDispatch_422_UnmappedPrefix(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{
+		dispatchErr: &services.ServiceError{Code: services.CodeUnmappedPrefix, Message: "bead prefix has no repo mapping"},
+	}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/dispatch", map[string]interface{}{
+		"agent":          "claude",
+		"mode":           "agent",
+		"permissionMode": "acceptEdits",
+	})
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	assert.Equal(t, "UNMAPPED_PREFIX", errorCode(t, resp))
+}
+
+func TestDispatch_501_AdapterNotFound(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{
+		dispatchErr: &services.ServiceError{Code: services.CodeAdapterNotFound, Message: "adapter not registered"},
+	}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/dispatch", map[string]interface{}{
+		"agent":          "claude",
+		"mode":           "agent",
+		"permissionMode": "acceptEdits",
+	})
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	assert.Equal(t, "ADAPTER_NOT_FOUND", errorCode(t, resp))
+}
+
+func TestDispatch_400_InvalidPermissionMode(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/mp-aaa/dispatch", map[string]interface{}{
+		"agent":          "claude",
+		"mode":           "agent",
+		"permissionMode": "badmode",
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+// ── Attach / Send ───────────────────────────────────────────────────────
+
+func TestAttach_200_NoAttacher(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doGet(t, srv, "/beads/mp-aaa/steps/0/attach")
+	// Bead exists, but this server wires an OrchestratorDispatcher and NO
+	// SessionAttacher (WithOrchestrator only), so GetAttach degrades to
+	// available:false ("attach not available") — a non-error 200. This asserts
+	// the graceful-degradation path, not a "run not active" case.
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestAttach_404_WrongBead(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doGet(t, srv, "/beads/mp-zzzz/steps/0/attach")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestAttach_404_NonZeroIdx(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doGet(t, srv, "/beads/mp-aaa/steps/1/attach")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestAttach_404_NonCanonicalZeroIdx verifies the step-index route requires
+// the canonical "0" and rejects non-canonical zero forms (Atoi would accept
+// "-0"/"+0"/"00" as 0).
+func TestAttach_404_NonCanonicalZeroIdx(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	for _, idx := range []string{"-0", "+0", "00"} {
+		resp := doGet(t, srv, "/beads/mp-aaa/steps/"+idx+"/attach")
+		assert.Equalf(t, http.StatusNotFound, resp.StatusCode, "idx %q should 404", idx)
+	}
+}
+
+func TestSend_400_BadBody(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/beads/mp-aaa/steps/0/send",
+		strings.NewReader("{invalid json"))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestSend_404_NonZeroIdx(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/2/send", map[string]string{"keys": "y\n"})
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestSend_400_EmptyKeys(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/0/send", map[string]string{"keys": ""})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestSend_400_KeysTooLarge(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/0/send", map[string]string{"keys": strings.Repeat("y", 4097)})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }

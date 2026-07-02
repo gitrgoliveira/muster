@@ -3,7 +3,6 @@ package beads
 import (
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
@@ -11,10 +10,6 @@ import (
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/go-chi/chi/v5"
 )
-
-// idPattern accepts real beads IDs: <prefix>-<suffix> where prefix is lowercase
-// alpha and suffix is alphanumeric (e.g. mp-kbj, muster-xyz, bd-0000).
-var idPattern = regexp.MustCompile(`^[a-z]+-[0-9a-z]+$`)
 
 // Handlers groups all bead-related HTTP handlers.
 type Handlers struct {
@@ -54,6 +49,19 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusGatewayTimeout, render.CodeGatewayTimeout, se.Message)
 	case services.CodeInternal:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
+	// M2 dispatch error codes.
+	case services.CodeRunAlreadyActive:
+		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
+	case services.CodeUnmappedPrefix:
+		render.WriteError(w, r, http.StatusUnprocessableEntity, se.Code, se.Message)
+	case services.CodeAdapterNotFound:
+		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
+	case services.CodeAdapterNotInstalled:
+		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
+	case services.CodeAdapterNotLoggedIn:
+		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
+	case services.CodeAttachUnavailable:
+		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
 	default:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	}
@@ -62,11 +70,25 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 
 // validateID checks the bead ID format. Returns false and writes 400 if invalid.
 func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
-	if !idPattern.MatchString(id) {
+	if !core.ValidBeadID(id) {
 		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "invalid bead ID format")
 		return false
 	}
 	return true
+}
+
+// parseStepIdx parses and validates the {idx} path param shared by Attach and
+// Send. M2 only supports step 0, so it requires the canonical "0" exactly and
+// writes a 404 (unknown step) with ok=false for anything else. Requiring the
+// literal "0" (rather than strconv.Atoi(idxStr)==0) rejects non-canonical zero
+// forms — "-0", "+0", "00" — that the contract doesn't define, keeping routing
+// unambiguous.
+func parseStepIdx(w http.ResponseWriter, r *http.Request, idxStr string) (idx int, ok bool) {
+	if idxStr != "0" {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return 0, false
+	}
+	return 0, true
 }
 
 // decodeJSON decodes the request body with DisallowUnknownFields. On error,
@@ -228,6 +250,7 @@ func (h *Handlers) Move(w http.ResponseWriter, r *http.Request) {
 }
 
 // Dispatch handles POST /beads/{id}/dispatch.
+// On success returns 202 Accepted with the bead in running state (FR-002).
 func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !validateID(w, r, id) {
@@ -240,8 +263,9 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input := services.DispatchInput{
-		Agent: req.Agent,
-		Mode:  req.Mode,
+		Agent:          req.Agent,
+		Mode:           req.Mode,
+		PermissionMode: req.PermissionMode,
 	}
 
 	bead, err := h.svc.Dispatch(r.Context(), id, input)
@@ -249,7 +273,72 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	render.WriteJSON(w, http.StatusOK, bead)
+	// 202 Accepted — run has been launched asynchronously.
+	render.WriteJSON(w, http.StatusAccepted, bead)
+}
+
+// Attach handles GET /beads/{id}/steps/{idx}/attach.
+// Returns the tmux attach command for the live session (US3).
+func (h *Handlers) Attach(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+	idx, ok := parseStepIdx(w, r, chi.URLParam(r, "idx"))
+	if !ok {
+		return
+	}
+
+	resp, err := h.svc.GetAttach(r.Context(), id, idx)
+	if mapServiceError(w, r, err) {
+		return
+	}
+	render.WriteJSON(w, http.StatusOK, resp)
+}
+
+// Send handles POST /beads/{id}/steps/{idx}/send.
+// Forwards keystrokes to the live tmux pane (US3).
+func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+	idx, ok := parseStepIdx(w, r, chi.URLParam(r, "idx"))
+	if !ok {
+		return
+	}
+
+	var req SendRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	// Keys is forwarded verbatim to the running agent's tmux pane — bound its
+	// size so an oversized payload can't be used to flood the pane / pipe.
+	if req.Keys == "" || len(req.Keys) > maxSendKeysLen {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "keys must be non-empty and at most 4096 bytes")
+		return
+	}
+	// os/exec rejects argv entries containing a NUL byte, which would turn a
+	// bad client input into a confusing 500. Reject it up front as a 400.
+	if strings.ContainsRune(req.Keys, 0) {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "keys must not contain NUL bytes")
+		return
+	}
+
+	if err := h.svc.SendKeys(r.Context(), id, idx, req.Keys); mapServiceError(w, r, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// maxSendKeysLen bounds the Send request's keys payload (forwarded verbatim
+// to the agent's tmux pane).
+const maxSendKeysLen = 4096
+
+// SendRequest is the body for POST /beads/{id}/steps/{idx}/send.
+type SendRequest struct {
+	Keys string `json:"keys"`
 }
 
 // Comment handles POST /beads/{id}/comments.
