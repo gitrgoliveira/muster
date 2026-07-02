@@ -83,12 +83,17 @@ func (h *Hub) Run() {
 //     dropped (and counted). Clients recover scrollback via capture-pane.
 //   - every other type is a low-volume lifecycle/state event (bead.updated,
 //     tmux.session.closed, …) where a dropped frame would leave clients stale.
-//     These use a blocking send so they're delivered reliably. Because runlog
-//     frames never queue past the buffer, the buffer drains continuously and a
-//     lifecycle send almost always finds room immediately — and its producers
-//     are never the transport reader, so a brief block can't stall the agent.
+//     These use a blocking send so they are never dropped at the *ingress*
+//     buffer (unlike runlog). Because runlog frames never queue past the
+//     buffer, the buffer drains continuously and a lifecycle send almost always
+//     finds room immediately — and its producers are never the transport
+//     reader, so a brief block can't stall the agent.
 //
-// Per-client backpressure is separately handled by dropping in Run's fan-out.
+// This ingress guarantee is NOT end-to-end delivery: Run's per-client fan-out
+// still drops to any individual client whose send buffer is full (select
+// default), and unregisters a persistently-slow client. So a slow client can
+// still miss lifecycle frames and must recover via re-fetch; the blocking send
+// only removes the *shared* ingress buffer as a drop point for those frames.
 func (h *Hub) Broadcast(f Frame) {
 	if f.Type == EventRunlogLine {
 		select {

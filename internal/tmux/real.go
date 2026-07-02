@@ -138,9 +138,9 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 	}
 
 	// Set remain-on-exit BEFORE the agent command runs (race-free).
-	if _, err := m.run("set-option", "-t", name, "remain-on-exit", "on"); err != nil {
+	if out, err := m.run("set-option", "-t", name, "remain-on-exit", "on"); err != nil {
 		_ = m.Kill(name)
-		return nil, fmt.Errorf("tmux set-option remain-on-exit: %w", err)
+		return nil, fmt.Errorf("tmux set-option remain-on-exit: %w\n%s", err, out)
 	}
 
 	// Query the pane ID now, before respawn-pane. respawn-pane -k reuses the
@@ -164,9 +164,9 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 		respawnArgs = append(respawnArgs, "-c", cwd)
 	}
 	respawnArgs = append(respawnArgs, cmdArgv...)
-	if _, err := m.run(respawnArgs...); err != nil {
+	if out, err := m.run(respawnArgs...); err != nil {
 		_ = m.Kill(name)
-		return nil, fmt.Errorf("tmux respawn-pane %q: %w", name, err)
+		return nil, fmt.Errorf("tmux respawn-pane %q: %w\n%s", name, err, out)
 	}
 
 	// Parse name to fill Session fields.
@@ -390,7 +390,14 @@ func (m *RealManager) List() ([]Session, error) {
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		name, pane, _ := strings.Cut(line, " ")
+		// Format is "#{session_name} #{pane_id}". A session name can contain
+		// spaces but a pane id ("%3") cannot, so split on the LAST space —
+		// splitting on the first would truncate a spaced name and silently skip
+		// a user-created muster/... session that recovery should validate/kill.
+		name, pane := line, ""
+		if idx := strings.LastIndex(line, " "); idx >= 0 {
+			name, pane = line[:idx], line[idx+1:]
+		}
 		if !IsMusterSession(name) {
 			continue
 		}

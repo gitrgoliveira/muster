@@ -393,6 +393,51 @@ func TestRealTmuxManager_List(t *testing.T) {
 	}
 }
 
+// TestRealTmuxManager_List_SpacedName verifies List splits each line on the
+// LAST space, so a muster-prefixed session name containing a space is parsed
+// with its name intact (name = everything before the pane id) rather than
+// truncated at the first space. Splitting on the first space would yield
+// name="muster/mp-x", drop the rest into the pane field, fail ParseSessionName,
+// and silently skip the session — hiding a stray/malformed session from
+// recovery (which would otherwise validate the bead ID and kill it).
+func TestRealTmuxManager_List_SpacedName(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	setupFakeTmux(t)
+
+	outputFile := filepath.Join(t.TempDir(), "list_output")
+	// A muster-prefixed session whose bead segment contains a space, plus a
+	// normal one. pane ids ("%N") never contain spaces.
+	content := "muster/mp-x y/0/0 %7\nmuster/mp-ok/0/0 %1\n"
+	if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", outputFile)
+
+	sessions, err := NewRealManager("").List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	byName := make(map[string]Session)
+	for _, s := range sessions {
+		byName[s.Name] = s
+	}
+	// The spaced name must survive intact with the pane id peeled off the end,
+	// so recovery can see it (and reject the bead ID "mp-x y" downstream).
+	if s, ok := byName["muster/mp-x y/0/0"]; !ok {
+		t.Errorf("spaced session name was dropped; got %v", sessions)
+	} else if s.Pane != "%7" {
+		t.Errorf("Pane want %%7 got %q", s.Pane)
+	}
+	if s, ok := byName["muster/mp-ok/0/0"]; !ok {
+		t.Error("missing muster/mp-ok/0/0")
+	} else if s.Pane != "%1" {
+		t.Errorf("Pane want %%1 got %q", s.Pane)
+	}
+}
+
 func TestRealTmuxManager_Attach_ReturnsCommand(t *testing.T) {
 	m := NewRealManager("")
 	cmd, err := m.Attach("muster/mp-abc/0/0")
