@@ -72,22 +72,35 @@ func (h *Hub) Run() {
 	}
 }
 
-// Broadcast enqueues f for fan-out to all connected clients. It is
-// non-blocking: if the ingress buffer is full it drops the frame rather than
-// blocking the caller. This matters because callers include the runlog
-// transport reader goroutine — a blocking send here would stall that reader
-// when the hub is backed up, and the backpressure could propagate through the
-// tmux FIFO to the agent itself. Per-client backpressure is likewise handled
-// by dropping in Run's fan-out. WS is best-effort; clients recover missed
-// state by re-fetching (and runlog scrollback via capture-pane).
+// Broadcast enqueues f for fan-out to all connected clients.
+//
+// Frame handling is deliberately split by type:
+//
+//   - runlog.line is high-volume, best-effort pane output produced by the tmux
+//     transport-reader goroutine. A blocking send there could stall the reader
+//     and, via the tmux FIFO, apply backpressure to the agent itself. So these
+//     are enqueued non-blocking: if the ingress buffer is full the frame is
+//     dropped (and counted). Clients recover scrollback via capture-pane.
+//   - every other type is a low-volume lifecycle/state event (bead.updated,
+//     tmux.session.closed, …) where a dropped frame would leave clients stale.
+//     These use a blocking send so they're delivered reliably. Because runlog
+//     frames never queue past the buffer, the buffer drains continuously and a
+//     lifecycle send almost always finds room immediately — and its producers
+//     are never the transport reader, so a brief block can't stall the agent.
+//
+// Per-client backpressure is separately handled by dropping in Run's fan-out.
 func (h *Hub) Broadcast(f Frame) {
-	select {
-	case h.broadcast <- f:
-	default:
-		if n := h.dropped.Add(1); n == 1 || n%256 == 0 {
-			slog.Warn("ws: broadcast ingress buffer full, dropping frame(s)", "type", f.Type, "totalDropped", n)
+	if f.Type == EventRunlogLine {
+		select {
+		case h.broadcast <- f:
+		default:
+			if n := h.dropped.Add(1); n == 1 || n%256 == 0 {
+				slog.Warn("ws: broadcast ingress buffer full, dropping runlog frame(s)", "totalDropped", n)
+			}
 		}
+		return
 	}
+	h.broadcast <- f
 }
 
 // DroppedFrames returns the number of frames dropped by Broadcast because the

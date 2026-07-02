@@ -114,7 +114,10 @@ func (o *Orchestrator) SendKeys(beadID string, stepIdx int, keys string) error {
 		case guardStepIdx:
 			return &services.ServiceError{Code: services.CodeNotFound, Message: fmt.Sprintf("step %d not found", stepIdx)}
 		case guardFallback:
-			return &services.ServiceError{Code: services.CodeCLIUnavailable, Message: gerr.Error()}
+			// tmux isn't available (fallback transport) — send genuinely can't
+			// work and won't on retry, so this is ATTACH_UNAVAILABLE (501), not
+			// BD_CLI_UNAVAILABLE (503, which implies a transient bd outage).
+			return &services.ServiceError{Code: services.CodeAttachUnavailable, Message: gerr.Error()}
 		default: // guardNotRunning, guardStarting
 			return &services.ServiceError{Code: services.CodeInvalidState, Message: gerr.Error()}
 		}
@@ -122,8 +125,10 @@ func (o *Orchestrator) SendKeys(beadID string, stepIdx int, keys string) error {
 
 	if err := o.transport.Send(run.Session, keys); err != nil {
 		if errors.Is(err, tmux.ErrAttachUnavailable) {
+			// Transport doesn't support send (attach/send unavailable in this
+			// config) — ATTACH_UNAVAILABLE (501), not a transient 503.
 			return &services.ServiceError{
-				Code:    services.CodeCLIUnavailable,
+				Code:    services.CodeAttachUnavailable,
 				Message: "send unavailable (tmux transport)",
 			}
 		}

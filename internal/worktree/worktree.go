@@ -109,6 +109,21 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 	// Create parent directory if needed. 0o700 keeps per-bead worktrees (which
 	// may hold prompt files with sensitive task context, and the agent's
 	// working checkout) unreadable by other local users.
+	// Refuse a pre-planted symlink BEFORE creating anything. If a hostile local
+	// user pre-planted worktreesDir as a symlink to an arbitrary target, both
+	// os.MkdirAll and os.Chmod would follow it — MkdirAll would create/reuse the
+	// target directory and later git-worktree paths would resolve under it, and
+	// Chmod would change the target's mode to 0o700. Lstat (which does not
+	// follow) lets us catch this first. A not-yet-existing worktreesDir is fine
+	// — MkdirAll creates it fresh (and a freshly-created dir is never a symlink)
+	// — so ENOENT is expected, not an error.
+	if fi, err := os.Lstat(worktreesDir); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return Worktree{}, fmt.Errorf("worktree: worktrees dir %q is a symlink; refusing to operate through it", worktreesDir)
+		}
+	} else if !os.IsNotExist(err) {
+		return Worktree{}, fmt.Errorf("worktree: lstat worktrees dir: %w", err)
+	}
 	if err := os.MkdirAll(worktreesDir, 0o700); err != nil {
 		return Worktree{}, fmt.Errorf("worktree: create worktrees dir: %w", err)
 	}
@@ -116,15 +131,8 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 	// worktreesDir already existed (e.g. a shared default like
 	// <os.TempDir()>/muster/worktrees pre-planted by another local user, or
 	// created earlier under a looser umask), it's silently reused as-is, so we
-	// tighten it below. But os.Chmod follows symlinks: if a hostile local user
-	// pre-planted worktreesDir as a symlink to an arbitrary target, chmod'ing
-	// through it would change that target's mode to 0o700. Lstat first and
-	// refuse a symlink rather than operating through it.
-	if fi, err := os.Lstat(worktreesDir); err != nil {
-		return Worktree{}, fmt.Errorf("worktree: lstat worktrees dir: %w", err)
-	} else if fi.Mode()&os.ModeSymlink != 0 {
-		return Worktree{}, fmt.Errorf("worktree: worktrees dir %q is a symlink; refusing to operate through it", worktreesDir)
-	}
+	// tighten it here. Safe to Chmod directly now: the Lstat above already
+	// refused a symlink at this path.
 	if err := os.Chmod(worktreesDir, 0o700); err != nil {
 		return Worktree{}, fmt.Errorf("worktree: chmod worktrees dir: %w", err)
 	}

@@ -233,10 +233,13 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("tmux pipe-pane %q: %w", name, err)
 	}
 
-	// Open the read end of the FIFO. POSIX semantics: this blocks until tmux
-	// (the writer) opens its end. That's fine here because we already issued
-	// `pipe-pane` above, so tmux is already attached as the writer — the open
-	// returns immediately. (No goroutine needed.)
+	// Open the read end of the FIFO. POSIX semantics: opening a FIFO read-only
+	// blocks until some process opens the write end. Here the writer is the
+	// `cat >> fifo` process tmux spawns for pipe-pane. `pipe-pane` returning
+	// above only means tmux accepted the command — it spawns `cat`
+	// asynchronously, so this open may block briefly until `cat` opens the FIFO.
+	// That wait is bounded by how fast tmux starts the pipe process (typically
+	// negligible), so we open synchronously rather than spinning up a goroutine.
 	f, err := os.Open(fifoPath)
 	if err != nil {
 		_ = os.RemoveAll(fifoDir)
