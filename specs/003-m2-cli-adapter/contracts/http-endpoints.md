@@ -10,7 +10,9 @@ Request:
 ```
 - `agent` (required): `core.AgentID`; M2 only `claude` is registered.
 - `mode` (required): `plan` | `agent` (other `core.Mode` values rejected in M2).
-- `permissionMode` (required unless `--default-permission-mode` is configured): allow-listed `core.PermissionMode`. **muster never defaults autonomy** (FR-021).
+- `permissionMode`: allow-listed `core.PermissionMode`, resolved per `mode`:
+  - `mode:"agent"` — **required** unless `--default-permission-mode` is configured. **muster never defaults autonomy** (FR-021). `"plan"` is rejected here (it's only valid for plan mode).
+  - `mode:"plan"` — **optional**: omit it (resolves implicitly to `"plan"`) or pass `"plan"`. Any other value is rejected. `--default-permission-mode` is not consulted for plan mode.
 
 Responses:
 > **Note on `202` vs M1's `200`:** M1's `/dispatch` was a non-functional stub that returned `200 OK`. M2 makes it a real asynchronous launch, so it returns `202 Accepted`. This is the one intentional, documented exception to FR-019's "no breaking REST changes" — no real M1 behavior depended on the stub's status code; both are 2xx.
@@ -19,7 +21,7 @@ Responses:
 |---|---|
 | `202 Accepted` | run launched; body = the bead in `running`. Run proceeds async (intentional change from M1's stub `200` — see note above). |
 | `409 CONFLICT` | a run is already active for this bead (one per bead in M2) |
-| `400 BAD_REQUEST` | malformed body; or `INVALID_REQUEST`: unknown/invalid `agent`, `mode`, or `permissionMode` value; or no `permissionMode` and no `--default-permission-mode` configured |
+| `400 BAD_REQUEST` | malformed body; or `INVALID_REQUEST`: unknown/invalid `agent` or `mode`; an out-of-allow-list `permissionMode`; `permissionMode:"plan"` with `mode:"agent"` (plan is plan-mode only); or `mode:"agent"` with no `permissionMode` and no `--default-permission-mode`. (`mode:"plan"` never requires `permissionMode` — it defaults to `plan` — but rejects any non-`plan` `permissionMode`.) |
 | `422 UNPROCESSABLE_ENTITY` | `UNMAPPED_PREFIX`: bead prefix has no `--repo` mapping |
 | `501 NOT_IMPLEMENTED` | `ADAPTER_NOT_FOUND`: agent not registered; or `ADAPTER_NOT_INSTALLED`: binary not found on PATH |
 | `409 CONFLICT` (`ADAPTER_NOT_LOGGED_IN`) | adapter installed but `loggedIn=false` → message: run `claude auth login` |

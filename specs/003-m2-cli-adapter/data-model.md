@@ -139,8 +139,10 @@ Parsed from repeatable `--repo prefix=path` / `MUSTER_REPO`. Unmapped prefix →
 type DispatchInput struct {
     Agent          core.AgentID
     Mode           core.Mode
-    PermissionMode core.PermissionMode // NEW (FR-021); validated/allow-listed; resolved from
-                                       // request or --default-permission-mode; error if neither
+    PermissionMode core.PermissionMode // NEW (FR-021); allow-listed. agent mode: from request
+                                       // or --default-permission-mode, error if neither; "plan"
+                                       // rejected. plan mode: implicitly "plan" (may be omitted);
+                                       // non-"plan" rejected.
 }
 ```
 

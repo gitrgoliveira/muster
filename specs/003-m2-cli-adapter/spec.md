@@ -273,7 +273,7 @@ If `tmux` (>= the required version) is not installed, CLI adapters fall back to 
 | `--repo` (repeatable) | `MUSTER_REPO` | (none) | Prefix→repo mapping(s), e.g. `mp=/path/to/bracket-creator`; resolves each bead's source repo by ID prefix |
 | `--worktrees-dir` | `MUSTER_WORKTREES_DIR` | `~/.muster/worktrees` (or `<platform-temp>/muster/worktrees` if no HOME) | Root for per-bead worktrees |
 | `--run-timeout` | `MUSTER_RUN_TIMEOUT` | unbounded (no timeout) | Optional per-run wall-clock cap |
-| `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | (none) | Optional user-set fallback autonomy when a dispatch omits `permissionMode`; if unset, dispatch must specify it (FR-021) |
+| `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | (none) | Optional user-set fallback autonomy for **agent-mode** dispatches that omit `permissionMode`; if unset, an agent-mode dispatch must specify it (FR-021). `plan` is not a valid default (rejected at startup); plan-mode dispatches don't consult it (they use `plan` implicitly). |
 
 ### Constitution / Gates Note
 

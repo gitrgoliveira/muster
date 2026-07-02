@@ -23,7 +23,7 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `--repo` (repeatable) | `MUSTER_REPO` | — | Map a bead-ID prefix to a source repo, e.g. `--repo mp=/path/to/repo`. Resolves which repo a dispatched bead's worktree branches from (M2). |
 | `--worktrees-dir` | `MUSTER_WORKTREES_DIR` | `~/.muster/worktrees` | Root directory for per-bead git worktrees (M2). |
 | `--run-timeout` | `MUSTER_RUN_TIMEOUT` | `0` (none) | Optional per-run wall-clock cap, e.g. `30m`. `0` = unbounded (M2). |
-| `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | — | Fallback claude autonomy (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`plan`/`auto`) when a dispatch omits `permissionMode`. muster never defaults autonomy silently (M2). |
+| `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | — | Fallback claude autonomy (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`auto`) applied to **agent-mode** dispatches that omit `permissionMode`. `plan` is **not** valid here — it's implicit for plan-mode dispatches and rejected at startup as a default. muster never defaults autonomy silently (M2). |
 
 ## API
 
