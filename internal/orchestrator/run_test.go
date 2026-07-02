@@ -161,6 +161,12 @@ func TestResolvePermMode_Plan(t *testing.T) {
 	if _, err := o.resolvePermMode(core.ModePlan, core.PermAcceptEdits); err == nil {
 		t.Error("want error for non-plan permissionMode requested with plan mode")
 	}
+
+	// Symmetric case: PermPlan requested with a NON-plan mode must be rejected
+	// — accepting it would run plan mode while the request stays labelled agent.
+	if _, err := o.resolvePermMode(core.ModeAgent, core.PermPlan); err == nil {
+		t.Error("want error for permissionMode=plan requested with agent mode")
+	}
 }
 
 func TestRepoMap_Resolve(t *testing.T) {

@@ -26,11 +26,13 @@ func ParseRepoFlag(m RepoMap, val string) error {
 	if idx <= 0 {
 		return fmt.Errorf("invalid --repo value %q: expected prefix=path", val)
 	}
-	prefix := val[:idx]
+	// Trim surrounding whitespace so entries like "mp = /path" or a
+	// comma-separated MUSTER_REPO list with spaces after commas work.
+	prefix := strings.TrimSpace(val[:idx])
 	if !repoPrefixPattern.MatchString(prefix) {
 		return fmt.Errorf("invalid --repo value %q: prefix %q must be lowercase letters only (it is matched against bead-ID prefixes)", val, prefix)
 	}
-	path := val[idx+1:]
+	path := strings.TrimSpace(val[idx+1:])
 	if path == "" {
 		return fmt.Errorf("invalid --repo value %q: path is empty", val)
 	}

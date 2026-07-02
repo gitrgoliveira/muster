@@ -78,7 +78,10 @@ func (a *Adapter) Detect(ctx context.Context) (adapter.DetectResult, error) {
 		if errors.As(err, &ee) {
 			stderr = strings.TrimSpace(string(ee.Stderr))
 		}
-		return adapter.DetectResult{Installed: true}, fmt.Errorf("claude --version failed: %w (stderr: %s)", err, stderr)
+		if stderr != "" {
+			return adapter.DetectResult{Installed: true}, fmt.Errorf("claude --version failed: %w (stderr: %s)", err, stderr)
+		}
+		return adapter.DetectResult{Installed: true}, fmt.Errorf("claude --version failed: %w", err)
 	}
 	version := strings.TrimSpace(string(versionOut))
 

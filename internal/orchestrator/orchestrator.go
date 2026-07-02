@@ -266,6 +266,12 @@ func (o *Orchestrator) resolvePermMode(mode core.Mode, requested core.Permission
 		if !requested.Valid() {
 			return "", &PermModeError{Mode: requested}
 		}
+		// PermPlan is the plan-mode permission. Accepting it for a non-plan
+		// dispatch would run the agent in plan mode while the request is still
+		// labelled/logged as agent mode — ambiguous and off-contract. Reject.
+		if requested == core.PermPlan {
+			return "", &PermModeError{Mode: requested}
+		}
 		return requested, nil
 	}
 	if o.defaultPermMode != "" {
@@ -511,7 +517,14 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		pipeReader = nil
 	}
 	if pipeReader != nil {
+		// Under o.mu like the other post-Spawn field writes above: the run is
+		// already visible in o.runs (registered as a reservation), so a
+		// concurrent GetRun — which snapshots the whole struct under RLock —
+		// would otherwise race this write. watchRun (started below) reads
+		// run.pipe only after this point, so its later read is ordered safely.
+		o.mu.Lock()
 		run.pipe = pipeReader // closed in finishRun (frees the FIFO/temp dir)
+		o.mu.Unlock()
 		streamer := &runlogStreamer{
 			beadID:  req.BeadID,
 			stepIdx: 0,

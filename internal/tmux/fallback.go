@@ -83,7 +83,14 @@ func (f *FallbackManager) Spawn(name, cwd string, env, argv []string) (*Session,
 	f.sessions[name] = sess
 	f.mu.Unlock()
 
-	beadID, stepIdx, loop, _ := ParseSessionName(name)
+	beadID, stepIdx, loop, parseErr := ParseSessionName(name)
+	if parseErr != nil {
+		// Non-canonical name (e.g. a test passing a bare string). Mirror
+		// RealManager.Spawn: fall back to BeadID=name rather than returning a
+		// Session with an empty BeadID/zero indices, which would surprise
+		// callers relying on Session metadata.
+		beadID = name
+	}
 	return &Session{
 		Name:      name,
 		BeadID:    beadID,
