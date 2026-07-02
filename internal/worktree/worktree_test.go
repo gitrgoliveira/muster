@@ -10,6 +10,31 @@ import (
 	"testing"
 )
 
+// TestEnsure_ReuseRejectsSymlinkedPath verifies the reuse fast-path refuses a
+// pre-planted SYMLINK at <worktreesDir>/<beadID> (via os.Lstat), rather than
+// following it and operating on a worktree the attacker redirected outside
+// worktreesDir.
+func TestEnsure_ReuseRejectsSymlinkedPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink test not run on Windows")
+	}
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+	target := t.TempDir() // some directory outside worktreesDir
+	link := filepath.Join(worktreesDir, "mp-sym")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := Ensure(context.Background(), worktreesDir, repoPath, "mp-sym")
+	if err == nil {
+		t.Fatal("want error for a symlinked worktree path, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error should mention the symlink refusal, got: %v", err)
+	}
+}
+
 // TestEnsure_RejectsUnsafeBeadID verifies Ensure refuses bead IDs that would
 // escape worktreesDir when used as a path segment (path traversal). The guard
 // is defense-in-depth: the HTTP layer already allow-lists IDs, but Ensure must
@@ -185,13 +210,14 @@ func TestEnsure_NonGitRepoError(t *testing.T) {
 	}
 }
 
-func TestEnsure_CleansUpAfterFailedCreate(t *testing.T) {
-	// If `git worktree add` fails or is killed mid-flight (e.g. the caller's
-	// ctx expires), Ensure must not leave a half-created directory behind:
-	// left behind, it could either be silently trusted as a complete
-	// worktree by a later call's reuse fast-path, or (if git never wrote the
-	// gitlink) permanently block reuse. Simulate a kill via an
-	// already-cancelled context.
+func TestEnsure_CancelledContext_NoLeftoverDir(t *testing.T) {
+	// With an already-cancelled context, Ensure aborts early — at the
+	// validateGitRepo probe (git rev-parse), before it ever reaches
+	// `git worktree add` — and must leave no directory behind and not
+	// permanently block the bead: a later call with a healthy context must
+	// still succeed. (This asserts the clean-abort/retry contract; it does not
+	// exercise the mid-`git worktree add` cleanup path, which a cancelled ctx
+	// can't reach.)
 	repoPath := initGitRepo(t)
 	worktreesDir := t.TempDir()
 	path := filepath.Join(worktreesDir, "mp-killed")

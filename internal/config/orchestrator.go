@@ -36,21 +36,21 @@ func ParseRepoFlag(m RepoMap, val string) error {
 	if path == "" {
 		return fmt.Errorf("invalid --repo value %q: path is empty", val)
 	}
-	// Expand a leading "~"/"~/" to the user's home dir. A shell won't expand it
-	// in `--repo mp=~/x` (the ~ isn't at the start of the word), and MUSTER_REPO
-	// never passes through a shell, so a literal "~/..." would otherwise be
-	// resolved relative to the cwd by filepath.Abs and silently mis-map the
-	// repo. ("~otheruser" is intentionally not expanded — it's uncommon and not
-	// portably resolvable.)
-	if path == "~" || strings.HasPrefix(path, "~/") {
+	// Expand a leading "~" (followed by a path separator, or bare "~") to the
+	// user's home dir. A shell won't expand it in `--repo mp=~/x` (the ~ isn't
+	// at the start of the word), and MUSTER_REPO never passes through a shell,
+	// so a literal "~/..." would otherwise be resolved relative to the cwd by
+	// filepath.Abs and silently mis-map the repo. Accept both "/" and the OS
+	// separator so Windows "~\repos" works too. ("~otheruser" is intentionally
+	// not expanded — it's uncommon and not portably resolvable.)
+	if path == "~" || (len(path) > 1 && path[0] == '~' && (path[1] == '/' || path[1] == os.PathSeparator)) {
 		home, herr := os.UserHomeDir()
 		if herr != nil {
 			return fmt.Errorf("--repo %q: cannot expand ~: %w", val, herr)
 		}
-		// Strip the "~" and any leading separator so we join a clean relative
-		// remainder onto home. (filepath.Join already cleans a doubled slash,
-		// but trimming explicitly keeps the intent obvious.) Bare "~" -> home.
-		rest := strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/")
+		// Strip the "~" and any leading separator(s) so we join a clean relative
+		// remainder onto home. Bare "~" -> home.
+		rest := strings.TrimLeft(path[1:], `/\`)
 		path = filepath.Join(home, rest)
 	}
 	abs, err := filepath.Abs(path)
