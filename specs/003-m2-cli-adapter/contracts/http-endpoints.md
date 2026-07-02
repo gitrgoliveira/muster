@@ -32,7 +32,8 @@ M2: only `idx=0`. Returns the live-attach descriptor:
 ```json
 { "available": true, "command": "tmux attach -t muster/mp-abc/0/0", "session": "muster/mp-abc/0/0", "pane": "%3" }
 ```
-- `available:false` + `reason` when: tmux absent (fallback), step not running, or `idx≠0`. Non-error (200) with `available:false` for the "not attachable" cases; `404` for unknown bead or `idx≠0`.
+- `available:false` + `reason` (non-error `200`) for the "not attachable" cases: tmux absent (fallback) or step not running.
+- `404` for an unknown bead, or for any `idx` other than the literal `0` (M2 supports only step 0; the route requires exactly `"0"`, so `idx≠0` never reaches the `available:false` path).
 
 ## `POST /api/v1/beads/{id}/steps/{idx}/send`
 

@@ -43,6 +43,11 @@ func TestRecoverSessions_LiveSession(t *testing.T) {
 		},
 	}
 
+	// This session is live (deadDead=false), so recovery starts a watchRun
+	// goroutine that polls DeadStatus forever. Flip forceDead at cleanup so it
+	// observes death and exits instead of leaking for the rest of the suite.
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
 	o := orchestrator.New(orchestrator.Config{
 		Adapters:     adapter.NewRegistry(),
 		Transport:    transport,

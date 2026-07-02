@@ -17,7 +17,10 @@ fi
 # e.g., FAKE_TMUX_OUTPUT_list-sessions for `tmux list-sessions`
 CMD="${1}"
 VAR_NAME="FAKE_TMUX_OUTPUT_$(echo "$CMD" | tr '[:lower:]-' '[:upper:]_')"
-eval "SUBCMD_OUT=\$$VAR_NAME"
+# printenv reads the var by (computed) name without eval — avoids the
+# eval-based indirection, which would be a command-injection footgun if $1
+# ever carried unexpected content.
+SUBCMD_OUT="$(printenv "$VAR_NAME" 2>/dev/null || true)"
 if [ -n "$SUBCMD_OUT" ]; then
     printf '%s' "$SUBCMD_OUT"
 fi

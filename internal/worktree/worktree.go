@@ -112,8 +112,16 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 	// MkdirAll only applies the mode to directories it actually creates — if
 	// worktreesDir already existed (e.g. a shared default like
 	// <os.TempDir()>/muster/worktrees pre-planted by another local user, or
-	// created earlier under a looser umask), it's silently reused as-is.
-	// Chmod unconditionally to tighten it regardless of who created it.
+	// created earlier under a looser umask), it's silently reused as-is, so we
+	// tighten it below. But os.Chmod follows symlinks: if a hostile local user
+	// pre-planted worktreesDir as a symlink to an arbitrary target, chmod'ing
+	// through it would change that target's mode to 0o700. Lstat first and
+	// refuse a symlink rather than operating through it.
+	if fi, err := os.Lstat(worktreesDir); err != nil {
+		return Worktree{}, fmt.Errorf("worktree: lstat worktrees dir: %w", err)
+	} else if fi.Mode()&os.ModeSymlink != 0 {
+		return Worktree{}, fmt.Errorf("worktree: worktrees dir %q is a symlink; refusing to operate through it", worktreesDir)
+	}
 	if err := os.Chmod(worktreesDir, 0o700); err != nil {
 		return Worktree{}, fmt.Errorf("worktree: chmod worktrees dir: %w", err)
 	}

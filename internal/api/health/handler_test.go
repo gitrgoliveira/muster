@@ -191,7 +191,7 @@ func TestOrchestratorStatus_M2_TmuxFields(t *testing.T) {
 		TmuxVersion:   "3.6b",
 		RunCounter:    &fakeRunCounter{count: 2},
 		Adapters: []health.AdapterInfo{
-			{ID: "claude", Version: "2.1.145", LoggedIn: true},
+			{ID: "claude", Installed: true, Version: "2.1.145", LoggedIn: true},
 		},
 	}
 	handler := health.OrchestratorStatusHandler(cfg)
@@ -216,6 +216,9 @@ func TestOrchestratorStatus_M2_TmuxFields(t *testing.T) {
 	}
 	if body.Adapters[0].ID != "claude" {
 		t.Errorf("adapter ID want claude got %q", body.Adapters[0].ID)
+	}
+	if !body.Adapters[0].Installed {
+		t.Error("adapter installed want true")
 	}
 	if !body.Adapters[0].LoggedIn {
 		t.Error("adapter loggedIn want true")

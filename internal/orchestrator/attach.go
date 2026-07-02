@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
@@ -123,12 +124,16 @@ func (o *Orchestrator) SendKeys(beadID string, stepIdx int, keys string) error {
 		if errors.Is(err, tmux.ErrAttachUnavailable) {
 			return &services.ServiceError{
 				Code:    services.CodeCLIUnavailable,
-				Message: "send unavailable: " + err.Error(),
+				Message: "send unavailable (tmux transport)",
 			}
 		}
+		// Log the internal detail (raw tmux error includes the subcommand and
+		// session name) server-side; return a generic client-facing message,
+		// consistent with the service boundary's handling of internal errors.
+		slog.Error("SendKeys: tmux send failed", "bead", beadID, "err", err)
 		return &services.ServiceError{
 			Code:    services.CodeInternal,
-			Message: "send failed: " + err.Error(),
+			Message: "send failed due to an internal error",
 		}
 	}
 	return nil

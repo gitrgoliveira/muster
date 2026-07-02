@@ -59,6 +59,11 @@ func TestGracefulShutdown_DoesNotKillAgentSessions(t *testing.T) {
 			deadDead: false, // pane is alive
 		},
 	}
+	// The recovered run is live (deadDead=false) and its watchRun goroutine is
+	// rooted in context.Background() by design (FR-018), so it polls forever.
+	// Flip forceDead at cleanup — after the assertion — so it exits instead of
+	// leaking for the rest of the suite.
+	t.Cleanup(func() { transport.forceDead.Store(true) })
 	reg := adapter.NewRegistry()
 
 	o := orchestrator.New(orchestrator.Config{

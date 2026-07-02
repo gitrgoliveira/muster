@@ -44,6 +44,14 @@ type fakeTransport struct {
 
 	spawnCount atomic.Int32
 	spawnDelay time.Duration // optional: widen the dispatch race window
+
+	// forceDead is a test hook: when set, DeadStatus reports the pane as dead
+	// regardless of deadDead. Tests that recover a *live* session (deadDead
+	// false) use t.Cleanup to flip this so the background watchRun goroutine
+	// (rooted in context.Background(), polling every 500ms) can observe death
+	// and exit instead of leaking for the rest of the suite. atomic because
+	// watchRun reads it from a goroutine while Cleanup writes it.
+	forceDead atomic.Bool
 }
 
 func (f *fakeTransport) Detect() (string, error) { return "3.6b", nil }
@@ -59,6 +67,9 @@ func (f *fakeTransport) Pipe(name string) (io.ReadCloser, error) {
 }
 func (f *fakeTransport) List() ([]tmux.Session, error) { return f.listReturns, nil }
 func (f *fakeTransport) DeadStatus(name string) (int, bool, error) {
+	if f.forceDead.Load() {
+		return f.deadCode, true, nil
+	}
 	return f.deadCode, f.deadDead, f.deadErr
 }
 func (f *fakeTransport) Spawn(name, cwd string, env, argv []string) (*tmux.Session, error) {
