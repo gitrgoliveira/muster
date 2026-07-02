@@ -176,3 +176,87 @@ func TestOrchestratorStatus_ConfigFieldsPopulated(t *testing.T) {
 		t.Errorf("schemaVersion want 2 got %d", body.SchemaVersion)
 	}
 }
+
+// ── M2 status DTO additions ───────────────────────────────────────────
+
+type fakeRunCounter struct{ count int }
+
+func (f *fakeRunCounter) RunCount() int { return f.count }
+
+func TestOrchestratorStatus_M2_TmuxFields(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		TmuxAvailable: true,
+		TmuxVersion:   "3.6b",
+		RunCounter:    &fakeRunCounter{count: 2},
+		Adapters: []health.AdapterInfo{
+			{ID: "claude", Installed: true, Version: "2.1.145", LoggedIn: true},
+		},
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	json.NewDecoder(w.Result().Body).Decode(&body) //nolint:errcheck
+
+	if !body.TmuxAvailable {
+		t.Error("tmuxAvailable want true")
+	}
+	if body.TmuxVersion != "3.6b" {
+		t.Errorf("tmuxVersion want 3.6b got %q", body.TmuxVersion)
+	}
+	if body.RunningCount != 2 {
+		t.Errorf("runningCount want 2 got %d", body.RunningCount)
+	}
+	if len(body.Adapters) != 1 {
+		t.Fatalf("adapters want 1 got %d", len(body.Adapters))
+	}
+	if body.Adapters[0].ID != "claude" {
+		t.Errorf("adapter ID want claude got %q", body.Adapters[0].ID)
+	}
+	if !body.Adapters[0].Installed {
+		t.Error("adapter installed want true")
+	}
+	if !body.Adapters[0].LoggedIn {
+		t.Error("adapter loggedIn want true")
+	}
+}
+
+func TestOrchestratorStatus_M2_TmuxUnavailable(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		TmuxAvailable: false,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	json.NewDecoder(w.Result().Body).Decode(&body) //nolint:errcheck
+	if body.TmuxAvailable {
+		t.Error("tmuxAvailable want false when tmux not installed")
+	}
+}
+
+func TestOrchestratorStatus_M2_RunningCountNilCounter(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		// no RunCounter
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	json.NewDecoder(w.Result().Body).Decode(&body) //nolint:errcheck
+	if body.RunningCount != 0 {
+		t.Errorf("runningCount want 0 got %d", body.RunningCount)
+	}
+}

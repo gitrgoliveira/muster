@@ -57,6 +57,9 @@ func NewRouter(
 	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/move", h.Move)
 	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/dispatch", h.Dispatch)
 	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/comments", h.Comment)
+	// M2 additions: step attach/send endpoints (US3).
+	r.Get("/api/v1/beads/{id}/steps/{idx}/attach", h.Attach)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/steps/{idx}/send", h.Send)
 
 	// Build the SPA file server.
 	subFS, err := fs.Sub(uiFS, "ui")
