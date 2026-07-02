@@ -12,10 +12,16 @@ import (
 
 // Worktree describes a per-bead git worktree.
 type Worktree struct {
-	BeadID   string
-	Path     string // absolute path to the worktree directory
+	BeadID string
+	// Path is <worktreesDir>/<beadID>; RepoPath echoes the repoPath passed to
+	// Ensure. Both are absolute when the caller passes absolute worktreesDir /
+	// repoPath — which the production caller (cmd/muster: --worktrees-dir
+	// defaulting under the home dir, and repo paths resolved via filepath.Abs
+	// in config.ParseRepoFlag) always does. Ensure does not itself re-absolutize
+	// them.
+	Path     string // worktree directory (<worktreesDir>/<beadID>)
 	Branch   string // branch name: "muster/<beadID>"
-	RepoPath string // absolute path to the source repository
+	RepoPath string // source repository (as passed to Ensure)
 }
 
 // branchName returns the branch name for a given bead ID.
@@ -30,7 +36,11 @@ func worktreePath(worktreesDir, beadID string) string {
 
 // Ensure creates or reuses the per-bead worktree.
 //
-//   - If the worktree at <worktreesDir>/<beadID> already exists, it is returned as-is.
+//   - If a worktree at <worktreesDir>/<beadID> already exists, it is reused —
+//     but only after verifying it's a linked git worktree, belongs to repoPath,
+//     and is checked out on the expected muster/<beadID> branch; a mismatch (or
+//     a symlink at the path, or a non-worktree directory) is refused, not
+//     silently accepted.
 //   - Otherwise, it is created via `git worktree add -b muster/<beadID> <path>`.
 //   - Returns an error if repoPath is not a git repository.
 //
@@ -71,8 +81,15 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 	// Only os.IsNotExist is acceptable to fall through to creation; other stat
 	// errors (permission denied, IO error, …) would otherwise reach
 	// `git worktree add` and surface a confusing downstream message — return
-	// the real cause instead.
-	if _, err := os.Stat(path); err == nil {
+	// the real cause instead. Use os.Lstat (not os.Stat) so a pre-planted
+	// SYMLINK at <worktreesDir>/<beadID> is detected rather than followed: a
+	// local attacker could otherwise redirect the reused worktree to a target
+	// outside worktreesDir (the create-path symlink hardening below only guards
+	// worktreesDir itself, not this per-bead entry).
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return Worktree{}, fmt.Errorf("worktree: path %q is a symlink; refusing to reuse it", path)
+		}
 		// Directory exists — verify it's a worktree.
 		if isWorktreeDir(path) {
 			// Also verify the existing worktree belongs to repoPath. Without
@@ -103,7 +120,7 @@ func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktre
 		// risk operating on an unrelated pre-existing directory. Refuse.
 		return Worktree{}, fmt.Errorf("worktree: path %q exists but is not a git worktree (refusing to overwrite)", path)
 	} else if !os.IsNotExist(err) {
-		return Worktree{}, fmt.Errorf("worktree: stat %q: %w", path, err)
+		return Worktree{}, fmt.Errorf("worktree: lstat %q: %w", path, err)
 	}
 
 	// Create parent directory if needed. 0o700 keeps per-bead worktrees (which
@@ -214,6 +231,12 @@ func validateGitRepo(ctx context.Context, path string) error {
 	cmd.Dir = path
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// Don't mislabel a cancelled/timed-out context as "not a git repo":
+		// exec.CommandContext fails when ctx is done, and that's an aborted
+		// probe, not a verdict about the directory. Surface ctx.Err() instead.
+		if ctx.Err() != nil {
+			return fmt.Errorf("worktree: git repo check aborted for %q: %w", path, ctx.Err())
+		}
 		return fmt.Errorf("worktree: not a git repo at %q: %w\n%s", path, err, out)
 	}
 	return nil
