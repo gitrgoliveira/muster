@@ -45,13 +45,16 @@ func worktreePath(worktreesDir, beadID string) string {
 func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktree, error) {
 	// Defense in depth: beadID becomes both a filesystem path segment
 	// (filepath.Join(worktreesDir, beadID)) and a git branch name
-	// (muster/<beadID>). The HTTP handler already allow-lists bead IDs via
-	// core.ValidBeadID, but Ensure is a public function and must not trust its
-	// caller: a value like "../x" or an absolute path would escape worktreesDir
-	// and let the agent operate on an unintended directory. Require a single
-	// safe path segment — filepath.IsLocal rejects "..", absolute paths, and
-	// empty/reserved names, and Base==beadID rejects any embedded separator
-	// (e.g. "a/b") so the join stays a direct child of worktreesDir.
+	// (muster/<beadID>). The canonical bead-ID grammar is enforced upstream by
+	// the HTTP handler and the orchestrator via core.ValidBeadID; this guard is
+	// narrower and purely about path safety, since Ensure is a public function
+	// and must not trust its caller. It rejects only what could escape
+	// worktreesDir — a value like "../x", an absolute path, or an embedded
+	// separator ("a/b") — and deliberately does NOT re-impose the full grammar
+	// (a path-safe but non-canonical ID like "Foo" is left for the caller's
+	// validation to reject). filepath.IsLocal rejects "..", absolute paths, and
+	// empty/reserved names; Base==beadID rejects any embedded separator so the
+	// join stays a direct child of worktreesDir.
 	if !filepath.IsLocal(beadID) || beadID != filepath.Base(beadID) {
 		return Worktree{}, fmt.Errorf("worktree: refusing unsafe beadID %q (must be a single local path segment)", beadID)
 	}

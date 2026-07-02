@@ -110,9 +110,11 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 		return nil, fmt.Errorf("tmux Spawn: argv must not be empty")
 	}
 
-	// Set environment variables: each as VAR=VALUE passed to env(1) in the shell.
-	// We build a shell command that sets env vars and execs the command.
-	shellCmd := buildShellCmd(env, argv)
+	// Set environment variables by prefixing the command with env(1) and one
+	// VAR=VALUE argument per entry. tmux exec's this argv directly (no shell is
+	// involved unless argv[0] itself is a shell), so env(1) — not a shell — is
+	// what applies the variables before exec'ing the real command.
+	cmdArgv := buildEnvArgv(env, argv)
 
 	// Spawn in two phases to avoid a race: if we passed the agent command to
 	// new-session and only set remain-on-exit afterwards, a fast-failing
@@ -161,7 +163,7 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 	if cwd != "" {
 		respawnArgs = append(respawnArgs, "-c", cwd)
 	}
-	respawnArgs = append(respawnArgs, shellCmd...)
+	respawnArgs = append(respawnArgs, cmdArgv...)
 	if _, err := m.run(respawnArgs...); err != nil {
 		_ = m.Kill(name)
 		return nil, fmt.Errorf("tmux respawn-pane %q: %w", name, err)
@@ -184,9 +186,10 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 	}, nil
 }
 
-// buildShellCmd constructs the argv to pass to tmux new-session.
-// If env is non-empty, wraps the command with env(1).
-func buildShellCmd(env, argv []string) []string {
+// buildEnvArgv constructs the argv tmux exec's for the pane. If env is
+// non-empty, it prefixes the command with env(1) and one VAR=VALUE argument
+// per entry (no shell involved). If env is empty, argv is returned unchanged.
+func buildEnvArgv(env, argv []string) []string {
 	if len(env) == 0 {
 		return argv
 	}

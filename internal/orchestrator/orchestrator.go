@@ -275,6 +275,14 @@ func (o *Orchestrator) resolvePermMode(mode core.Mode, requested core.Permission
 		return requested, nil
 	}
 	if o.defaultPermMode != "" {
+		// Same carve-out as the requested path: a configured default of "plan"
+		// is meaningless for a non-plan dispatch and would silently run plan
+		// mode while labelled agent. Reject rather than apply it. (main.go also
+		// rejects --default-permission-mode=plan at startup; this is the
+		// defense-in-depth guard for any other construction path.)
+		if o.defaultPermMode == core.PermPlan {
+			return "", &PermModeError{Mode: o.defaultPermMode}
+		}
 		return o.defaultPermMode, nil
 	}
 	return "", ErrNoPermissionMode

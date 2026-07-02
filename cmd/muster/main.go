@@ -136,8 +136,14 @@ func main() {
 	var defaultPermMode core.PermissionMode
 	if *defaultPermModeFlag != "" {
 		pm := core.PermissionMode(*defaultPermModeFlag)
-		if !pm.Valid() {
-			fmt.Fprintf(os.Stderr, "invalid --default-permission-mode %q\n", *defaultPermModeFlag)
+		// Reject "plan" explicitly: PermissionMode.Valid() allow-lists it, but
+		// "plan" is only meaningful for plan-mode dispatch. As an operator
+		// default (applied to agent-mode dispatches that omit permissionMode)
+		// it would silently run agents in plan mode — the orchestrator rejects
+		// that at resolve time, so accepting it here would just defer a
+		// guaranteed failure. Fail fast at startup instead.
+		if !pm.Valid() || pm == core.PermPlan {
+			fmt.Fprintf(os.Stderr, "invalid --default-permission-mode %q (\"plan\" is only valid for plan-mode dispatch)\n", *defaultPermModeFlag)
 			os.Exit(1)
 		}
 		defaultPermMode = pm

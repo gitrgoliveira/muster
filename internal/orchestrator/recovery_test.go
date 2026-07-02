@@ -104,7 +104,7 @@ func TestRecoverSessions_DeadSessionKilled(t *testing.T) {
 	if run := o.GetRun("mp-dead"); run != nil {
 		t.Error("dead session should not register a run")
 	}
-	if !transport.killCalled {
+	if !transport.killCalled.Load() {
 		t.Error("Kill should have been called for dead session")
 	}
 }
@@ -138,7 +138,7 @@ func TestRecoverSessions_InvalidBeadIDKilled(t *testing.T) {
 	if run := o.GetRun("bad..id"); run != nil {
 		t.Error("session with invalid bead ID should not register a run")
 	}
-	if !transport.killCalled {
+	if !transport.killCalled.Load() {
 		t.Error("Kill should have been called for the invalid-bead-ID session")
 	}
 	if count := o.RunCount(); count != 0 {
@@ -179,7 +179,7 @@ func TestRecoverSessions_UnsupportedIndicesKilled(t *testing.T) {
 			if run := o.GetRun("mp-abc"); run != nil {
 				t.Error("session with unsupported step/loop indices should not register a run")
 			}
-			if !transport.killCalled {
+			if !transport.killCalled.Load() {
 				t.Error("Kill should have been called for the unsupported-index session")
 			}
 			if count := o.RunCount(); count != 0 {

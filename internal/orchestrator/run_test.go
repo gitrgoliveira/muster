@@ -167,6 +167,17 @@ func TestResolvePermMode_Plan(t *testing.T) {
 	if _, err := o.resolvePermMode(core.ModeAgent, core.PermPlan); err == nil {
 		t.Error("want error for permissionMode=plan requested with agent mode")
 	}
+
+	// And the same guard on the DEFAULT path: a configured default of "plan"
+	// must not be silently applied to an agent-mode dispatch that omits it.
+	o.defaultPermMode = core.PermPlan
+	if _, err := o.resolvePermMode(core.ModeAgent, ""); err == nil {
+		t.Error("want error for defaultPermMode=plan applied to agent mode")
+	}
+	// Plan-mode dispatch is unaffected — plan mode ignores the default entirely.
+	if _, err := o.resolvePermMode(core.ModePlan, ""); err != nil {
+		t.Errorf("plan mode with plan default should still resolve: %v", err)
+	}
 }
 
 func TestRepoMap_Resolve(t *testing.T) {

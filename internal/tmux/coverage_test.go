@@ -15,7 +15,7 @@ func TestNewRealManager_WithExplicitBin(t *testing.T) {
 // TestBuildShellCmd verifies the env-wrapping behavior.
 func TestBuildShellCmd_NoEnv(t *testing.T) {
 	argv := []string{"sh", "-c", "echo hello"}
-	got := buildShellCmd(nil, argv)
+	got := buildEnvArgv(nil, argv)
 	if len(got) != len(argv) {
 		t.Errorf("no-env: want len %d got %d", len(argv), len(got))
 	}
@@ -24,7 +24,7 @@ func TestBuildShellCmd_NoEnv(t *testing.T) {
 func TestBuildShellCmd_WithEnv(t *testing.T) {
 	env := []string{"FOO=bar", "BAZ=qux"}
 	argv := []string{"sh", "-c", "echo $FOO"}
-	got := buildShellCmd(env, argv)
+	got := buildEnvArgv(env, argv)
 	if got[0] != "env" {
 		t.Errorf("first arg want env got %q", got[0])
 	}

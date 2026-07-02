@@ -497,6 +497,12 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		if orchErr != nil {
 			return nil, wrapOrchestratorError(orchErr)
 		}
+		if result == nil {
+			// Defensive: a (nil, nil) return would otherwise fall through to
+			// `return result, nil` below and hand the HTTP layer a 200 with a
+			// null bead. Treat a missing bead with no error as an internal fault.
+			return nil, &ServiceError{Code: CodeInternal, Message: "orchestrator returned no bead"}
+		}
 
 		// Persist the running transition. Beads is the source of truth for
 		// issue state (constitution II; FR-002 requires dispatch to
@@ -548,23 +554,21 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// Return the same merged bead from the HTTP path so the response
 		// matches the WS frame (clients otherwise saw a stub here while a
 		// concurrent socket-listener saw the full bead).
-		if result != nil {
-			merged := *bead
-			merged.Column = result.Column
-			if svc.publishOnWrite || !persisted {
-				// svc.publishOnWrite: remote mode, no watcher runs at all, so
-				// this manual publish is the only signal regardless of
-				// persist outcome.
-				// !persisted: embedded mode, but no real bd write happened
-				// (cli nil or claim failed) — the file watcher has nothing
-				// to fan into the hub, so publishWrite's normal no-op gate
-				// would otherwise leave every other connected client
-				// without a running-transition signal at all.
-				svc.publishForce(ws.EventBeadUpdated, &merged)
-			}
-			return &merged, nil
+		// result is guaranteed non-nil here (the (nil,nil) case returned above).
+		merged := *bead
+		merged.Column = result.Column
+		if svc.publishOnWrite || !persisted {
+			// svc.publishOnWrite: remote mode, no watcher runs at all, so
+			// this manual publish is the only signal regardless of
+			// persist outcome.
+			// !persisted: embedded mode, but no real bd write happened
+			// (cli nil or claim failed) — the file watcher has nothing
+			// to fan into the hub, so publishWrite's normal no-op gate
+			// would otherwise leave every other connected client
+			// without a running-transition signal at all.
+			svc.publishForce(ws.EventBeadUpdated, &merged)
 		}
-		return result, nil
+		return &merged, nil
 	}
 
 	// Legacy stub path: just move the bead to running via bd CLI.

@@ -38,8 +38,11 @@ type fakeTransport struct {
 	deadErr        error
 	spawnedSession *tmux.Session
 
-	killCalled  bool
-	pipeCalled  bool
+	// killCalled/pipeCalled are written from watcher goroutines
+	// (watchRun→finishRun→Kill, Dispatch→Pipe) that can run concurrently across
+	// multiple runs, so they're atomic to keep -race clean.
+	killCalled  atomic.Bool
+	pipeCalled  atomic.Bool
 	listReturns []tmux.Session
 
 	spawnCount atomic.Int32
@@ -55,14 +58,14 @@ type fakeTransport struct {
 }
 
 func (f *fakeTransport) Detect() (string, error) { return "3.6b", nil }
-func (f *fakeTransport) Kill(name string) error  { f.killCalled = true; return nil }
+func (f *fakeTransport) Kill(name string) error  { f.killCalled.Store(true); return nil }
 func (f *fakeTransport) Attach(name string) (string, error) {
 	return "tmux attach -t " + name, nil
 }
 func (f *fakeTransport) Send(name, keys string) error                  { return nil }
 func (f *fakeTransport) Capture(name string, esc bool) (string, error) { return "", nil }
 func (f *fakeTransport) Pipe(name string) (io.ReadCloser, error) {
-	f.pipeCalled = true
+	f.pipeCalled.Store(true)
 	return io.NopCloser(strings.NewReader("")), nil
 }
 func (f *fakeTransport) List() ([]tmux.Session, error) { return f.listReturns, nil }
