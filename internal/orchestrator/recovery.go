@@ -122,12 +122,17 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	o.registerRun(run)
 	o.mu.Unlock()
 
-	// Re-attach pipe for streaming. Set before watchRun starts so finishRun
-	// can close it (frees the FIFO/temp dir); no race — the watcher goroutine is
-	// launched after this assignment.
+	// Re-attach pipe for streaming. Set before watchRun starts so finishRun can
+	// close it (frees the FIFO/temp dir). Assign under o.mu, matching Dispatch's
+	// post-Spawn field writes: the run is already registered above (visible to
+	// GetRun, which snapshots the whole struct under RLock), so an unlocked
+	// write here would race that read. watchRun (launched below) reads run.pipe
+	// only after this point, so its later read is safely ordered.
 	pipeReader, pipeErr := o.transport.Pipe(sessionName)
 	if pipeErr == nil && pipeReader != nil {
+		o.mu.Lock()
 		run.pipe = pipeReader
+		o.mu.Unlock()
 		streamer := &runlogStreamer{
 			beadID:  beadID,
 			stepIdx: sess.StepIdx,
