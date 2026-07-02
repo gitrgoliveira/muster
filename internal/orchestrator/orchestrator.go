@@ -527,8 +527,13 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	success = true
 
 	// Start pipe + exit watcher goroutine.
-	// Pipe the pane output to the WS hub as runlog.line frames.
-	pipeReader, pipeErr := o.transport.Pipe(sessionName)
+	// Pipe the pane output to the WS hub as runlog.line frames. Use sess.Name
+	// (what Spawn actually created), not the requested sessionName, so this
+	// stays consistent with run.Session and the rest of the lifecycle
+	// (tmux.session.opened, DeadStatus/Kill) if a transport ever canonicalizes
+	// the name. They're equal for today's managers, but relying on that here
+	// would be a latent bug.
+	pipeReader, pipeErr := o.transport.Pipe(sess.Name)
 	if pipeErr != nil {
 		// Pipe failure is non-fatal (output won't stream, but the run continues).
 		pipeReader = nil
