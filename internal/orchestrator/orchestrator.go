@@ -68,7 +68,7 @@ type Run struct {
 	Worktree       string          // absolute path to the worktree
 	Session        string          // tmux session name (empty in fallback)
 	Pane           string          // tmux pane id, e.g. "%3" (empty in fallback; informational only)
-	State          core.StepStatus // running | done | failed | cancelled
+	State          core.StepStatus // core.StepStatus: pending | active | done | failed (active = running; cancel/timeout folds into failed)
 	ExitCode       int
 	StartedAt      time.Time
 	EndedAt        time.Time

@@ -205,14 +205,21 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 	// Start tmux pipe-pane writing to the FIFO. tmux executes the pipe-cmd via
 	// a shell, so the FIFO path must be shell-quoted to survive a TMPDIR that
 	// contains spaces or shell metacharacters.
-	// The -o flag means "only open a new pipe if no previous pipe is currently
-	// open", guarding against double-piping the same pane. pipe-pane captures
-	// raw pane output, which includes echoed input (a pty echoes keystrokes
-	// back into the pane, so they appear in this stream too) and terminal
-	// control sequences (e.g. bracketed-paste markers) — muster does not
-	// strip any of it; the client renders via a terminal emulator (D1).
+	//
+	// Deliberately NOT using -o ("only open a pipe if none is already open"):
+	// on restart recovery the pane may still carry a pipe from a previous
+	// muster process (whose FIFO reader is long gone). With -o, tmux would keep
+	// writing to that dead pipe and skip attaching to the new FIFO, so the
+	// os.Open below would block forever waiting for a writer that never comes.
+	// Plain pipe-pane closes any existing pipe and opens this one, guaranteeing
+	// the new FIFO gets tmux as its writer.
+	//
+	// pipe-pane captures raw pane output, which includes echoed input (a pty
+	// echoes keystrokes back into the pane) and terminal control sequences
+	// (e.g. bracketed-paste markers) — muster does not strip any of it; the
+	// client renders via a terminal emulator (D1).
 	pipeCmd := "cat >> " + shellquote.Single(fifoPath)
-	_, err = m.run("pipe-pane", "-t", name, "-o", pipeCmd)
+	_, err = m.run("pipe-pane", "-t", name, pipeCmd)
 	if err != nil {
 		_ = os.RemoveAll(fifoDir)
 		return nil, fmt.Errorf("tmux pipe-pane %q: %w", name, err)
