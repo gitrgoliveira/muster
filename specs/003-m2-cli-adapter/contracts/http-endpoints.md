@@ -43,8 +43,7 @@ Request `{ "keys": "y\n" }` → forwards to the live pane via `send-keys`.
 | `204 No Content` | delivered |
 | `400 INVALID_STATE` | step is not currently running (or is starting: tmux session not yet assigned) |
 | `404` | unknown bead, or `idx≠0` |
-| `503` | tmux unavailable (fallback transport) — sending unsupported |
-| `501 ATTACH_UNAVAILABLE` | this muster instance has no tmux session transport wired at all (no orchestrator) — attach/send feature absent |
+| `501 ATTACH_UNAVAILABLE` | send is unsupported by this configuration — either tmux is unavailable so the run uses the fallback (direct-exec) transport, or no orchestrator/tmux session transport is wired at all. Not a transient outage, so not `503`. |
 
 ## `GET /api/v1/orchestrator/status` (additive fields)
 
