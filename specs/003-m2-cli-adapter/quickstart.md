@@ -53,7 +53,9 @@ tmux attach -t muster/mp-abc/0/0          # watch the live TUI; Ctrl-b d to deta
 ```
 Or forward a keystroke without attaching:
 ```bash
-curl -s -X POST localhost:7766/api/v1/beads/mp-abc/steps/0/send -d '{"keys":"y\n"}'
+curl -s -X POST localhost:7766/api/v1/beads/mp-abc/steps/0/send \
+  -H 'content-type: application/json' \
+  -d '{"keys":"y\n"}'
 ```
 
 ## 4. Completion
