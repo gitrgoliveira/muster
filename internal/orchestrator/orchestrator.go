@@ -164,10 +164,17 @@ func New(cfg Config) *Orchestrator {
 	if runRetention <= 0 {
 		runRetention = defaultRunRetention
 	}
+	// A nil transport would panic on the first Dispatch/GetAttach/SendKeys.
+	// Default to the tmux-absent fallback (the same degraded mode used when
+	// tmux Detect fails) rather than crashing.
+	transport := cfg.Transport
+	if transport == nil {
+		transport = tmux.NewFallbackManager()
+	}
 	return &Orchestrator{
 		runs:            make(map[string]*Run),
 		adapters:        cfg.Adapters,
-		transport:       cfg.Transport,
+		transport:       transport,
 		repoMap:         cfg.RepoMap,
 		worktreesDir:    cfg.WorktreesDir,
 		defaultPermMode: cfg.DefaultPermMode,

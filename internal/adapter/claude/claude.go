@@ -145,6 +145,16 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 		return adapter.Spec{}, fmt.Errorf("claude not on PATH: %w", err)
 	}
 
+	// Defense in depth: the orchestrator already resolves+validates the
+	// permission mode, but Invoke is a public method and must not build a
+	// `--permission-mode <value>` argv from an out-of-allow-list value (which
+	// would only fail later, in the CLI). Reject it here. (Plan mode hardcodes
+	// "plan" and ignores this value, but a valid PermissionMode is still the
+	// contract for the request.)
+	if !req.PermissionMode.Valid() {
+		return adapter.Spec{}, fmt.Errorf("claude adapter: invalid permission mode %q", req.PermissionMode)
+	}
+
 	// Build the mode argument fragment.
 	var modeArgs []string
 	for _, m := range a.Modes() {

@@ -4,9 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
+
+// repoPrefixPattern is the accepted form of a --repo/MUSTER_REPO prefix. It
+// mirrors the prefix half of a bead ID (core.ValidBeadID: lowercase alpha
+// before the first hyphen), so a typo like "Mp" or "mp-foo" fails at startup
+// rather than silently never matching any bead at dispatch time.
+var repoPrefixPattern = regexp.MustCompile(`^[a-z]+$`)
 
 // RepoMap maps bead-ID prefixes (e.g. "mp") to absolute repo paths.
 // Populated from repeatable --repo prefix=path flags and MUSTER_REPO env.
@@ -20,6 +27,9 @@ func ParseRepoFlag(m RepoMap, val string) error {
 		return fmt.Errorf("invalid --repo value %q: expected prefix=path", val)
 	}
 	prefix := val[:idx]
+	if !repoPrefixPattern.MatchString(prefix) {
+		return fmt.Errorf("invalid --repo value %q: prefix %q must be lowercase letters only (it is matched against bead-ID prefixes)", val, prefix)
+	}
 	path := val[idx+1:]
 	if path == "" {
 		return fmt.Errorf("invalid --repo value %q: path is empty", val)

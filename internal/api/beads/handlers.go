@@ -317,6 +317,12 @@ func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
 		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "keys must be non-empty and at most 4096 bytes")
 		return
 	}
+	// os/exec rejects argv entries containing a NUL byte, which would turn a
+	// bad client input into a confusing 500. Reject it up front as a 400.
+	if strings.ContainsRune(req.Keys, 0) {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "keys must not contain NUL bytes")
+		return
+	}
 
 	if err := h.svc.SendKeys(r.Context(), id, idx, req.Keys); mapServiceError(w, r, err) {
 		return

@@ -148,8 +148,13 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 	// manual testing. Best-effort: a failure here must not fail the whole
 	// Spawn (the pane ID is only used to populate the attach response's
 	// informational `pane` field).
-	paneID, _ := m.run("display-message", "-p", "-t", name, "#{pane_id}")
-	paneID = strings.TrimSpace(paneID)
+	// Only trust the output on success: m.run folds stderr into its output via
+	// CombinedOutput, so on failure paneID would be an error string that then
+	// leaks into the attach response's `pane` field. Leave it empty instead.
+	paneID := ""
+	if out, perr := m.run("display-message", "-p", "-t", name, "#{pane_id}"); perr == nil {
+		paneID = strings.TrimSpace(out)
+	}
 
 	// Respawn the pane with the real command, now that it will persist on exit.
 	respawnArgs := []string{"respawn-pane", "-k", "-t", name}
