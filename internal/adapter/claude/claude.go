@@ -36,8 +36,13 @@ func (a *Adapter) ID() core.AgentID { return core.AgentClaude }
 
 // resolve returns the resolved binary path, searching PATH if not explicit.
 func (a *Adapter) resolve() (string, error) {
+	// Validate the explicit bin the same way as the PATH lookup: exec.LookPath
+	// checks a path-form value is an existing, executable file (and searches
+	// PATH for a bare name). Without this, a bad explicit Bin would be returned
+	// verbatim, making Detect report Installed:true and then fail confusingly on
+	// `claude --version` instead of cleanly reporting "not installed".
 	if a.bin != "" {
-		return a.bin, nil
+		return exec.LookPath(a.bin)
 	}
 	return exec.LookPath("claude")
 }

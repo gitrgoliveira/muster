@@ -290,8 +290,18 @@ func TestInvoke_BinPathWithSpace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Use an explicit bin path that contains a space.
-	a := claude.New(claude.Options{Bin: "/Users/Some User/bin/claude"})
+	// Use an explicit bin path that contains a space. It must be a REAL
+	// executable so resolve()'s exec.LookPath validation succeeds — put a fake
+	// claude in a directory whose name contains a space.
+	binDir := filepath.Join(t.TempDir(), "Some Dir")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "claude")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := claude.New(claude.Options{Bin: binPath})
 	req := adapter.InvokeReq{
 		Mode:           core.ModeAgent,
 		PermissionMode: core.PermAcceptEdits,
@@ -308,8 +318,8 @@ func TestInvoke_BinPathWithSpace(t *testing.T) {
 	}
 	shellCmd := spec.Argv[2]
 	// The binary path must be single-quoted in the shell command.
-	if !strings.Contains(shellCmd, "'/Users/Some User/bin/claude'") {
-		t.Errorf("expected single-quoted binary path in shell command, got: %q", shellCmd)
+	if !strings.Contains(shellCmd, "'"+binPath+"'") {
+		t.Errorf("expected single-quoted binary path %q in shell command, got: %q", binPath, shellCmd)
 	}
 	// Must be `exec`-prefixed so sh is replaced by claude (see Invoke): under
 	// the fallback transport this is what lets Kill terminate the agent rather
@@ -335,5 +345,19 @@ func TestDetect_ExplicitBin(t *testing.T) {
 	}
 	if !result.Installed {
 		t.Error("Installed want true")
+	}
+}
+
+// TestDetect_ExplicitBin_Missing verifies a bad explicit Bin path is treated as
+// "not installed" (Installed:false, no error) via resolve()'s exec.LookPath
+// validation — not reported as Installed:true and then failing on --version.
+func TestDetect_ExplicitBin_Missing(t *testing.T) {
+	a := claude.New(claude.Options{Bin: filepath.Join(t.TempDir(), "no-such-claude")})
+	result, err := a.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect should not error for a missing explicit bin: %v", err)
+	}
+	if result.Installed {
+		t.Error("Installed want false for a missing explicit bin")
 	}
 }
