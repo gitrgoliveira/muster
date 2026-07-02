@@ -47,6 +47,15 @@ func (n *shutdownTransport) killCount() int {
 	return len(n.killNames)
 }
 
+// killNamesSnapshot returns a copy of killNames under the lock, so callers can
+// format it without racing a concurrent Kill append (watchRun runs Kill from a
+// background goroutine).
+func (n *shutdownTransport) killNamesSnapshot() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.killNames...)
+}
+
 func TestGracefulShutdown_DoesNotKillAgentSessions(t *testing.T) {
 	// FR-018: graceful shutdown MUST NOT kill running agent tmux sessions.
 	// Sessions are owned by the user's tmux server and survive muster restart.
@@ -96,6 +105,6 @@ func TestGracefulShutdown_DoesNotKillAgentSessions(t *testing.T) {
 	// FR-018: the watchRun context is derived from Background, so the server
 	// shutdown context cancel must NOT propagate to kill the agent session.
 	if n := transport.killCount(); n != 0 {
-		t.Errorf("FR-018 violated: %d Kill call(s) after shutdown (%v); agent sessions must survive", n, transport.killNames)
+		t.Errorf("FR-018 violated: %d Kill call(s) after shutdown (%v); agent sessions must survive", n, transport.killNamesSnapshot())
 	}
 }

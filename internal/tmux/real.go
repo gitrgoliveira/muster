@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/shellquote"
@@ -233,14 +234,17 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("tmux pipe-pane %q: %w", name, err)
 	}
 
-	// Open the read end of the FIFO. POSIX semantics: opening a FIFO read-only
-	// blocks until some process opens the write end. Here the writer is the
-	// `cat >> fifo` process tmux spawns for pipe-pane. `pipe-pane` returning
-	// above only means tmux accepted the command — it spawns `cat`
-	// asynchronously, so this open may block briefly until `cat` opens the FIFO.
-	// That wait is bounded by how fast tmux starts the pipe process (typically
-	// negligible), so we open synchronously rather than spinning up a goroutine.
-	f, err := os.Open(fifoPath)
+	// Open the read end of the FIFO. A plain blocking open(2) of a FIFO
+	// read-only waits until some process opens the write end — here the
+	// `cat >> fifo` process tmux spawns for pipe-pane. But `pipe-pane` returning
+	// only means tmux ACCEPTED the command; if that cat never successfully
+	// opens the FIFO for write (e.g. it fails to exec), a blocking open would
+	// hang here forever and wedge Dispatch after the session is already
+	// spawned. Open with O_NONBLOCK so the open itself returns immediately
+	// regardless of the writer. Go's runtime poller then parks the streamer
+	// goroutine's Read until the writer connects and produces data (or EOF when
+	// the pane dies) — the wait moves off the Dispatch path and can't hang it.
+	f, err := os.OpenFile(fifoPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		_ = os.RemoveAll(fifoDir)
 		return nil, fmt.Errorf("tmux Pipe: open fifo: %w", err)
