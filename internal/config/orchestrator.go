@@ -47,7 +47,11 @@ func ParseRepoFlag(m RepoMap, val string) error {
 		if herr != nil {
 			return fmt.Errorf("--repo %q: cannot expand ~: %w", val, herr)
 		}
-		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+		// Strip the "~" and any leading separator so we join a clean relative
+		// remainder onto home. (filepath.Join already cleans a doubled slash,
+		// but trimming explicitly keeps the intent obvious.) Bare "~" -> home.
+		rest := strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/")
+		path = filepath.Join(home, rest)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {

@@ -130,6 +130,13 @@ func initGitRepo(t *testing.T) string {
 // setupFakeClaude puts the fake_claude.sh on PATH.
 func setupFakeClaude(t *testing.T) {
 	t.Helper()
+	// The fake adapter is a Unix shell script surfaced via a symlink named
+	// "claude"; neither works on Windows (no #! interpreter, symlinks often
+	// disallowed). Skip here so every caller is guarded centrally, rather than
+	// failing in os.Symlink before the caller's own t.Skip can run.
+	if runtime.GOOS == "windows" {
+		t.Skip("fake claude adapter uses a unix shell script + symlink; not supported on Windows")
+	}
 	scriptPath := filepath.Join("..", "adapter", "claude", "testdata", "fake_claude.sh")
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
