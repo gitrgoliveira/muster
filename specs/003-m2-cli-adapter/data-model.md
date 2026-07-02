@@ -115,7 +115,7 @@ type Run struct {
     Mode           core.Mode
     PermissionMode core.PermissionMode
     Worktree       string
-    Session        string         // tmux session name ("" in fallback)
+    Session        string         // canonical session name muster/<bead>/<step>/<loop>; set in BOTH tmux and fallback (required for DeadStatus/Kill; emitted in tmux.session.*)
     State          core.StepStatus // running | done | failed | cancelled
     ExitCode       int
     StartedAt, EndedAt time.Time
