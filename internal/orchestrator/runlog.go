@@ -31,10 +31,13 @@ func (s *runlogStreamer) stream(r io.Reader) {
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			data := make([]byte, n)
-			copy(data, buf[:n])
 			seq := s.seq.Add(1)
 			if s.publish != nil {
+				// EncodeToString copies buf[:n] into a fresh string synchronously
+				// (before the next Read can overwrite buf), and Frame.Data is that
+				// string — so no separate copy of the chunk is needed. Encoding
+				// straight from buf[:n] avoids a per-read allocation+copy on this
+				// hot path (high-volume pane output).
 				s.publish(ws.Frame{
 					Type:    ws.EventRunlogLine,
 					BeadID:  s.beadID,
@@ -42,7 +45,7 @@ func (s *runlogStreamer) stream(r io.Reader) {
 					Seq:     &seq,
 					// base64: pane output is raw terminal bytes and may not be
 					// valid UTF-8; a Go string in JSON would corrupt those bytes.
-					Data: base64.StdEncoding.EncodeToString(data),
+					Data: base64.StdEncoding.EncodeToString(buf[:n]),
 				})
 			}
 		}
