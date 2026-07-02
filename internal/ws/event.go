@@ -50,7 +50,7 @@ type Frame struct {
 	// M2: runlog.line — agent pane output (raw bytes; ANSI preserved)
 	BeadID  string  `json:"beadID,omitempty"`
 	StepIdx *int    `json:"stepIdx,omitempty"` // *int so the valid M2 value 0 isn't dropped by omitempty (M1 frames leave it nil)
-	Seq     *uint64 `json:"seq,omitempty"`     // *uint64 (like StepIdx) so a monotonic seq of 0 is emitted, not dropped; nil on non-runlog frames
+	Seq     *uint64 `json:"seq,omitempty"`     // *uint64 (like StepIdx): set on every runlog.line frame, nil on others. seq is 1-based (runlogStreamer uses Add(1)); the pointer makes "present vs absent" explicit rather than depending on the value never being 0, and keeps the shared Frame struct consistent with the *int fields.
 	Data    string  `json:"data,omitempty"`    // base64-encoded raw pane bytes (terminal output is not guaranteed UTF-8)
 
 	// M2: tmux.session.opened / tmux.session.closed
