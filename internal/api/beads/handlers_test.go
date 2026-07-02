@@ -546,12 +546,15 @@ func TestDispatch_400_InvalidPermissionMode(t *testing.T) {
 
 // ── Attach / Send ───────────────────────────────────────────────────────
 
-func TestAttach_200_NotRunning(t *testing.T) {
+func TestAttach_200_NoAttacher(t *testing.T) {
 	orch := &fakeOrchestratorDispatcher{}
 	srv := newTestServerWithOrchestrator(t, orch)
 
 	resp := doGet(t, srv, "/beads/mp-aaa/steps/0/attach")
-	// Bead exists; no run active → available:false (200)
+	// Bead exists, but this server wires an OrchestratorDispatcher and NO
+	// SessionAttacher (WithOrchestrator only), so GetAttach degrades to
+	// available:false ("attach not available") — a non-error 200. This asserts
+	// the graceful-degradation path, not a "run not active" case.
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
