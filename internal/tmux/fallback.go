@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,8 +44,12 @@ func (f *FallbackManager) Spawn(name, cwd string, env, argv []string) (*Session,
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = cwd
 	if len(env) > 0 {
-		// Append to existing env.
-		cmd.Env = append(cmd.Environ(), env...)
+		// Merge with the provided env winning deterministically. Simply
+		// appending would leave duplicate KEY= entries whose lookup precedence
+		// is platform/libc-dependent, so an override might not take effect. Drop
+		// any inherited entry a provided one overrides, then append — matching
+		// RealManager's env(1)-wrapper semantics (provided vars win).
+		cmd.Env = mergeEnv(cmd.Environ(), env)
 	}
 
 	// Set up stdout/stderr pipe for streaming. Both streams share one
@@ -175,4 +180,30 @@ func (f *FallbackManager) Kill(name string) error {
 // List returns an empty slice — fallback has no persistent sessions to discover.
 func (f *FallbackManager) List() ([]Session, error) {
 	return nil, nil
+}
+
+// mergeEnv returns base with override applied so override wins deterministically
+// regardless of platform duplicate-precedence rules: any base entry whose key an
+// override entry also sets is dropped, then override is appended. Keys are the
+// text before the first '='.
+func mergeEnv(base, override []string) []string {
+	overridden := make(map[string]struct{}, len(override))
+	for _, e := range override {
+		overridden[envKey(e)] = struct{}{}
+	}
+	merged := make([]string, 0, len(base)+len(override))
+	for _, e := range base {
+		if _, ok := overridden[envKey(e)]; ok {
+			continue // an override provides this key; drop the inherited one
+		}
+		merged = append(merged, e)
+	}
+	return append(merged, override...)
+}
+
+// envKey returns the variable name of a "KEY=VALUE" entry (text before the
+// first '='); an entry with no '=' is treated as its own key.
+func envKey(entry string) string {
+	key, _, _ := strings.Cut(entry, "=")
+	return key
 }

@@ -1,8 +1,41 @@
 package tmux
 
 import (
+	"strings"
 	"testing"
 )
+
+// TestMergeEnv verifies provided env overrides the inherited env deterministically
+// (the overridden inherited entry is dropped, not left as a duplicate).
+func TestMergeEnv(t *testing.T) {
+	base := []string{"PATH=/bin", "FOO=old", "KEEP=1"}
+	override := []string{"FOO=new", "NEWVAR=x"}
+	got := mergeEnv(base, override)
+
+	// No duplicate keys.
+	seen := map[string]int{}
+	for _, e := range got {
+		seen[envKey(e)]++
+	}
+	for k, n := range seen {
+		if n != 1 {
+			t.Errorf("key %q appears %d times, want 1: %v", k, n, got)
+		}
+	}
+	// FOO must be the override value, and inherited keys preserved.
+	byKey := map[string]string{}
+	for _, e := range got {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			byKey[k] = v
+		}
+	}
+	if byKey["FOO"] != "new" {
+		t.Errorf("FOO want new got %q", byKey["FOO"])
+	}
+	if byKey["PATH"] != "/bin" || byKey["KEEP"] != "1" || byKey["NEWVAR"] != "x" {
+		t.Errorf("merged env wrong: %v", got)
+	}
+}
 
 // TestNewRealManager_WithExplicitBin verifies explicit bin path is used.
 func TestNewRealManager_WithExplicitBin(t *testing.T) {
