@@ -112,7 +112,12 @@ func (o *Orchestrator) SendKeys(beadID string, stepIdx int, keys string) error {
 	if gerr != nil {
 		switch gerr.kind {
 		case guardStepIdx:
-			return &services.ServiceError{Code: services.CodeNotFound, Message: fmt.Sprintf("step %d not found", stepIdx)}
+			// An unsupported step index is a bad argument, not a missing bead —
+			// CodeNotFound maps to BEAD_NOT_FOUND, which would mislabel this. Use
+			// INVALID_REQUEST (400). (Unreachable via HTTP: the send route
+			// requires the literal "0", so idx≠0 404s at routing; this is the
+			// defense-in-depth path for direct/internal callers.)
+			return &services.ServiceError{Code: services.CodeInvalidRequest, Message: fmt.Sprintf("step %d not supported (M2 supports only step 0)", stepIdx)}
 		case guardFallback:
 			// tmux isn't available (fallback transport) — send genuinely can't
 			// work and won't on retry, so this is ATTACH_UNAVAILABLE (501), not

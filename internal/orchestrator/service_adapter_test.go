@@ -134,6 +134,27 @@ func TestServiceAttacher_SendKeys(t *testing.T) {
 	}
 }
 
+// TestServiceAttacher_SendKeys_BadStepIdx verifies an unsupported step index
+// yields INVALID_REQUEST (400), not the misleading BEAD_NOT_FOUND (which would
+// claim the bead is missing when it's the step index that's unsupported).
+func TestServiceAttacher_SendKeys_BadStepIdx(t *testing.T) {
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{},
+		WorktreesDir: t.TempDir(),
+	})
+
+	err := o.AsSessionAttacher().SendKeys("mp-abc", 1, "y\n")
+	se, ok := err.(*services.ServiceError)
+	if !ok {
+		t.Fatalf("want *services.ServiceError, got %T (%v)", err, err)
+	}
+	if se.Code != services.CodeInvalidRequest {
+		t.Errorf("code = %q, want %q", se.Code, services.CodeInvalidRequest)
+	}
+}
+
 func TestPermModeError(t *testing.T) {
 	o := orchestrator.New(orchestrator.Config{
 		Adapters:     adapter.NewRegistry(),
