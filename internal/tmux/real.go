@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/shellquote"
@@ -234,17 +233,21 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("tmux pipe-pane %q: %w", name, err)
 	}
 
-	// Open the read end of the FIFO. A plain blocking open(2) of a FIFO
-	// read-only waits until some process opens the write end — here the
-	// `cat >> fifo` process tmux spawns for pipe-pane. But `pipe-pane` returning
-	// only means tmux ACCEPTED the command; if that cat never successfully
-	// opens the FIFO for write (e.g. it fails to exec), a blocking open would
-	// hang here forever and wedge Dispatch after the session is already
-	// spawned. Open with O_NONBLOCK so the open itself returns immediately
-	// regardless of the writer. Go's runtime poller then parks the streamer
-	// goroutine's Read until the writer connects and produces data (or EOF when
-	// the pane dies) — the wait moves off the Dispatch path and can't hang it.
-	f, err := os.OpenFile(fifoPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	// Open the FIFO O_RDWR. Two hazards to avoid, both solved by holding a write
+	// end ourselves:
+	//   1. A blocking O_RDONLY open would wait for tmux's `cat >> fifo` writer;
+	//      if that cat never opens the write end (e.g. it fails to exec), the
+	//      open hangs forever and wedges Dispatch after the session is spawned.
+	//   2. A non-blocking O_RDONLY open returns immediately, but then the first
+	//      Read can hit EOF before cat connects (a read end with no writer sees
+	//      end-of-file). runlogStreamer.stream exits on ANY error including EOF,
+	//      so that timing race would permanently kill streaming for a live run.
+	// O_RDWR sidesteps both: the open never blocks (FIFO O_RDWR doesn't wait for
+	// a peer), and because THIS fd is also a writer, reads never see the "no
+	// writer" EOF — they park (via the runtime poller) until cat writes. The
+	// stream instead ends when finishRun closes this reader on pane death (which
+	// interrupts the blocked Read), not via natural EOF. We never Write to it.
+	f, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		_ = os.RemoveAll(fifoDir)
 		return nil, fmt.Errorf("tmux Pipe: open fifo: %w", err)

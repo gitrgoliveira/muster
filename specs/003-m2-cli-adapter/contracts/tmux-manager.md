@@ -16,9 +16,9 @@ muster spawns on the **default tmux socket** (no `-L`), so the user's plain `tmu
 |---|---|
 | `Detect` | `tmux -V` → parse, require ≥ 3.2 |
 | `Spawn(name,cwd,env,argv)` | **race-free 3-step**: `tmux new-session -d -s <name> -x 220 -y 50` (holder shell, no command) → `set-option -t <name> remain-on-exit on` → `respawn-pane -k -t <name> <wrapper>`. Setting remain-on-exit *before* the command runs ensures a fast-failing agent's pane (and its `pane_dead_status`) survives. |
-| `Pipe(name)` | `tmux pipe-pane -t <name> -o 'cat >> <fifo>'` → reader side (raw bytes incl. ANSI) |
+| `Pipe(name)` | `tmux pipe-pane -t <name> 'cat >> <fifo>'` → reader side (raw bytes incl. ANSI). **No `-o`**: `-o` means "only if no pipe is already open", which on restart-recovery would leave a stale pipe from a previous muster process attached and starve the new FIFO of a writer, so we always (re)open the pipe. |
 | `Capture(name,esc)` | `tmux capture-pane -p [-e] -S - -t <name>` (full scrollback; `-e` keeps escapes) |
-| `Send(name,keys)` | `tmux send-keys -t <name> <keys>` |
+| `Send(name,keys)` | `tmux send-keys -t <name> -l <keys>` — `-l` sends the keys as **literal** text so payloads that happen to match tmux key names (e.g. `Enter`, `C-c`) are delivered verbatim rather than interpreted. |
 | `Attach(name)` | returns the string `tmux attach -t <name>` (the client runs it) |
 | `DeadStatus(name)` | `tmux display-message -p -t <name> '#{pane_dead} #{pane_dead_status}'` |
 | `Kill(name)` | `tmux kill-session -t <name>` |
