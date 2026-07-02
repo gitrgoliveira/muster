@@ -438,6 +438,50 @@ func TestRealTmuxManager_List_SpacedName(t *testing.T) {
 	}
 }
 
+// TestRealTmuxManager_List_ReturnsMalformedMuster verifies List returns a
+// muster/-prefixed session whose name can't be parsed (rather than silently
+// skipping it), so restart recovery can validate it via core.ValidBeadID and
+// kill the stray. Non-muster names are still filtered out.
+func TestRealTmuxManager_List_ReturnsMalformedMuster(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("shell-script fake tmux requires unix")
+	}
+	setupFakeTmux(t)
+
+	outputFile := filepath.Join(t.TempDir(), "list_output")
+	// "muster/badname" has too few segments to parse; "other junk" is non-muster.
+	content := "muster/badname %3\nmuster/mp-ok/0/0 %1\nother junk %5\n"
+	if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_TMUX_OUTPUT_FILE", outputFile)
+
+	sessions, err := NewRealManager("").List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	byName := make(map[string]Session)
+	for _, s := range sessions {
+		byName[s.Name] = s
+	}
+	// The malformed muster session must be returned (with an empty BeadID so
+	// recovery rejects+kills it), not skipped.
+	if s, ok := byName["muster/badname"]; !ok {
+		t.Errorf("malformed muster session was skipped; got %v", sessions)
+	} else if s.BeadID != "" {
+		t.Errorf("malformed muster session BeadID want empty, got %q", s.BeadID)
+	}
+	// The normal one is still parsed.
+	if _, ok := byName["muster/mp-ok/0/0"]; !ok {
+		t.Error("missing muster/mp-ok/0/0")
+	}
+	// The non-muster line is still filtered out.
+	if _, ok := byName["other junk"]; ok {
+		t.Error("non-muster 'other junk' should be filtered out")
+	}
+}
+
 func TestRealTmuxManager_Attach_ReturnsCommand(t *testing.T) {
 	m := NewRealManager("")
 	cmd, err := m.Attach("muster/mp-abc/0/0")

@@ -33,7 +33,12 @@ func (o *Orchestrator) RecoverSessions(ctx context.Context) {
 	// calls). In practice List() is a single fast `tmux list-sessions`.
 	sessions, err := o.transport.List()
 	if err != nil {
-		// Non-fatal: if tmux isn't running or has no sessions, proceed normally.
+		// RealManager.List already maps the common "no server running" case to an
+		// empty list (nil, nil), so an error reaching here is a real failure
+		// (tmux missing, list-sessions broke). Recovery is best-effort, so we
+		// still proceed without it — but log, so an operator can tell "nothing to
+		// recover" apart from "recovery couldn't run".
+		slog.Warn("recovery: transport.List failed; skipping session recovery", "err", err)
 		return
 	}
 

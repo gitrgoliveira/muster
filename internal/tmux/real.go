@@ -227,10 +227,10 @@ func (m *RealManager) Pipe(name string) (io.ReadCloser, error) {
 	// (e.g. bracketed-paste markers) — muster does not strip any of it; the
 	// client renders via a terminal emulator (D1).
 	pipeCmd := "cat >> " + shellquote.Single(fifoPath)
-	_, err = m.run("pipe-pane", "-t", name, pipeCmd)
+	out, err := m.run("pipe-pane", "-t", name, pipeCmd)
 	if err != nil {
 		_ = os.RemoveAll(fifoDir)
-		return nil, fmt.Errorf("tmux pipe-pane %q: %w", name, err)
+		return nil, fmt.Errorf("tmux pipe-pane %q: %w\n%s", name, err, out)
 	}
 
 	// Open the FIFO O_RDWR. Two hazards to avoid, both solved by holding a write
@@ -405,7 +405,13 @@ func (m *RealManager) List() ([]Session, error) {
 		}
 		beadID, stepIdx, loop, parseErr := ParseSessionName(name)
 		if parseErr != nil {
-			continue // skip malformed names
+			// A muster/-prefixed name we can't parse is still ours to reap.
+			// Return it with an empty BeadID (rather than skipping) so
+			// recoverSession's core.ValidBeadID guard rejects it and kills the
+			// stray, instead of leaving a poisoned/orphaned muster/* session
+			// running past a restart.
+			sessions = append(sessions, Session{Name: name})
+			continue
 		}
 		sessions = append(sessions, Session{
 			Name:    name,
