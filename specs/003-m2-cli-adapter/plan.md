@@ -12,16 +12,17 @@ M2 makes a dispatched bead *execute*. `POST /api/v1/beads/{id}/dispatch` (a no-o
 
 **Language/Version**: Go 1.26 (unchanged from M0/M1)
 
-**Primary Dependencies** (M1 deps retained; M2 adds **no new Go modules** — tmux/git/claude are external runtime binaries shelled out to):
+**Primary Dependencies** (M1 deps retained; M2 adds **one** new Go module — `golang.org/x/sys`, promoted to a direct dependency for `unix.Mkfifo` (runlog FIFO creation). tmux/git/claude are external runtime binaries shelled out to):
 
 | Dependency | Kind | Purpose |
 |---|---|---|
 | `tmux` ≥ 3.2 (host: 3.6b) | external binary | canonical CLI-agent transport (spawn/pipe/attach/send/capture/kill/list) |
 | `git` ≥ 2.40 (host: 2.54.0) | external binary | per-bead worktrees (`git worktree add`) |
 | `claude` (host: 2.1.145) | external binary | the one M2 adapter |
+| `golang.org/x/sys` | Go module (direct) | `unix.Mkfifo` for the runlog FIFO (internal/tmux/fifo_unix.go) |
 | `os/exec`, `bufio`, `context` | stdlib | process mgmt, stream scanning |
 
-> No new `go.mod` entries. Like M1's `bd` bridge, all three tools are shelled out to (tmux and `claude` are also probed at startup; git is used at run time but not probed). This keeps the single-binary constitution gate intact.
+> The only new `go.mod` entry is `golang.org/x/sys` (promoted from indirect to direct, for FIFO creation) — it compiles into the single binary, so the single-binary constitution gate stays intact. tmux/git/claude remain external binaries shelled out to (tmux and `claude` are also probed at startup; git is used at run time but not probed), exactly like M1's `bd` bridge.
 
 **Storage**: none new. Runlog is **transient** (streamed; `capture-pane` for catch-up). Worktrees live on disk under `--worktrees-dir`, managed by git, not a muster store. Beads DB remains the source of truth for issue state (unchanged from M1).
 
@@ -49,7 +50,7 @@ Checked against the ratified `.specify/memory/constitution.md` (v1.0.0, 2026-05-
 
 | Principle | Status | Notes |
 |---|---|---|
-| I. Single binary, self-contained | PASS | `cmd/muster/` still one binary; tmux/git/claude are external runtime deps, shelled out not linked (tmux/claude probed at startup; git used at run time); **no new go.mod entries** |
+| I. Single binary, self-contained | PASS | `cmd/muster/` still one binary; tmux/git/claude are external runtime deps, shelled out not linked (tmux/claude probed at startup; git used at run time); the one new `go.mod` entry (`golang.org/x/sys`, for `unix.Mkfifo`) compiles into that single binary, so the gate holds |
 | II. Beads is the source of truth | PASS | Runlog transient; worktrees git-managed; issue state still via the `bd` write path. muster owns no new durable state |
 | III. Layered architecture, thin handlers | PASS | Orchestration is its own vertical (`adapter`/`tmux`/`worktree`/`orchestrator`); handlers parse→delegate→render |
 | IV. Test-first, per-layer coverage | PASS | TDD ordering + per-package coverage gates below; `-race` clean; fake tmux/claude + real-tmux integration test |
