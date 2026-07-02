@@ -257,6 +257,30 @@ func TestDetect_VersionParsedFromOutput(t *testing.T) {
 	}
 }
 
+// TestInvoke_PromptFileStartsWithDotDot verifies a prompt filename that merely
+// begins with ".." (but is a single segment directly under the worktree, not a
+// ".." traversal) is accepted — the validation rejects the exact ".." parent,
+// not any name with a ".." prefix.
+func TestInvoke_PromptFileStartsWithDotDot(t *testing.T) {
+	fakeBinDir(t)
+	a := claude.New(claude.Options{})
+	worktree := t.TempDir()
+	promptFile := filepath.Join(worktree, "..prompt")
+	if err := os.WriteFile(promptFile, []byte("test prompt"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := a.Invoke(context.Background(), adapter.InvokeReq{
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+		Worktree:       worktree,
+		PromptFile:     promptFile,
+	})
+	if err != nil {
+		t.Errorf("Invoke rejected a safe prompt filename beginning with '..': %v", err)
+	}
+}
+
 func TestInvoke_BinPathWithSpace(t *testing.T) {
 	// Verify that a claude binary path containing a space is shell-quoted
 	// correctly so the sh -c one-liner does not break.

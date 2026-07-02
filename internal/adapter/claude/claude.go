@@ -177,8 +177,13 @@ func (a *Adapter) Invoke(_ context.Context, req adapter.InvokeReq) (adapter.Spec
 	// directly at <worktree>/.muster-prompt-0.txt. Validate that contract here
 	// so a future caller passing a subdir-or-absolute PromptFile fails fast
 	// with a clear adapter error instead of a confusing shell-redirect error.
+	// Must be a single filename directly under Worktree: reject "." (PromptFile
+	// == Worktree), ".." (the parent dir), and anything containing a separator
+	// (a subdir or a "../x" traversal — which always carries a separator). Use
+	// an exact ".." check, NOT HasPrefix("..") — the latter would wrongly reject
+	// safe filenames that merely begin with ".." (e.g. "..prompt").
 	promptRel, err := filepath.Rel(req.Worktree, req.PromptFile)
-	if err != nil || promptRel == "." || strings.HasPrefix(promptRel, "..") || strings.ContainsRune(promptRel, filepath.Separator) {
+	if err != nil || promptRel == "." || promptRel == ".." || strings.ContainsRune(promptRel, filepath.Separator) {
 		return adapter.Spec{}, fmt.Errorf("claude adapter: PromptFile %q must be directly under Worktree %q", req.PromptFile, req.Worktree)
 	}
 

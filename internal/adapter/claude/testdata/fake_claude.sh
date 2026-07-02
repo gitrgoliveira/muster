@@ -9,9 +9,13 @@
 #   FAKE_CLAUDE_STDOUT          - if set, printed verbatim instead of defaults
 #   FAKE_CLAUDE_RECORD_FILE     - if set, append argv to this file
 
-# Record invocation.
+# Record invocation, tab-delimited so argv boundaries survive (matching
+# fake_tmux.sh). "$*" space-joins, which would collapse boundaries and mangle an
+# arg that contains spaces (e.g. the `sh -c '...'` wrapper), hiding
+# quoting/escaping regressions.
+tab=$(printf '\t')
 if [ -n "$FAKE_CLAUDE_RECORD_FILE" ]; then
-    echo "$*" >> "$FAKE_CLAUDE_RECORD_FILE"
+    ( IFS="$tab"; printf '%s\n' "$*" ) >> "$FAKE_CLAUDE_RECORD_FILE"
 fi
 
 # Custom output override.
