@@ -47,7 +47,15 @@ func (f *FallbackManager) Spawn(name, cwd string, env, argv []string) (*Session,
 		cmd.Env = append(cmd.Environ(), env...)
 	}
 
-	// Set up stdout/stderr pipe for streaming.
+	// Set up stdout/stderr pipe for streaming. Both streams share one
+	// io.PipeWriter deliberately: os/exec detects that Stdout and Stderr are the
+	// same interface value (interfaceEqual) and routes the child's stdout+stderr
+	// through a single OS pipe with a single copy goroutine, so pw is never
+	// written concurrently — and the combined, interleaved stream is exactly
+	// what we want for a terminal-style runlog. NOTE: keep this a single shared
+	// value; wrapping each side in its own writer would defeat that optimization
+	// and spawn two copy goroutines. (io.PipeWriter is itself safe for parallel
+	// Write per io.Pipe's contract, so even that would not race — just churn.)
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw

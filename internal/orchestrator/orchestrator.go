@@ -66,7 +66,7 @@ type Run struct {
 	Mode           core.Mode
 	PermissionMode core.PermissionMode
 	Worktree       string          // absolute path to the worktree
-	Session        string          // tmux session name (empty in fallback)
+	Session        string          // canonical session name muster/<bead>/<step>/<loop>; set in BOTH tmux and fallback (fallback keys its in-memory sessions by it)
 	Pane           string          // tmux pane id, e.g. "%3" (empty in fallback; informational only)
 	State          core.StepStatus // core.StepStatus: pending | active | done | failed (active = running; cancel/timeout folds into failed)
 	ExitCode       int
