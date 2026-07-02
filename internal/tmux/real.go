@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,14 @@ import (
 
 	"github.com/gitrgoliveira/muster/internal/shellquote"
 )
+
+// tmuxCmdTimeout bounds every tmux subprocess. tmux commands are near-instant,
+// but a wedged tmux server (or a hung child) must not block a caller forever:
+// Dispatch holds a StepActive run reservation across Spawn/Pipe, so an
+// unbounded hang would leave the bead permanently "active". Bounding each
+// command means a stuck one fails, and Dispatch's deferred cleanup releases the
+// reservation. Generous vs the sub-second reality so it never trips a healthy op.
+const tmuxCmdTimeout = 10 * time.Second
 
 // RealManager implements Manager by shelling out to the `tmux` binary.
 // It uses the default tmux socket so the user can attach with a plain
@@ -42,7 +51,9 @@ func (m *RealManager) run(args ...string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tmux not found: %w", err)
 	}
-	cmd := exec.Command(bin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -132,9 +143,12 @@ func (m *RealManager) Spawn(name, cwd string, env, argv []string) (*Session, err
 		spawnArgs = append(spawnArgs, "-c", cwd)
 	}
 
-	cmd := exec.Command(bin, spawnArgs...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("tmux new-session %q: %w\n%s", name, err, out)
+	nsCtx, nsCancel := context.WithTimeout(context.Background(), tmuxCmdTimeout)
+	cmd := exec.CommandContext(nsCtx, bin, spawnArgs...)
+	out, nsErr := cmd.CombinedOutput()
+	nsCancel()
+	if nsErr != nil {
+		return nil, fmt.Errorf("tmux new-session %q: %w\n%s", name, nsErr, out)
 	}
 
 	// Set remain-on-exit BEFORE the agent command runs (race-free).

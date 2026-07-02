@@ -536,6 +536,10 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	pipeReader, pipeErr := o.transport.Pipe(sess.Name)
 	if pipeErr != nil {
 		// Pipe failure is non-fatal (output won't stream, but the run continues).
+		// Log it: without this, a "no runlog.line events" incident looks like a
+		// stuck orchestrator when it's really just a failed/missing pipe.
+		slog.Warn("dispatch: runlog pipe failed; streaming disabled for this run",
+			"bead", req.BeadID, "session", sess.Name, "err", pipeErr)
 		pipeReader = nil
 	}
 	if pipeReader != nil {
