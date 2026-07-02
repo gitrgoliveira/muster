@@ -77,6 +77,25 @@ func TestDetect_NotLoggedIn(t *testing.T) {
 	}
 }
 
+// TestDetect_AuthUnparseable verifies that unparseable `auth status` output is
+// surfaced as an error, NOT reported as LoggedIn:false — otherwise Dispatch
+// would return ADAPTER_NOT_LOGGED_IN (409) and tell the operator to run
+// `claude auth login` when the real problem is a broken CLI / changed output.
+func TestDetect_AuthUnparseable(t *testing.T) {
+	fakeBinDir(t)
+	// Non-boolean makes the fake emit invalid JSON: {"loggedIn":garbage,...}
+	t.Setenv("FAKE_CLAUDE_AUTH_LOGGED_IN", "garbage")
+	a := claude.New(claude.Options{})
+	result, err := a.Detect(context.Background())
+	if err == nil {
+		t.Fatalf("Detect: want error for unparseable auth output, got nil (LoggedIn=%v)", result.LoggedIn)
+	}
+	// Still reports the binary as installed (with version) for the status probe.
+	if !result.Installed {
+		t.Error("Installed want true even on auth-parse error")
+	}
+}
+
 func TestDetect_NotInstalled(t *testing.T) {
 	// Use an empty PATH so claude is not found.
 	t.Setenv("PATH", t.TempDir())

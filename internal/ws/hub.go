@@ -53,24 +53,26 @@ func (h *Hub) Run() {
 			}
 
 		case f := <-h.broadcast:
-			isRunlog := f.Type == EventRunlogLine
 			for c := range h.clients {
 				select {
 				case c.send <- f:
+					// Delivered — the client is keeping up. Clear any drop streak
+					// so a brief earlier stall (including a burst of high-volume
+					// runlog) doesn't accumulate toward eviction across successful
+					// sends. Only CONSECUTIVE drops (below) count.
+					c.drops = 0
 				default:
-					// This client's send buffer is full; the frame is dropped for
-					// it. runlog.line is high-volume, best-effort output (a client
-					// recovers scrollback via capture-pane), so dropping it must
-					// NOT count toward slow-client eviction — otherwise runlog
-					// volume alone would disconnect a briefly-slow client.
-					if isRunlog {
-						continue
-					}
-					// Only lifecycle/state drops count toward eviction, and only
-					// when sustained WITHIN dropWindow: if the last counted drop
-					// was long enough ago, the client has since kept up, so reset
-					// the counter rather than evicting on drops accumulated across
-					// unrelated slow moments.
+					// Buffer full — frame dropped for this client. This counts for
+					// ALL frame types, including runlog.line: a client that stops
+					// reading during a long, runlog-only run must still eventually
+					// be evicted, or its socket + writePump goroutine + full send
+					// buffer leak indefinitely. But because the counter resets on
+					// every successful send above, a client that's merely slow-
+					// but-reading (draining between bursts) is NOT evicted by
+					// runlog volume alone — only a genuinely stuck one, whose
+					// buffer stays full across maxDrops consecutive sends within
+					// dropWindow, is. The window guards against evicting on drops
+					// spread across unrelated slow moments.
 					now := time.Now()
 					if now.Sub(c.lastDrop) > dropWindow {
 						c.drops = 0

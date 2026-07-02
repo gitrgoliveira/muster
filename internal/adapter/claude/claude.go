@@ -87,34 +87,36 @@ func (a *Adapter) Detect(ctx context.Context) (adapter.DetectResult, error) {
 
 	// Get auth status.
 	authCmd := exec.CommandContext(ctx, bin, "auth", "status", "--json")
-	authOut, err := authCmd.Output()
-	if err != nil {
-		if ctx.Err() != nil {
-			return adapter.DetectResult{}, ctx.Err()
-		}
-		// Binary exists but auth check failed — installed but status unknown; treat as not logged in.
-		return adapter.DetectResult{
-			Installed: true,
-			Version:   version,
-			LoggedIn:  false,
-		}, nil
+	authOut, authErr := authCmd.Output()
+	if ctx.Err() != nil {
+		return adapter.DetectResult{}, ctx.Err()
 	}
 
+	// Parse the JSON regardless of exit code: `claude auth status` may exit
+	// non-zero when not logged in while still printing a valid
+	// {"loggedIn":false}. A successful parse is authoritative either way.
 	var status authStatus
-	if err := json.Unmarshal(authOut, &status); err != nil {
-		// JSON parse failed; treat as not logged in.
+	if jsonErr := json.Unmarshal(authOut, &status); jsonErr == nil {
 		return adapter.DetectResult{
 			Installed: true,
 			Version:   version,
-			LoggedIn:  false,
+			LoggedIn:  status.LoggedIn,
 		}, nil
 	}
 
-	return adapter.DetectResult{
-		Installed: true,
-		Version:   version,
-		LoggedIn:  status.LoggedIn,
-	}, nil
+	// The output isn't parseable, so this is NOT a reliable "not logged in"
+	// signal — reporting LoggedIn:false here would make Dispatch return
+	// ADAPTER_NOT_LOGGED_IN (409) and tell the operator to run `claude auth
+	// login` when the real problem is a broken CLI or a changed output shape.
+	// Surface a real error instead (Dispatch maps it to a 500 with server-side
+	// detail). Installed/Version stay set so the startup status probe still
+	// reports the binary.
+	if authErr != nil {
+		return adapter.DetectResult{Installed: true, Version: version},
+			fmt.Errorf("claude auth status failed: %w", authErr)
+	}
+	return adapter.DetectResult{Installed: true, Version: version},
+		fmt.Errorf("claude auth status: unexpected non-JSON output")
 }
 
 // Modes implements adapter.Adapter.
