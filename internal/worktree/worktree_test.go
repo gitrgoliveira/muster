@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -16,7 +17,26 @@ import (
 // created earlier under a looser umask. os.MkdirAll alone would silently
 // reuse such a directory as-is, since it only applies the mode to
 // directories it actually creates.
+// TestEnsure_RejectsUnsafeBeadID verifies Ensure refuses bead IDs that would
+// escape worktreesDir when used as a path segment (path traversal). The guard
+// is defense-in-depth: the HTTP layer already allow-lists IDs, but Ensure must
+// not trust its caller.
+func TestEnsure_RejectsUnsafeBeadID(t *testing.T) {
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+
+	for _, bad := range []string{"../x", "../../etc", "a/b", "/abs", "", "."} {
+		_, err := Ensure(context.Background(), worktreesDir, repoPath, bad)
+		if err == nil {
+			t.Errorf("Ensure(beadID=%q) = nil error, want rejection", bad)
+		}
+	}
+}
+
 func TestEnsure_TightensPreExistingWorktreesDirPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits (0o700) are not meaningful on Windows")
+	}
 	repoPath := initGitRepo(t)
 	parent := t.TempDir()
 	worktreesDir := filepath.Join(parent, "worktrees")

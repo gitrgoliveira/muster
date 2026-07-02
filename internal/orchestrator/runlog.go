@@ -39,7 +39,7 @@ func (s *runlogStreamer) stream(r io.Reader) {
 					Type:    ws.EventRunlogLine,
 					BeadID:  s.beadID,
 					StepIdx: intPtr(s.stepIdx),
-					Seq:     seq,
+					Seq:     &seq,
 					// base64: pane output is raw terminal bytes and may not be
 					// valid UTF-8; a Go string in JSON would corrupt those bytes.
 					Data: base64.StdEncoding.EncodeToString(data),

@@ -58,7 +58,7 @@ func mapDispatchError(err error) error {
 		return &services.ServiceError{Code: services.CodeAdapterNotInstalled, Message: err.Error()}
 	case errors.Is(err, ErrAdapterNotLoggedIn):
 		return &services.ServiceError{Code: services.CodeAdapterNotLoggedIn, Message: err.Error()}
-	case errors.Is(err, ErrNoPermissionMode), errors.Is(err, ErrUnsupportedMode), errors.As(err, &pme):
+	case errors.Is(err, ErrNoPermissionMode), errors.Is(err, ErrUnsupportedMode), errors.Is(err, ErrInvalidBeadID), errors.As(err, &pme):
 		return &services.ServiceError{Code: services.CodeInvalidRequest, Message: err.Error()}
 	default:
 		return err // services maps anything unrecognized → Internal

@@ -48,10 +48,10 @@ type Frame struct {
 	At string `json:"at,omitempty"`
 
 	// M2: runlog.line — agent pane output (raw bytes; ANSI preserved)
-	BeadID  string `json:"beadID,omitempty"`
-	StepIdx *int   `json:"stepIdx,omitempty"` // *int so the valid M2 value 0 isn't dropped by omitempty (M1 frames leave it nil)
-	Seq     uint64 `json:"seq,omitempty"`
-	Data    string `json:"data,omitempty"` // base64-encoded raw pane bytes (terminal output is not guaranteed UTF-8)
+	BeadID  string  `json:"beadID,omitempty"`
+	StepIdx *int    `json:"stepIdx,omitempty"` // *int so the valid M2 value 0 isn't dropped by omitempty (M1 frames leave it nil)
+	Seq     *uint64 `json:"seq,omitempty"`     // *uint64 (like StepIdx) so a monotonic seq of 0 is emitted, not dropped; nil on non-runlog frames
+	Data    string  `json:"data,omitempty"`    // base64-encoded raw pane bytes (terminal output is not guaranteed UTF-8)
 
 	// M2: tmux.session.opened / tmux.session.closed
 	Session  string `json:"session,omitempty"`

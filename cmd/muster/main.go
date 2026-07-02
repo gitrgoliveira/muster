@@ -211,9 +211,10 @@ func main() {
 			slog.Warn("adapter Detect failed during startup status probe", "adapter", a.ID(), "err", derr)
 		}
 		adapterInfos = append(adapterInfos, health.AdapterInfo{
-			ID:       string(a.ID()),
-			Version:  result.Version,
-			LoggedIn: result.LoggedIn,
+			ID:        string(a.ID()),
+			Installed: result.Installed,
+			Version:   result.Version,
+			LoggedIn:  result.LoggedIn,
 		})
 	}
 

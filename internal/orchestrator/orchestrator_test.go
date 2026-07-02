@@ -149,6 +149,30 @@ func newOrchestratorForTest(t *testing.T, repoPath string) (*orchestrator.Orches
 	return o, transport
 }
 
+// TestDispatch_RejectsInvalidBeadID verifies Dispatch validates req.BeadID
+// (defense in depth) before it becomes a repo-map key, tmux session name, and
+// worktree path/branch. An unsafe value like "../x" must be rejected with
+// ErrInvalidBeadID and must not register a run or spawn anything.
+func TestDispatch_RejectsInvalidBeadID(t *testing.T) {
+	repoPath := initGitRepo(t)
+	o, transport := newOrchestratorForTest(t, repoPath)
+
+	for _, bad := range []string{"../x", "MP-abc", "notanid", "mp-", "a/b"} {
+		_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+			BeadID:         bad,
+			Agent:          core.AgentClaude,
+			Mode:           core.ModeAgent,
+			PermissionMode: core.PermAcceptEdits,
+		})
+		if !errors.Is(err, orchestrator.ErrInvalidBeadID) {
+			t.Errorf("Dispatch(beadID=%q) err = %v, want ErrInvalidBeadID", bad, err)
+		}
+	}
+	if transport.spawnedSession != nil {
+		t.Error("no session should be spawned for invalid bead IDs")
+	}
+}
+
 func TestDispatch_HappyPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires unix shell")

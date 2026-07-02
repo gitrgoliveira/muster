@@ -43,6 +43,19 @@ func worktreePath(worktreesDir, beadID string) string {
 // unbounded context would pin the reservation indefinitely, making the bead
 // undispatchable until the server restarts.
 func Ensure(ctx context.Context, worktreesDir, repoPath, beadID string) (Worktree, error) {
+	// Defense in depth: beadID becomes both a filesystem path segment
+	// (filepath.Join(worktreesDir, beadID)) and a git branch name
+	// (muster/<beadID>). The HTTP handler already allow-lists bead IDs via
+	// core.ValidBeadID, but Ensure is a public function and must not trust its
+	// caller: a value like "../x" or an absolute path would escape worktreesDir
+	// and let the agent operate on an unintended directory. Require a single
+	// safe path segment — filepath.IsLocal rejects "..", absolute paths, and
+	// empty/reserved names, and Base==beadID rejects any embedded separator
+	// (e.g. "a/b") so the join stays a direct child of worktreesDir.
+	if !filepath.IsLocal(beadID) || beadID != filepath.Base(beadID) {
+		return Worktree{}, fmt.Errorf("worktree: refusing unsafe beadID %q (must be a single local path segment)", beadID)
+	}
+
 	// Validate that repoPath is a git repo.
 	if err := validateGitRepo(ctx, repoPath); err != nil {
 		return Worktree{}, err

@@ -6,10 +6,13 @@ type HealthzResponse struct {
 }
 
 // AdapterInfo describes a registered agent adapter's availability state.
+// Installed distinguishes "binary not on PATH" from "installed but not logged
+// in" — without it, both collapse to loggedIn=false and a version-less entry.
 type AdapterInfo struct {
-	ID       string `json:"id"`
-	Version  string `json:"version,omitempty"`
-	LoggedIn bool   `json:"loggedIn"`
+	ID        string `json:"id"`
+	Installed bool   `json:"installed"`
+	Version   string `json:"version,omitempty"`
+	LoggedIn  bool   `json:"loggedIn"`
 }
 
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.

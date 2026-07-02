@@ -22,6 +22,11 @@ import (
 // the given bead (409 Conflict in the HTTP layer).
 var ErrRunAlreadyActive = errors.New("run already active for bead")
 
+// ErrInvalidBeadID is returned when req.BeadID doesn't match the canonical
+// bead-ID format. beadID becomes a filesystem path segment and a git branch
+// name downstream, so an unvalidated value could escape the worktrees dir.
+var ErrInvalidBeadID = errors.New("invalid bead ID")
+
 // ErrUnmappedPrefix is returned when the bead's ID prefix has no repo mapping.
 var ErrUnmappedPrefix = errors.New("bead prefix has no repo mapping")
 
@@ -311,6 +316,15 @@ var promptingModes = map[core.PermissionMode]bool{
 //
 // Returns a stub *core.Bead with updated column (the caller publishes bead.updated).
 func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core.Bead, error) {
+	// Defense in depth: validate the bead ID before it flows into a repo-map
+	// lookup, a tmux session name, and (via worktree.Ensure) a filesystem path
+	// + git branch name. The HTTP handler already allow-lists IDs, but Dispatch
+	// is a public entry point and must not trust its caller — the same reason
+	// recovery validates session-derived IDs.
+	if !core.ValidBeadID(req.BeadID) {
+		return nil, ErrInvalidBeadID
+	}
+
 	// Resolve permission mode.
 	pm, err := o.resolvePermMode(req.Mode, req.PermissionMode)
 	if err != nil {

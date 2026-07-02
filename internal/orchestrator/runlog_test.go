@@ -45,10 +45,13 @@ func TestRunlogStreamer_SequentialSeq(t *testing.T) {
 		if f.BeadID != "mp-abc" {
 			t.Errorf("BeadID want mp-abc got %q", f.BeadID)
 		}
-		if f.Seq <= lastSeq {
-			t.Errorf("seq not monotonically increasing: got %d after %d", f.Seq, lastSeq)
+		if f.Seq == nil {
+			t.Fatal("runlog.line frame must carry a seq")
 		}
-		lastSeq = f.Seq
+		if *f.Seq <= lastSeq {
+			t.Errorf("seq not monotonically increasing: got %d after %d", *f.Seq, lastSeq)
+		}
+		lastSeq = *f.Seq
 	}
 }
 

@@ -87,7 +87,7 @@ specs/003-m2-cli-adapter/
 │   └── ws-events.md           # runlog.line, tmux.session.opened/closed frames
 ├── checklists/
 │   └── requirements.md
-└── tasks.md             # Phase 2 (speckit-tasks — NOT created here)
+└── tasks.md             # Phase 2 (speckit-tasks) — present in this feature
 ```
 
 ### Source Code Layout (extends M1)
@@ -170,9 +170,9 @@ internal/
 ### Agent context update
 Update the `<!-- SPECKIT START -->`/`<!-- SPECKIT END -->` block in `CLAUDE.md` to point at this plan.
 
-## Phase 2 — Tasks (`speckit-tasks`, not this phase)
+## Phase 2 — Tasks (`speckit-tasks`)
 
-Expected ordering (authoritative once tasks.md exists): (1) deps/skeletons + new flags parsing; (2) `core` enum `PermissionMode` (TDD); (3) `tmux` manager + fallback (TDD, fake tmux); (4) `worktree` helper (TDD, real git tmpdir); (5) `adapter` interface + `claude` adapter (TDD, fake claude); (6) `orchestrator` dispatch lifecycle + runlog fan-out (TDD); (7) WS frame + status DTO additions; (8) handlers (dispatch real, attach, send) + router; (9) restart-recovery scan; (10) end-to-end integration test (real tmux, fake/real claude); (11) docs/quickstart.
+Ordering (the authoritative task list is [`tasks.md`](tasks.md)): (1) deps/skeletons + new flags parsing; (2) `core` enum `PermissionMode` (TDD); (3) `tmux` manager + fallback (TDD, fake tmux); (4) `worktree` helper (TDD, real git tmpdir); (5) `adapter` interface + `claude` adapter (TDD, fake claude); (6) `orchestrator` dispatch lifecycle + runlog fan-out (TDD); (7) WS frame + status DTO additions; (8) handlers (dispatch real, attach, send) + router; (9) restart-recovery scan; (10) end-to-end integration test (real tmux, fake/real claude); (11) docs/quickstart.
 
 ## Complexity Tracking
 
