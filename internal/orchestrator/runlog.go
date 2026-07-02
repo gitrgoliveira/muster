@@ -33,16 +33,19 @@ func (s *runlogStreamer) stream(r io.Reader) {
 		if n > 0 {
 			seq := s.seq.Add(1)
 			if s.publish != nil {
-				// EncodeToString copies buf[:n] into a fresh string synchronously
-				// (before the next Read can overwrite buf), and Frame.Data is that
-				// string — so no separate copy of the chunk is needed. Encoding
-				// straight from buf[:n] avoids a per-read allocation+copy on this
-				// hot path (high-volume pane output).
+				// Hot path (high-volume pane output) — avoid per-chunk allocations:
+				//   - StepIdx: &s.stepIdx reuses the streamer's immutable field
+				//     address instead of intPtr allocating a fresh int each frame.
+				//     s.stepIdx never changes, so the shared pointer is safe.
+				//   - Seq: Frame.Seq is a value (uint64), so no pointer alloc.
+				//   - Data: EncodeToString copies buf[:n] into a fresh string
+				//     synchronously (before the next Read overwrites buf), so no
+				//     separate copy of the chunk is needed either.
 				s.publish(ws.Frame{
 					Type:    ws.EventRunlogLine,
 					BeadID:  s.beadID,
-					StepIdx: intPtr(s.stepIdx),
-					Seq:     &seq,
+					StepIdx: &s.stepIdx,
+					Seq:     seq,
 					// base64: pane output is raw terminal bytes and may not be
 					// valid UTF-8; a Go string in JSON would corrupt those bytes.
 					Data: base64.StdEncoding.EncodeToString(buf[:n]),

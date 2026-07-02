@@ -53,13 +53,30 @@ func (h *Hub) Run() {
 			}
 
 		case f := <-h.broadcast:
+			isRunlog := f.Type == EventRunlogLine
 			for c := range h.clients {
 				select {
 				case c.send <- f:
 				default:
-					// Channel full — record drop.
+					// This client's send buffer is full; the frame is dropped for
+					// it. runlog.line is high-volume, best-effort output (a client
+					// recovers scrollback via capture-pane), so dropping it must
+					// NOT count toward slow-client eviction — otherwise runlog
+					// volume alone would disconnect a briefly-slow client.
+					if isRunlog {
+						continue
+					}
+					// Only lifecycle/state drops count toward eviction, and only
+					// when sustained WITHIN dropWindow: if the last counted drop
+					// was long enough ago, the client has since kept up, so reset
+					// the counter rather than evicting on drops accumulated across
+					// unrelated slow moments.
+					now := time.Now()
+					if now.Sub(c.lastDrop) > dropWindow {
+						c.drops = 0
+					}
 					c.drops++
-					c.lastDrop = time.Now()
+					c.lastDrop = now
 					if c.drops >= maxDrops {
 						slog.Warn("ws: client too slow, unregistering",
 							"drops", c.drops, "window", dropWindow)

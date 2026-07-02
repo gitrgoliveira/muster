@@ -48,10 +48,10 @@ type Frame struct {
 	At string `json:"at,omitempty"`
 
 	// M2: runlog.line — agent pane output (raw bytes; ANSI preserved)
-	BeadID  string  `json:"beadID,omitempty"`
-	StepIdx *int    `json:"stepIdx,omitempty"` // *int so the valid M2 value 0 isn't dropped by omitempty (M1 frames leave it nil)
-	Seq     *uint64 `json:"seq,omitempty"`     // *uint64 (like StepIdx): set on every runlog.line frame, nil on others. seq is 1-based (runlogStreamer uses Add(1)); the pointer makes "present vs absent" explicit rather than depending on the value never being 0, and keeps the shared Frame struct consistent with the *int fields.
-	Data    string  `json:"data,omitempty"`    // base64-encoded raw pane bytes (terminal output is not guaranteed UTF-8)
+	BeadID  string `json:"beadID,omitempty"`
+	StepIdx *int   `json:"stepIdx,omitempty"` // *int so the valid M2 value 0 isn't dropped by omitempty (M1 frames leave it nil)
+	Seq     uint64 `json:"seq,omitempty"`     // set on every runlog.line frame, omitted elsewhere. seq is 1-based (runlogStreamer uses Add(1)), so it is never legitimately 0 — a plain value with omitempty drops it on non-runlog frames just like a pointer would, without the per-frame heap allocation a *uint64 forces on this hot path.
+	Data    string `json:"data,omitempty"`    // base64-encoded raw pane bytes (terminal output is not guaranteed UTF-8)
 
 	// M2: tmux.session.opened / tmux.session.closed
 	Session  string `json:"session,omitempty"`
