@@ -3,9 +3,16 @@
 # returns canned output from $FAKE_TMUX_OUTPUT_FILE.
 # Set FAKE_TMUX_EXIT to control exit code (default 0).
 
-# Record the invocation.
+# Delimiter used to record argv. Using a TAB (not a space) preserves argument
+# boundaries: "$*" space-joins, which collapses the boundary between adjacent
+# args and mangles args that themselves contain spaces (e.g. the `sh -c
+# '<command with spaces>'` wrapper), hiding quoting/escaping regressions. Tab-
+# joining keeps one line per invocation while making the argv recoverable.
+tab=$(printf '\t')
+
+# Record the invocation (one tab-delimited line per call).
 if [ -n "$FAKE_TMUX_RECORD_FILE" ]; then
-    echo "$*" >> "$FAKE_TMUX_RECORD_FILE"
+    ( IFS="$tab"; printf '%s\n' "$*" ) >> "$FAKE_TMUX_RECORD_FILE"
 fi
 
 # Return canned output if provided.
@@ -35,7 +42,9 @@ if [ -n "$FAKE_TMUX_CALLS_DIR" ]; then
     fi
     COUNT=$((COUNT + 1))
     echo "$COUNT" > "$COUNT_FILE"
-    echo "$*" > "$FAKE_TMUX_CALLS_DIR/call_$COUNT"
+    # Same tab-delimited recording as the main record file (preserves argv
+    # boundaries rather than space-collapsing via "$*").
+    ( IFS="$tab"; printf '%s\n' "$*" ) > "$FAKE_TMUX_CALLS_DIR/call_$COUNT"
 fi
 
 exit "${FAKE_TMUX_EXIT:-0}"

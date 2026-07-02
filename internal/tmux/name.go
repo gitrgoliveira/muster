@@ -31,10 +31,13 @@ func ParseSessionName(name string) (beadID string, stepIdx, loop int, err error)
 		return "", 0, 0, fmt.Errorf("session name %q does not start with %q", name, sessionPrefix)
 	}
 	rest := name[len(sessionPrefix):]
-	// rest = "<beadID>/<stepIdx>/<loop>". The beadID may itself contain
-	// slashes (any leading segments before the trailing stepIdx/loop pair are
-	// rejoined into beadID), so split from the right to peel off the two
-	// trailing integers and treat everything left of them as the bead ID.
+	// rest = "<beadID>/<stepIdx>/<loop>". A valid M2 bead ID never contains a
+	// slash (core.ValidBeadID forbids it), but we still peel the two trailing
+	// integers off the RIGHT and treat everything before them as the bead ID.
+	// That way a malformed/stray session name carrying extra slashes is captured
+	// whole rather than silently truncated, so the caller's core.ValidBeadID
+	// check rejects it (recovery kills such a session) instead of adopting a
+	// bogus, partial ID.
 	parts := strings.Split(rest, "/")
 	if len(parts) < 3 {
 		return "", 0, 0, fmt.Errorf("session name %q: expected muster/<bead>/<step>/<loop>", name)
