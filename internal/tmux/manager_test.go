@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -452,7 +453,10 @@ func TestRealTmuxManager_Send_LiteralDelivery(t *testing.T) {
 		t.Skip("requires unix pty")
 	}
 
-	sessionName := "muster-test-send-literal"
+	// Unique per run so the test can't collide with a pre-existing user
+	// session named "muster-test-send-literal" (which would make new-session
+	// fail or target the wrong pane).
+	sessionName := fmt.Sprintf("muster-test-send-literal-%d", time.Now().UnixNano())
 	outFile := filepath.Join(t.TempDir(), "out.txt")
 
 	// Spawn a session that just dumps whatever it receives to a file.

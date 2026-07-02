@@ -10,13 +10,6 @@ import (
 	"testing"
 )
 
-// TestEnsure_TightensPreExistingWorktreesDirPermissions verifies that Ensure
-// tightens worktreesDir's permissions to 0o700 even when the directory
-// already existed with looser permissions — e.g. a shared default like
-// <os.TempDir()>/muster/worktrees pre-planted by another local user, or
-// created earlier under a looser umask. os.MkdirAll alone would silently
-// reuse such a directory as-is, since it only applies the mode to
-// directories it actually creates.
 // TestEnsure_RejectsUnsafeBeadID verifies Ensure refuses bead IDs that would
 // escape worktreesDir when used as a path segment (path traversal). The guard
 // is defense-in-depth: the HTTP layer already allow-lists IDs, but Ensure must
@@ -33,6 +26,13 @@ func TestEnsure_RejectsUnsafeBeadID(t *testing.T) {
 	}
 }
 
+// TestEnsure_TightensPreExistingWorktreesDirPermissions verifies that Ensure
+// tightens worktreesDir's permissions to 0o700 even when the directory
+// already existed with looser permissions — e.g. a shared default like
+// <os.TempDir()>/muster/worktrees pre-planted by another local user, or
+// created earlier under a looser umask. os.MkdirAll alone would silently
+// reuse such a directory as-is, since it only applies the mode to
+// directories it actually creates.
 func TestEnsure_TightensPreExistingWorktreesDirPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX permission bits (0o700) are not meaningful on Windows")
