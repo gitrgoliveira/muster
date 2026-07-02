@@ -178,7 +178,7 @@ func (f fakeCLI) Update(context.Context, string, bdshell.UpdatePatch) (store.Iss
 func (f fakeCLI) Close(context.Context, string) (store.Issue, error) { return f.iss, nil }
 func (f fakeCLI) Dispatch(context.Context, string) (store.Issue, error) {
 	if f.dispatchCalls != nil {
-		*f.dispatchCalls++
+		(*f.dispatchCalls)++
 	}
 	if f.dispatchErr != nil {
 		return store.Issue{}, f.dispatchErr
