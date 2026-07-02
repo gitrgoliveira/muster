@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -195,18 +196,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	// M2: Probe tmux availability.
+	// M2: Probe tmux availability. Defer printing the result until the startup
+	// banner below so the CLI output has a single, ordered block (probing here
+	// happens before the banner, so printing inline would emit a stray
+	// "tmux = ..." line ahead of "muster listening...").
 	var transport tmux.Manager
 	var tmuxAvailable bool
 	var tmuxVersion string
+	var tmuxDisplay string
 	realTransport := tmux.NewRealManager("")
 	if ver, err := realTransport.Detect(); err == nil {
 		transport = realTransport
 		tmuxAvailable = true
 		tmuxVersion = ver
-		fmt.Printf("  tmux            = %s\n", tmuxVersion)
+		tmuxDisplay = tmuxVersion
 	} else {
-		fmt.Printf("  tmux            = not available (%v)\n", err)
+		tmuxDisplay = fmt.Sprintf("not available (%v)", err)
 		transport = tmux.NewFallbackManager()
 	}
 
@@ -236,6 +241,9 @@ func main() {
 			LoggedIn:  result.LoggedIn,
 		})
 	}
+	// reg.All() ranges over a map, so sort by ID to give /orchestrator/status a
+	// stable adapters order across runs.
+	sort.Slice(adapterInfos, func(i, j int) bool { return adapterInfos[i].ID < adapterInfos[j].ID })
 
 	// onComplete records an agent run's outcome on its bead when the run exits
 	// (FR-013/SC-007). M2 limitation: beads has no distinct "review" status
@@ -314,10 +322,17 @@ func main() {
 	fmt.Printf("  doltMode      = %s\n", cfg.Mode)
 	fmt.Printf("  readSource    = %s\n", cfg.ReadSource)
 	fmt.Printf("  bdCLI         = %s\n", bdCLIDisplay)
+	fmt.Printf("  tmux          = %s\n", tmuxDisplay)
 	fmt.Printf("  worktreesDir  = %s\n", worktreesDir)
 	if len(repoMap) > 0 {
-		for k, v := range repoMap {
-			fmt.Printf("  repo[%s]     = %s\n", k, v)
+		// Sort keys so the banner is stable across runs (repoMap is a map).
+		keys := make([]string, 0, len(repoMap))
+		for k := range repoMap {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("  repo[%s]     = %s\n", k, repoMap[k])
 		}
 	}
 
