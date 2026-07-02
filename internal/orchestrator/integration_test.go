@@ -1,3 +1,11 @@
+//go:build !windows
+
+// This integration suite drives real tmux and Unix-only test scaffolding
+// (os.Symlink to place a fake `claude` on PATH), so it is excluded from
+// Windows builds — consistent with the other platform-gated tests in this
+// package (see claude_test.go). skipIfNoRealTmux is defined and used only
+// here, so gating the whole file leaves no dangling references.
+
 package orchestrator_test
 
 import (
