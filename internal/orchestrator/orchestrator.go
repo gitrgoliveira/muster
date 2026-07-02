@@ -641,7 +641,13 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	}
 
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
-	_ = o.transport.Kill(run.Session)
+	// Log a failure: a non-"session gone" error means the session may persist,
+	// and a later re-dispatch of this bead would then fail with a duplicate
+	// session whose root cause would otherwise be invisible.
+	if err := o.transport.Kill(run.Session); err != nil {
+		slog.Warn("finishRun: tmux Kill failed; session may persist and block re-dispatch",
+			"bead", run.BeadID, "session", run.Session, "err", err)
+	}
 
 	// Close the pane pipe so the real tmux manager removes its FIFO + temp dir.
 	// The session is killed above, so the stream goroutine has hit (or will hit)

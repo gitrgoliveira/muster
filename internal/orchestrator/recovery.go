@@ -27,6 +27,10 @@ import (
 //
 // Called once at startup (wired into main.go).
 func (o *Orchestrator) RecoverSessions(ctx context.Context) {
+	// Note: transport.List() is NOT bounded by ctx — the tmux Manager interface
+	// takes no context, so this initial scan runs to completion regardless of
+	// ctx. ctx only gates the per-session loop below (between recoverSession
+	// calls). In practice List() is a single fast `tmux list-sessions`.
 	sessions, err := o.transport.List()
 	if err != nil {
 		// Non-fatal: if tmux isn't running or has no sessions, proceed normally.
@@ -34,8 +38,9 @@ func (o *Orchestrator) RecoverSessions(ctx context.Context) {
 	}
 
 	for _, sess := range sessions {
-		// Allow aborting a long scan, but a recovered run's own lifetime is NOT
-		// tied to this ctx (see recoverSession) — runs must survive shutdown.
+		// Allow aborting a long scan between sessions, but a recovered run's own
+		// lifetime is NOT tied to this ctx (see recoverSession) — runs must
+		// survive shutdown.
 		if ctx.Err() != nil {
 			return
 		}
