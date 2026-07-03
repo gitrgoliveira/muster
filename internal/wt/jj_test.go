@@ -79,19 +79,6 @@ func initJJRepo(t *testing.T) string {
 	return dir
 }
 
-// runJJCmd runs a jj command in dir with hermetic env. Fatals on error.
-func runJJCmd(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("jj", args...)
-	cmd.Dir = dir
-	cmd.Env = jjEnv()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("jj %v in %s: %v\n%s", args, dir, err, out)
-	}
-	return string(out)
-}
-
 // ── T021: jjBackend.Create tests ─────────────────────────────────────────────
 
 // TestJJBackend_Create_InvalidBeadID verifies that an empty or path-separator
