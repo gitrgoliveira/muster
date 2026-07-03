@@ -18,6 +18,12 @@ type RunCounter interface {
 	RunCount() int
 }
 
+// WorktreeCounter is implemented by the orchestrator to report the number of
+// per-bead worktree directories under the configured --worktrees-dir.
+type WorktreeCounter interface {
+	WorktreeCount() int
+}
+
 // StatusConfig carries the configuration captured at startup for the status endpoint.
 type StatusConfig struct {
 	BeadsVersion  string
@@ -35,6 +41,14 @@ type StatusConfig struct {
 	TmuxVersion   string
 	Adapters      []AdapterInfo
 	RunCounter    RunCounter // may be nil
+
+	// M3 additions (FR-012: additive only).
+	// VCS describes VCS backend availability at startup.
+	VCS VCSStatus
+	// WorktreeCount is the current count of per-bead worktree directories.
+	// May be supplied directly or via WorktreeCounter (counter takes priority).
+	WorktreeCount   int
+	WorktreeCounter WorktreeCounter // may be nil; takes priority over WorktreeCount
 }
 
 // HealthzHandler handles GET /api/v1/healthz.
@@ -64,6 +78,11 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			runningCount = cfg.RunCounter.RunCount()
 		}
 
+		worktreeCount := cfg.WorktreeCount
+		if cfg.WorktreeCounter != nil {
+			worktreeCount = cfg.WorktreeCounter.WorktreeCount()
+		}
+
 		resp := OrchestratorStatusResponse{
 			Build:         "dev",
 			SchemaVersion: schemaVersion,
@@ -81,6 +100,9 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			TmuxVersion:   cfg.TmuxVersion,
 			RunningCount:  runningCount,
 			Adapters:      cfg.Adapters,
+			// M3 additions.
+			VCS:           cfg.VCS,
+			WorktreeCount: worktreeCount,
 		}
 		render.WriteJSON(w, http.StatusOK, resp)
 	}

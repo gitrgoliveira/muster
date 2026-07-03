@@ -79,6 +79,21 @@ func ParseRepoEnv(m RepoMap, envVal string) error {
 	return nil
 }
 
+// ParseDefaultVCS validates and returns the --default-vcs flag value (FR-018).
+// Accepts "git" or "jj" (case-sensitive). Empty string defaults to "git".
+// Returns an error for any other value so startup fails fast on typos.
+func ParseDefaultVCS(val string) (string, error) {
+	if val == "" {
+		return "git", nil
+	}
+	switch val {
+	case "git", "jj":
+		return val, nil
+	default:
+		return "", fmt.Errorf("invalid --default-vcs value %q: must be one of git|jj", val)
+	}
+}
+
 // DefaultWorktreesDir returns the platform-appropriate default worktrees
 // directory when --worktrees-dir is not specified.
 //

@@ -14,8 +14,8 @@ import (
 	"github.com/gitrgoliveira/muster/internal/adapter"
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/tmux"
-	"github.com/gitrgoliveira/muster/internal/worktree"
 	"github.com/gitrgoliveira/muster/internal/ws"
+	"github.com/gitrgoliveira/muster/internal/wt"
 )
 
 // ErrRunAlreadyActive is returned by Dispatch when a run is already active for
@@ -47,6 +47,10 @@ var ErrAdapterNotLoggedIn = errors.New("adapter not logged in; run: claude auth 
 // adapter's Modes() table. This is a client error (4xx), not a server error:
 // it is rejected before any side effects (no worktree/session is created).
 var ErrUnsupportedMode = errors.New("unsupported mode for adapter")
+
+// ErrVCSUnavailable is returned when the configured default VCS binary is not
+// installed on PATH at startup. Maps to HTTP 412 VCS_UNAVAILABLE.
+var ErrVCSUnavailable = errors.New("VCS binary unavailable")
 
 // Run holds the in-memory state of an active (or recently completed) agent run.
 // The registry is rebuilt on restart from tmux.List().
@@ -103,6 +107,9 @@ type Orchestrator struct {
 	transport       tmux.Manager // may be a fallback transport
 	repoMap         RepoMap
 	worktreesDir    string
+	backend         wt.Backend // VCS backend; defaults to git (NewGitBackend) when nil at construction
+	defaultVCS      wt.VCS     // VCS selected at startup; "" defaults to git
+	vcsAvailable    wt.Availability
 	defaultPermMode core.PermissionMode
 	publish         Publisher
 	runTimeout      time.Duration // 0 = no timeout
@@ -137,6 +144,8 @@ type Config struct {
 	Transport       tmux.Manager
 	RepoMap         RepoMap
 	WorktreesDir    string
+	Backend         wt.Backend // VCS backend; defaults to wt.NewGitBackend(WorktreesDir) when nil
+	DefaultVCS      wt.VCS     // "git" (default) or "jj"; checked against wt.Detect at construction
 	DefaultPermMode core.PermissionMode
 	Publish         Publisher
 	RunTimeout      time.Duration // 0 = no timeout (FR-017: opt-in only)
@@ -171,12 +180,34 @@ func New(cfg Config) *Orchestrator {
 	if transport == nil {
 		transport = tmux.NewFallbackManager()
 	}
+
+	// Default VCS to git when unset.
+	defaultVCS := cfg.DefaultVCS
+	if defaultVCS == "" {
+		defaultVCS = wt.VCSGit
+	}
+
+	// Startup probe: detect which VCS binaries are available.
+	// Use a short background context so a hung `git --version` or `jj --version`
+	// at startup doesn't stall server boot indefinitely.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	avail := wt.Detect(probeCtx)
+	probeCancel()
+
+	// Default to the git backend with worktreesDir baked in.
+	backend := cfg.Backend
+	if backend == nil {
+		backend = wt.NewGitBackend(cfg.WorktreesDir)
+	}
 	return &Orchestrator{
 		runs:            make(map[string]*Run),
 		adapters:        cfg.Adapters,
 		transport:       transport,
 		repoMap:         cfg.RepoMap,
 		worktreesDir:    cfg.WorktreesDir,
+		backend:         backend,
+		defaultVCS:      defaultVCS,
+		vcsAvailable:    avail,
 		defaultPermMode: cfg.DefaultPermMode,
 		publish:         cfg.Publish,
 		runTimeout:      cfg.RunTimeout,
@@ -196,6 +227,39 @@ func (o *Orchestrator) RunCount() int {
 		}
 	}
 	return count
+}
+
+// WorktreeCount returns the number of per-bead worktree directories currently
+// present under the configured --worktrees-dir. Each entry is counted if it is
+// a directory (not a symlink or regular file). Returns 0 when worktreesDir is
+// empty or when the directory does not exist yet.
+func (o *Orchestrator) WorktreeCount() int {
+	if o.worktreesDir == "" {
+		return 0
+	}
+	entries, err := os.ReadDir(o.worktreesDir)
+	if err != nil {
+		// Dir doesn't exist yet or is unreadable — not an error, just 0.
+		return 0
+	}
+	count := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			count++
+		}
+	}
+	return count
+}
+
+// VCSAvailability returns the wt.Availability snapshot captured at startup.
+// Used by the status handler to surface which VCS binaries are present.
+func (o *Orchestrator) VCSAvailability() wt.Availability {
+	return o.vcsAvailable
+}
+
+// DefaultVCSString returns the string form of the configured default VCS.
+func (o *Orchestrator) DefaultVCSString() string {
+	return string(o.defaultVCS)
 }
 
 // GetRun returns a snapshot copy of the Run for a beadID, or nil if not found.
@@ -355,6 +419,20 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		return nil, fmt.Errorf("orchestrator: worktreesDir is not configured")
 	}
 
+	// Refuse dispatch when the configured VCS binary was absent at startup
+	// (FR-011). We check the availability snapshot captured in New() rather
+	// than re-probing on each dispatch to avoid per-request subprocess overhead.
+	switch o.defaultVCS {
+	case wt.VCSJJ:
+		if !o.vcsAvailable.JJ {
+			return nil, fmt.Errorf("%w: jj not found on PATH", ErrVCSUnavailable)
+		}
+	default: // git
+		if !o.vcsAvailable.Git {
+			return nil, fmt.Errorf("%w: git not found on PATH", ErrVCSUnavailable)
+		}
+	}
+
 	// Resolve permission mode.
 	pm, err := o.resolvePermMode(req.Mode, req.PermissionMode)
 	if err != nil {
@@ -465,11 +543,11 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// git writes the worktree's `.git` gitlink file before the checkout
 	// completes, so a kill at the wrong moment would leave a directory that
 	// LOOKS like a complete worktree (isWorktreeDir returns true) but has an
-	// incomplete file checkout, and Ensure's reuse fast-path has no way to
+	// incomplete file checkout, and the backend's reuse fast-path has no way to
 	// distinguish that from a legitimately-reusable worktree. Only OUR
 	// deadline (a genuinely hung subprocess) should be able to trigger this.
 	ensureCtx, ensureCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	wt, err := worktree.Ensure(ensureCtx, o.worktreesDir, repoPath, req.BeadID)
+	wtPath, err := o.backend.Create(ensureCtx, o.worktreesDir, repoPath, req.BeadID)
 	ensureCancel()
 	if err != nil {
 		return nil, fmt.Errorf("worktree: %w", err)
@@ -481,7 +559,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// hard-coded "/") keeps this portable to Windows, where the adapter's own
 	// filepath.Rel(Worktree, PromptFile) contract check expects an OS-native
 	// separator throughout.
-	promptPath := filepath.Join(wt.Path, promptFileName)
+	promptPath := filepath.Join(wtPath, promptFileName)
 	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
@@ -491,7 +569,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	spec, err := adp.Invoke(ctx, adapter.InvokeReq{
 		Mode:           req.Mode,
 		PermissionMode: pm,
-		Worktree:       wt.Path,
+		Worktree:       wtPath,
 		PromptFile:     promptPath,
 	})
 	if err != nil {
@@ -516,7 +594,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	run.Agent = req.Agent
 	run.Mode = req.Mode
 	run.PermissionMode = pm
-	run.Worktree = wt.Path
+	run.Worktree = wtPath
 	run.Session = sess.Name
 	run.Pane = sess.Pane
 	run.State = core.StepActive

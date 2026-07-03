@@ -106,6 +106,118 @@ func TestRouter_PanicRecovered_Returns500JSON(t *testing.T) {
 	assert.Equal(t, "INTERNAL", body.Error.Code)
 }
 
+// ── T034: Additive-surface regression (SC-007) ────────────────────────────
+//
+// Assert every M0/M1/M2 route is still reachable (returns a non-5xx status)
+// and that M0/M1/M2 status fields are still present in the status response.
+// M3 routes and fields are validated separately; this test must not fail when
+// M3 adds new surface.
+
+func TestRouter_AdditiveRegression_RoutesPresent(t *testing.T) {
+	srv := newRouterTestServer(t)
+
+	// Table of M0/M1/M2 routes: (method, path, expected-status-not-5xx).
+	// Some routes return 404 BEAD_NOT_FOUND or 400 for a missing bead — that's
+	// expected; the point is the route exists (not 405 METHOD_NOT_ALLOWED).
+	routes := []struct {
+		method string
+		path   string
+	}{
+		// M0/M1 routes.
+		{http.MethodGet, "/api/v1/healthz"},
+		{http.MethodGet, "/api/v1/orchestrator/status"},
+		{http.MethodGet, "/api/v1/beads"},
+		{http.MethodGet, "/api/v1/beads/mp-aaa"}, // seeded bead
+		// M2 routes — these may 404 BEAD_NOT_FOUND or 422 but must NOT 405.
+		{http.MethodGet, "/api/v1/beads/mp-aaa/steps/0/attach"},
+		// M3 routes (additive).
+		{http.MethodGet, "/api/v1/beads/mp-aaa/worktree"},
+		{http.MethodGet, "/api/v1/beads/mp-aaa/diff"},
+	}
+
+	for _, rt := range routes {
+		t.Run(rt.method+" "+rt.path, func(t *testing.T) {
+			req, err := http.NewRequest(rt.method, srv.URL+rt.path, nil)
+			require.NoError(t, err)
+			resp, err := srv.Client().Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			if resp.StatusCode == http.StatusMethodNotAllowed {
+				t.Errorf("route %s %s got 405 METHOD_NOT_ALLOWED — route registration regressed", rt.method, rt.path)
+			}
+			if resp.StatusCode >= 500 {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("route %s %s got unexpected 5xx: %d\n%s", rt.method, rt.path, resp.StatusCode, body)
+			}
+		})
+	}
+}
+
+func TestRouter_AdditiveRegression_StatusFieldsPresent(t *testing.T) {
+	srv := newRouterTestServer(t)
+
+	resp, err := srv.Client().Get(srv.URL + "/api/v1/orchestrator/status")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&raw))
+
+	// M0 fields — must never be removed.
+	for _, key := range []string{
+		"build", "schemaVersion", "beadsVersion", "online", "serverTime",
+	} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("M0 field %q missing from /orchestrator/status", key)
+		}
+	}
+	// M2 fields — must never be removed.
+	for _, key := range []string{
+		"tmuxAvailable", "runningCount",
+	} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("M2 field %q missing from /orchestrator/status", key)
+		}
+	}
+	// M3 additions — should be present (additive).
+	for _, key := range []string{
+		"vcs", "worktreeCount",
+	} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("M3 field %q missing from /orchestrator/status", key)
+		}
+	}
+}
+
+func TestRouter_AdditiveRegression_WSEventTypes(t *testing.T) {
+	// Assert the WS event type string values from M0/M1/M2 are unchanged.
+	// These are wire-format values — changing them would break connected clients.
+	cases := []struct {
+		event ws.EventType
+		want  string
+	}{
+		{ws.EventHello, "hello"},
+		{ws.EventBeadCreated, "bead.created"},
+		{ws.EventBeadUpdated, "bead.updated"},
+		{ws.EventBeadMoved, "bead.moved"},
+		{ws.EventBeadDeleted, "bead.deleted"},
+		{ws.EventCommentAdded, "comment.added"},
+		{ws.EventPong, "pong"},
+		// M2 event types.
+		{ws.EventRunlogLine, "runlog.line"},
+		{ws.EventTmuxOpened, "tmux.session.opened"},
+		{ws.EventTmuxClosed, "tmux.session.closed"},
+	}
+	for _, tc := range cases {
+		if string(tc.event) != tc.want {
+			t.Errorf("EventType %q has value %q, want %q (wire format regressed)", tc.event, string(tc.event), tc.want)
+		}
+	}
+}
+
 // TestRouter_MethodNotAllowed_ReturnsJSON verifies that disallowed methods return 405 JSON.
 func TestRouter_MethodNotAllowed_ReturnsJSON(t *testing.T) {
 	srv := newRouterTestServer(t)

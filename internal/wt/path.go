@@ -1,0 +1,80 @@
+package wt
+
+import (
+	"errors"
+	"path/filepath"
+	"strings"
+)
+
+// SafeRelPath validates that path is safe for use as a worktree-relative file
+// path in HTTP query parameters (FR-007). It performs format-only validation:
+// rejects absolute paths, non-local paths (containing ".." or reserved names),
+// and returns the cleaned form. It does NOT check a specific worktree boundary —
+// that happens in the VCS backend when the path is resolved.
+//
+// An empty path is allowed (means "whole worktree").
+func SafeRelPath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(path) {
+		return "", errors.New("wt: path must be relative, not absolute")
+	}
+	if !filepath.IsLocal(path) {
+		return "", errors.New("wt: path is not local (contains '..' or absolute component)")
+	}
+	return filepath.Clean(path), nil
+}
+
+// safeRelPath validates that path is a safe worktree-relative path: not
+// absolute, not containing "..", not escaping the worktree boundary.
+//
+// It accepts an empty path (meaning "whole worktree") and returns it as-is.
+// For non-empty paths it:
+//   - Rejects absolute paths (filepath.IsAbs).
+//   - Rejects paths that are not local (filepath.IsLocal) — catches "..", ".",
+//     empty components, and OS-specific reserved names.
+//   - Rejects paths that resolve (via filepath.Join + filepath.Clean) outside
+//     worktree after evaluation.
+//
+// Returns the cleaned worktree-relative path on success, or a descriptive
+// error on rejection. The returned path is suitable for passing to git/jj.
+func safeRelPath(worktree, path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+
+	// Reject absolute paths immediately.
+	if filepath.IsAbs(path) {
+		return "", errors.New("wt: path must be relative, not absolute")
+	}
+
+	// filepath.IsLocal rejects "..", paths with a leading "/" (not possible
+	// after IsAbs check but defensive), empty strings, and OS-reserved names on
+	// Windows ("CON", etc.). It does NOT traverse — it inspects the string only.
+	if !filepath.IsLocal(path) {
+		return "", errors.New("wt: path is not local (contains '..' or absolute component)")
+	}
+
+	// Resolve the full path and confirm it stays inside worktree.
+	// filepath.Clean eliminates redundant separators, "." components, etc.
+	full := filepath.Clean(filepath.Join(worktree, path))
+
+	// The cleaned worktree dir (no trailing slash).
+	base := filepath.Clean(worktree)
+
+	// The resolved path must equal base or be a child of base. Use HasPrefix
+	// with the OS separator appended to base to prevent a prefix like
+	// "/tmp/foo" matching "/tmp/foobar/...".
+	if full != base && !strings.HasPrefix(full, base+string(filepath.Separator)) {
+		return "", errors.New("wt: path escapes the worktree boundary")
+	}
+
+	// Return the worktree-relative cleaned path.
+	rel, err := filepath.Rel(base, full)
+	if err != nil {
+		// Shouldn't happen after the boundary check above, but guard anyway.
+		return "", errors.New("wt: cannot relativize path")
+	}
+	return rel, nil
+}

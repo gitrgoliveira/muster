@@ -260,3 +260,139 @@ func TestOrchestratorStatus_M2_RunningCountNilCounter(t *testing.T) {
 		t.Errorf("runningCount want 0 got %d", body.RunningCount)
 	}
 }
+
+// ── T027: M3 status DTO additions ─────────────────────────────────────────
+
+// TestOrchestratorStatus_M3_VCSFields verifies vcs.{defaultVCS,git,jj} and
+// worktreeCount are present in the response (FR-012).
+func TestOrchestratorStatus_M3_VCSFields(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		VCS: health.VCSStatus{
+			DefaultVCS: "git",
+			Git:        true,
+			JJ:         false,
+			JJVersion:  "",
+		},
+		WorktreeCount: 3,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if body.VCS.DefaultVCS != "git" {
+		t.Errorf("vcs.defaultVCS want git got %q", body.VCS.DefaultVCS)
+	}
+	if !body.VCS.Git {
+		t.Error("vcs.git want true")
+	}
+	if body.VCS.JJ {
+		t.Error("vcs.jj want false")
+	}
+	if body.WorktreeCount != 3 {
+		t.Errorf("worktreeCount want 3 got %d", body.WorktreeCount)
+	}
+}
+
+// TestOrchestratorStatus_M3_JJAvailable verifies jj availability surfaced correctly.
+func TestOrchestratorStatus_M3_JJAvailable(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		VCS: health.VCSStatus{
+			DefaultVCS: "jj",
+			Git:        true,
+			JJ:         true,
+			JJVersion:  "jj 0.42.0",
+		},
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	json.NewDecoder(w.Result().Body).Decode(&body) //nolint:errcheck
+
+	if body.VCS.DefaultVCS != "jj" {
+		t.Errorf("vcs.defaultVCS want jj got %q", body.VCS.DefaultVCS)
+	}
+	if !body.VCS.JJ {
+		t.Error("vcs.jj want true")
+	}
+	if body.VCS.JJVersion != "jj 0.42.0" {
+		t.Errorf("vcs.jjVersion want 'jj 0.42.0' got %q", body.VCS.JJVersion)
+	}
+}
+
+// TestOrchestratorStatus_M3_M2FieldsIntact verifies all M0/M1/M2 fields are
+// still present (SC-007 additive-surface assertion for the DTO).
+func TestOrchestratorStatus_M3_M2FieldsIntact(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "2.0.0",
+		BeadsDir:      "/data/beads",
+		DoltDatabase:  "testdb",
+		DoltMode:      "local",
+		ReadSource:    "jsonl",
+		BdCLI:         "/bin/bd",
+		ProjectID:     "proj-x",
+		SchemaVersion: 2,
+		TmuxAvailable: true,
+		TmuxVersion:   "3.6",
+		RunCounter:    &fakeRunCounter{count: 1},
+		Adapters: []health.AdapterInfo{
+			{ID: "claude", Installed: true, Version: "2.2", LoggedIn: true},
+		},
+		// M3 additions.
+		VCS: health.VCSStatus{
+			DefaultVCS: "git",
+			Git:        true,
+		},
+		WorktreeCount: 2,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	// Decode into a raw map so we check all keys.
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(w.Result().Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// M0/M1 fields.
+	mustHaveKey(t, raw, "build")
+	mustHaveKey(t, raw, "schemaVersion")
+	mustHaveKey(t, raw, "beadsVersion")
+	mustHaveKey(t, raw, "online")
+	mustHaveKey(t, raw, "serverTime")
+	mustHaveKey(t, raw, "beadsDir")
+	mustHaveKey(t, raw, "doltDatabase")
+	mustHaveKey(t, raw, "doltMode")
+	mustHaveKey(t, raw, "readSource")
+	mustHaveKey(t, raw, "bdCLI")
+	mustHaveKey(t, raw, "projectID")
+	// M2 fields.
+	mustHaveKey(t, raw, "tmuxAvailable")
+	mustHaveKey(t, raw, "tmuxVersion")
+	mustHaveKey(t, raw, "runningCount")
+	mustHaveKey(t, raw, "adapters")
+	// M3 additions.
+	mustHaveKey(t, raw, "vcs")
+	mustHaveKey(t, raw, "worktreeCount")
+}
+
+func mustHaveKey(t *testing.T, m map[string]json.RawMessage, key string) {
+	t.Helper()
+	if _, ok := m[key]; !ok {
+		t.Errorf("response missing key %q", key)
+	}
+}

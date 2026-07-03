@@ -1,0 +1,34 @@
+# Phase 9 (Verify) — M3 Worktrees
+
+Date: 2026-07-03
+Verifier: orchestrator (Opus 4.8), against the working tree (no commit).
+
+All 34 tasks (T001–T034) marked complete in tasks.md and independently
+verified by the orchestrator (not trusting subagent self-reports):
+
+## Gates (all green)
+- `go build ./...`            — clean
+- `make test` (`go test -race ./...`, 22 packages) — all pass
+- `go vet ./...`             — clean
+- `gofmt -l .`               — clean (no drift)
+- `make cover-check`         — exit 0; internal/wt gate added at 85% and passing (85.6%)
+
+## Story acceptance
+- US1 (git backend, behavior-preserving): M2 orchestrator/services/api suites stay green
+  through the wt.Backend refactor (SC-001 tripwire). ✅
+- US2 (diff exposure): TestIntegration_WorktreeAndDiff — /worktree lists add/modify/
+  untracked with correct kinds; /diff whole + ?path= single-file; traversal → 400. ✅
+- US3 (jj, droppable): real-jj tests RAN (jj 0.42.0 present) and passed —
+  TestJJBackend_Create_RealJJ_NativeRepo (workspace add), _PlainGitRepo (→ VCS_UNAVAILABLE,
+  no fallback), TestJJIntegration_WorktreeAndDiff (git-format diff via same handler). ✅
+- US4 (status): health DTO gains vcs.{defaultVCS,git,jj} + worktreeCount, additive;
+  Ahead/Behind best-effort (0 when no upstream, documented). ✅
+
+## Constitution / scope
+- FR-017 write-side (Finalize/Push/Remove) → ErrNotImplemented on both backends. ✅
+- FR-018 --default-vcs allow-list (config.ParseDefaultVCS rejects non git|jj). ✅
+- FR-004a/011a jj source-repos-only, no silent fallback. ✅
+- Additive surface (T034 regression tests in api/router_test, health/handler_test). ✅
+- Non-mutating git reads (status --porcelain, no `git add -N`). ✅
+
+Verdict: READY. Proceed to Phase 10 (Tests) — gates already run green above.
