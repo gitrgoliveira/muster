@@ -164,6 +164,15 @@ function Card({ task, onOpen, onDragStart, isDragging, onCardDragOver, dropIndic
   const isRunning = task.column === 'running';
   const isReview = task.column === 'review';
 
+  const cardLabel = `${task.id}: ${task.title} — ${task.column}`;
+  const handleCardKey = (e) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onOpen(task);
+    }
+  };
+
   return (
     <article
       className={'card v-' + variant + ' type-edge-' + task.type + ' ' + (
@@ -172,9 +181,13 @@ function Card({ task, onOpen, onDragStart, isDragging, onCardDragOver, dropIndic
       dropIndicator === 'above' ? 'drop-above ' : '') + (
       dropIndicator === 'below' ? 'drop-below ' : '')}
       draggable
+      tabIndex={0}
+      role="button"
+      aria-label={cardLabel}
       onDragStart={(e) => onDragStart(e, task)}
       onDragOver={(e) => onCardDragOver?.(e, task)}
-      onClick={() => onOpen(task)}>
+      onClick={() => onOpen(task)}
+      onKeyDown={handleCardKey}>
       
       <header className="card-head">
         <span className="card-id-row">
@@ -232,6 +245,15 @@ function Card({ task, onOpen, onDragStart, isDragging, onCardDragOver, dropIndic
 
 // Mini-card for the Backlog — title + pri + type, no rail.
 function MiniCard({ task, onOpen, onDragStart, isDragging, onCardDragOver, dropIndicator }) {
+  const miniLabel = `${task.id}: ${task.title} — ${task.column}`;
+  const handleMiniKey = (e) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onOpen(task);
+    }
+  };
+
   return (
     <article
       className={'mini-card type-edge-' + task.type + ' ' + (
@@ -239,9 +261,13 @@ function MiniCard({ task, onOpen, onDragStart, isDragging, onCardDragOver, dropI
       dropIndicator === 'above' ? 'drop-above ' : '') + (
       dropIndicator === 'below' ? 'drop-below ' : '')}
       draggable
+      tabIndex={0}
+      role="button"
+      aria-label={miniLabel}
       onDragStart={(e) => onDragStart(e, task)}
       onDragOver={(e) => onCardDragOver?.(e, task)}
-      onClick={() => onOpen(task)}>
+      onClick={() => onOpen(task)}
+      onKeyDown={handleMiniKey}>
       
       <div className="mini-head">
         <PriBadge n={task.priority} />
