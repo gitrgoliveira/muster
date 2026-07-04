@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/store/bdshell"
 	"github.com/gitrgoliveira/muster/internal/ws"
+	"github.com/gitrgoliveira/muster/internal/wt"
 )
 
 func TestWrapCLIError(t *testing.T) {
@@ -423,4 +425,35 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestMapWorktreeReadError(t *testing.T) {
+	// A REAL missing-binary error, wrapped the way the wt backend wraps exec
+	// failures. In modern Go *exec.Error unwraps to exec.ErrNotFound, so this
+	// must map to VCS_UNAVAILABLE (guards the round-2 exec.ErrNotFound branch).
+	realMissing := fmt.Errorf("wt: start: %w", exec.Command("muster-nonexistent-binary-xyz-abc").Run())
+
+	tests := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"worktree not found", wt.ErrWorktreeNotFound, CodeWorktreeNotFound},
+		{"vcs unavailable", wt.ErrVCSUnavailable, CodeVCSUnavailable},
+		{"vcs unavailable wrapped", fmt.Errorf("wt jj: %w", wt.ErrVCSUnavailable), CodeVCSUnavailable},
+		{"binary missing (exec.ErrNotFound)", fmt.Errorf("wt: start [git]: %w", exec.ErrNotFound), CodeVCSUnavailable},
+		{"real missing binary (*exec.Error)", realMissing, CodeVCSUnavailable},
+		{"generic error is internal", errors.New("boom"), CodeInternal},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			se := mapWorktreeReadError(tc.err, "bd-1", "diff")
+			if se == nil {
+				t.Fatal("mapWorktreeReadError returned nil")
+			}
+			if se.Code != tc.wantCode {
+				t.Errorf("code = %q, want %q", se.Code, tc.wantCode)
+			}
+		})
+	}
 }

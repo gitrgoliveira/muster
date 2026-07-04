@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os/exec"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +15,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/store/bdshell"
 	"github.com/gitrgoliveira/muster/internal/ws"
+	"github.com/gitrgoliveira/muster/internal/wt"
 )
 
 // CLIRunner abstracts bd CLI write operations.
@@ -41,6 +44,10 @@ const (
 	CodeAdapterNotInstalled = "ADAPTER_NOT_INSTALLED" // 501
 	CodeAdapterNotLoggedIn  = "ADAPTER_NOT_LOGGED_IN" // 409 (need to run `claude auth login`)
 	CodeAttachUnavailable   = "ATTACH_UNAVAILABLE"    // 501 (attach/send feature not configured)
+
+	// M3 worktree codes.
+	CodeWorktreeNotFound = "WORKTREE_NOT_FOUND" // 404 — bead exists but has no worktree
+	CodeVCSUnavailable   = "VCS_UNAVAILABLE"    // 412 — VCS binary absent or wrong VCS type
 )
 
 // ServiceError wraps a validation or state error with a code understood by
@@ -130,6 +137,7 @@ type BeadService struct {
 	cli          CLIRunner              // may be nil; writes return CodeCLIMissing when nil
 	orchestrator OrchestratorDispatcher // may be nil; dispatch returns CodeCLIMissing when nil
 	attacher     SessionAttacher        // may be nil; attach/send return unavailable when nil
+	wtAccessor   WorktreeAccessor       // may be nil; worktree/diff return CodeVCSUnavailable when nil
 	repo         string
 	publish      Publisher
 	// publishOnWrite broadcasts a WS frame after each successful CLI write.
@@ -163,6 +171,14 @@ func (svc *BeadService) WithOrchestrator(o OrchestratorDispatcher) *BeadService 
 func (svc *BeadService) WithAttacher(a SessionAttacher) *BeadService {
 	svc2 := *svc
 	svc2.attacher = a
+	return &svc2
+}
+
+// WithWorktreeAccessor returns a new BeadService with a worktree accessor
+// attached. The accessor is used by Worktree and Diff when present.
+func (svc *BeadService) WithWorktreeAccessor(a WorktreeAccessor) *BeadService {
+	svc2 := *svc
+	svc2.wtAccessor = a
 	return &svc2
 }
 
@@ -601,6 +617,30 @@ type SessionAttacher interface {
 	SendKeys(beadID string, stepIdx int, keys string) error
 }
 
+// WorktreeDTO is the response body for GET /api/v1/beads/{id}/worktree.
+type WorktreeDTO struct {
+	BeadID string          `json:"beadID"`
+	VCS    string          `json:"vcs"`
+	Clean  bool            `json:"clean"`
+	Files  []wt.FileChange `json:"files"`
+}
+
+// WorktreeAccessor is the interface BeadService uses to query the VCS backend.
+// The real implementation wraps the orchestrator's wt.Backend.
+// Defined here (not in orchestrator) to avoid import cycles.
+type WorktreeAccessor interface {
+	// WorktreeStatus returns the status of the per-bead worktree.
+	// Returns ErrWorktreeNotFound when no worktree exists.
+	WorktreeStatus(ctx context.Context, beadID string) (wt.WorktreeStatus, error)
+	// DiffSummary returns the list of changed files in the per-bead worktree.
+	DiffSummary(ctx context.Context, beadID string) ([]wt.FileChange, error)
+	// Diff returns a streaming unified diff. path must already pass safeRelPath.
+	// Empty path = whole worktree.
+	Diff(ctx context.Context, beadID, path string) (io.ReadCloser, error)
+	// DefaultVCS returns the VCS label (e.g. "git") for the DTO vcs field.
+	DefaultVCS() string
+}
+
 // GetAttach returns attachment info for a running step.
 // Delegates to the orchestrator if available.
 func (svc *BeadService) GetAttach(ctx context.Context, beadID string, stepIdx int) (*AttachResponse, error) {
@@ -631,6 +671,77 @@ func (svc *BeadService) SendKeys(ctx context.Context, beadID string, stepIdx int
 	// BD_CLI_UNAVAILABLE/503 (which wrongly implies a transient outage). Maps
 	// to 501 Not Implemented.
 	return &ServiceError{Code: CodeAttachUnavailable, Message: "send not available: this muster instance has no tmux session transport"}
+}
+
+// mapWorktreeReadError classifies a wt.Backend read error into a ServiceError.
+// Backend-unavailable conditions — the VCS binary vanished after startup
+// (exec.ErrNotFound) or the backend reports the selected VCS is unavailable
+// (wt.ErrVCSUnavailable) — map to VCS_UNAVAILABLE (412) per the API contract,
+// not INTERNAL (500). op names the operation for the error message.
+func mapWorktreeReadError(err error, id, op string) *ServiceError {
+	switch {
+	case errors.Is(err, wt.ErrWorktreeNotFound):
+		return &ServiceError{Code: CodeWorktreeNotFound, Message: "no worktree for bead " + id}
+	case errors.Is(err, wt.ErrVCSUnavailable), errors.Is(err, exec.ErrNotFound):
+		return &ServiceError{Code: CodeVCSUnavailable, Message: op + ": vcs backend unavailable: " + err.Error()}
+	default:
+		return &ServiceError{Code: CodeInternal, Message: op + " failed: " + err.Error()}
+	}
+}
+
+// Worktree returns the worktree file-change summary for a bead.
+// Returns WORKTREE_NOT_FOUND when no worktree exists (bead was never dispatched
+// or the worktree directory was removed). Returns VCS_UNAVAILABLE when the
+// WorktreeAccessor is not wired in or the VCS backend is unavailable.
+func (svc *BeadService) Worktree(ctx context.Context, id string) (*WorktreeDTO, error) {
+	if svc.wtAccessor == nil {
+		return nil, &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return nil, err
+	}
+	st, err := svc.wtAccessor.WorktreeStatus(ctx, id)
+	if err != nil {
+		return nil, mapWorktreeReadError(err, id, "worktree status")
+	}
+	if !st.Exists {
+		return nil, &ServiceError{Code: CodeWorktreeNotFound, Message: "no worktree for bead " + id}
+	}
+
+	files, err := svc.wtAccessor.DiffSummary(ctx, id)
+	if err != nil {
+		return nil, mapWorktreeReadError(err, id, "diff summary")
+	}
+	if files == nil {
+		files = []wt.FileChange{} // return [] not null
+	}
+
+	return &WorktreeDTO{
+		BeadID: id,
+		VCS:    svc.wtAccessor.DefaultVCS(),
+		Clean:  st.Clean,
+		Files:  files,
+	}, nil
+}
+
+// Diff returns a streaming unified diff for the bead's worktree.
+// path must already have been validated by the caller (e.g. via safeRelPath).
+// Empty path = whole worktree. Returns WORKTREE_NOT_FOUND / VCS_UNAVAILABLE
+// as appropriate. The caller must close the returned ReadCloser.
+func (svc *BeadService) Diff(ctx context.Context, id, path string) (io.ReadCloser, error) {
+	if svc.wtAccessor == nil {
+		return nil, &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return nil, err
+	}
+	rc, err := svc.wtAccessor.Diff(ctx, id, path)
+	if err != nil {
+		return nil, mapWorktreeReadError(err, id, "diff")
+	}
+	return rc, nil
 }
 
 // AddComment appends a comment via the CLI.

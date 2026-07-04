@@ -35,6 +35,7 @@ cover-check: cover
 	    thresholds["github.com/gitrgoliveira/muster/internal/adapter"] = 80; \
 	    thresholds["github.com/gitrgoliveira/muster/internal/tmux"] = 75; \
 	    thresholds["github.com/gitrgoliveira/muster/internal/worktree"] = 85; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/wt"] = 85; \
 	    thresholds["github.com/gitrgoliveira/muster/internal/orchestrator"] = 80; \
 	    fail = 0; \
 	  } \

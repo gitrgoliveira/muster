@@ -50,153 +50,6 @@ function SkillPicker({selected, onToggle, compact=false}) {
   );
 }
 
-// ─── StepEditor (used in StepsTab) ───────────────────────────────────────────
-
-function StepEditor({step, idx, allSteps, onChange, onRemove}) {
-  const {AGENTS, SKILLS, SKILL_SOURCES} = window.MUSTER_DATA;
-  const [expanded, setExpanded] = useStateD(false);
-
-  const A = AGENTS.find(a => a.id === step.agent);
-  const availableModes = A?.modes || [];
-  const M = availableModes.find(m => m.id === step.mode);
-  const stepSkills = step.skills || [];
-  const specSkill = stepSkills.find(s => ['speckit','openspec'].includes(s));
-
-  const defaultPromptsByMode = {
-    plan:   'Decompose the spec into atomic, ordered, idempotent steps. Emit plan.md. No file writes.',
-    build:  'Execute plan.md step by step. Halt on a failed test; do not invent new steps.',
-    apply:  'Apply the approved patch set. Run the test suite after each chunk.',
-    agent:  'Implement the task end to end. Run tests after each meaningful change.',
-    yolo:   'Free-roaming. Auto-approve tool calls. Self-handoff at 80% budget.',
-    review: 'Review the worktree diff against the spec. Inline comments + summary. No writes.',
-  };
-  const specOverrides = {
-    speckit:  'Draft acceptance criteria using Speckit. Output Gherkin scenarios in spec.md. Run `speckit verify` before locking.',
-    openspec: 'Validate the diff against OpenAPI contracts. Report breakages by route, severity.',
-  };
-  const defaultPrompt = (specSkill && specOverrides[specSkill]) || defaultPromptsByMode[step.mode] || '';
-  const prompt = step.prompt ?? defaultPrompt;
-  const loopBack = step.loopBackTo;
-  const loopMax = step.loopMax ?? 3;
-
-  const setAgent = (id) => {
-    const next = AGENTS.find(a => a.id === id);
-    const validMode = next?.modes.find(m => m.id === step.mode) ? step.mode : next?.modes[0]?.id;
-    onChange({...step, agent: id, mode: validMode, prompt: undefined});
-  };
-  const setMode = (id) => onChange({...step, mode: id, prompt: undefined});
-  const toggleSkill = (id) => {
-    const has = stepSkills.includes(id);
-    onChange({...step, skills: has ? stepSkills.filter(x => x !== id) : [...stepSkills, id]});
-  };
-
-  return (
-    <div className={'step-editor status-' + step.status + (expanded ? ' is-expanded' : '')}>
-      <div className="step-index">
-        <span className="step-num">{idx + 1}</span>
-        {idx < allSteps.length - 1 && <span className="step-connector"></span>}
-      </div>
-      <div className="step-body">
-        <div className="step-summary">
-          <button className="step-disclose" onClick={() => setExpanded(e => !e)}>
-            <span className="disclose-arrow">{expanded ? '▾' : '▸'}</span>
-          </button>
-          <span className="agent-chip" style={{['--agent-color']: A?.color}}>
-            <span className="agent-mono">{A?.mono}</span>
-            <span className="agent-name">{A?.name}</span>
-          </span>
-          <span className="step-arrow">·</span>
-          <span className="step-mode-tag" data-mode={step.mode}>
-            <span className="step-mode-icon">{M?.icon || '◯'}</span>
-            <span>{M?.name || step.mode}</span>
-          </span>
-          {stepSkills.length > 0 && (
-            <span className="step-skills-inline">
-              {stepSkills.map(id => {
-                const s = SKILLS.find(x => x.id === id);
-                return s ? <span key={id} className="step-skill-pill" title={s.desc}>{s.icon} {s.name}</span> : null;
-              })}
-            </span>
-          )}
-          <span className="step-summary-spacer"></span>
-          {loopBack !== undefined && (
-            <span className="loop-tag" title={`Loops back to step ${loopBack + 1}, up to ${loopMax}×`}>↻ {loopBack + 1} · {loopMax}×</span>
-          )}
-          <span className={'step-status-pill status-' + step.status}>{step.status}</span>
-          <button className="step-remove" onClick={onRemove} title="Remove step">×</button>
-        </div>
-
-        {expanded && (
-          <div className="step-detail">
-            <div className="step-row">
-              <label className="step-field">
-                <span className="step-field-label">Agent</span>
-                <select value={step.agent} onChange={(e) => setAgent(e.target.value)}>
-                  {AGENTS.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-              </label>
-              <label className="step-field">
-                <span className="step-field-label">Mode</span>
-                <select value={step.mode} onChange={(e) => setMode(e.target.value)}>
-                  {availableModes.map(m => <option key={m.id} value={m.id}>{m.icon} {m.name}</option>)}
-                </select>
-              </label>
-              {M?.cli && (
-                <div className="step-clihint">
-                  <span className="step-field-label">CLI</span>
-                  <code>{M.cli}</code>
-                </div>
-              )}
-            </div>
-            {M?.desc && <div className="step-mode-desc">{M.desc}</div>}
-            <div className="step-skills-field">
-              <span className="step-field-label">Skills for this step <span className="step-field-sub">· {stepSkills.length} selected</span></span>
-              <div className="step-skill-row">
-                {SKILLS.map(s => {
-                  const on = stepSkills.includes(s.id);
-                  const src = SKILL_SOURCES.find(x => x.id === s.source);
-                  return (
-                    <button key={s.id} className={'step-skill-chip ' + (on ? 'on' : '')} onClick={() => toggleSkill(s.id)} title={s.desc} data-cat={s.cat}>
-                      <span className="ssc-icon">{s.icon}</span>
-                      <span>{s.name}</span>
-                      <span className="ssc-source" data-source={s.source}>{src?.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="step-prompt-field">
-              <span className="step-field-label">Prompt to {A?.name}</span>
-              <textarea className="step-prompt" rows={3} value={prompt} placeholder="What should the agent do?" onChange={(e) => onChange({...step, prompt: e.target.value})} />
-              {step.prompt !== undefined && (
-                <button className="link-btn" onClick={() => onChange({...step, prompt: undefined})}>reset to default</button>
-              )}
-            </div>
-            <div className="step-loop-field">
-              <span className="step-field-label">Loop control</span>
-              <div className="loop-controls">
-                <span>If review fails, loop back to</span>
-                <select value={loopBack ?? ''} onChange={(e) => onChange({...step, loopBackTo: e.target.value === '' ? undefined : Number(e.target.value)})}>
-                  <option value="">— don't loop —</option>
-                  {allSteps.map((_, i) => i < idx && <option key={i} value={i}>step {i + 1}</option>)}
-                </select>
-                {loopBack !== undefined && (
-                  <>
-                    <span>at most</span>
-                    <input type="number" min="1" max="20" value={loopMax} onChange={(e) => onChange({...step, loopMax: Math.max(1, Number(e.target.value) || 1)})} className="loop-max-input" />
-                    <span>times</span>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-        {!expanded && step.note && <div className="step-note">{step.note}</div>}
-      </div>
-    </div>
-  );
-}
-
 function AcceptanceCriteria({task, onUpdate}) {
   const items = task.acceptance || [];
   const done = items.filter(i => i.done).length;
@@ -357,6 +210,9 @@ function OverviewTab({task, onUpdate, constitution, onEditConstitution}) {
           className="ov-title"
           contentEditable
           suppressContentEditableWarning
+          role="textbox"
+          aria-label="Bead title"
+          aria-multiline="false"
           onBlur={onTitleBlur}
           onKeyDown={onTitleKey}
           data-placeholder="Bead title…"
@@ -876,28 +732,6 @@ function StepsTab({task, onUpdate}) {
   );
 }
 
-  const updateStep = (i, s) => {
-    const steps = [...task.steps];
-    steps[i] = s;
-    onUpdate({...task, steps});
-  };
-  const removeStep = (i) => {
-    const steps = task.steps.filter((_, j) => j !== i);
-    onUpdate({...task, steps});
-  };
-  const addStepTemplate = (template) => {
-    const presets = {
-      speckit:  { agent: 'claude',   mode: 'plan',   skills: ['speckit'] },
-      plan:     { agent: 'claude',   mode: 'plan',   skills: [] },
-      build:    { agent: 'claude',   mode: 'build',  skills: [] },
-      agent:    { agent: 'claude',   mode: 'agent',  skills: [] },
-      review:   { agent: 'gemini',   mode: 'review', skills: [] },
-      openspec: { agent: 'gemini',   mode: 'plan',   skills: ['openspec'] },
-    };
-    const p = presets[template] || presets.agent;
-    onUpdate({...task, steps: [...task.steps, {...p, status: 'pending'}]});
-  };
-
 function ActivityTab({task}) {
   const {EVENT_KINDS, AGENTS} = window.MUSTER_DATA;
   const history = task.history || [];
@@ -939,6 +773,8 @@ function RunLogTab({task}) {
   const log = task.log || [];
   const endRef = useRefD(null);
   const [extra, setExtra] = useStateD([]);
+  // Mock stream-drop state: in a real build this would be driven by WS close event.
+  const [streamDropped, setStreamDropped] = useStateD(false);
 
   useEffectD(() => {
     if (task.column !== 'running') return;
@@ -989,8 +825,22 @@ function RunLogTab({task}) {
             <span className="log-msg">{l.msg}</span>
           </div>
         ))}
+        {streamDropped && (
+          <div className="log-line log-stream-dropped" role="status" aria-live="polite">
+            <span className="log-time">--:--:--</span>
+            <span className="log-stream-glyph" aria-hidden="true">⚡</span>
+            <span className="log-msg">stream dropped — reconnecting…</span>
+          </div>
+        )}
         <div ref={endRef}></div>
       </div>
+      {task.column === 'running' && (
+        <div className="runlog-mock-controls">
+          <button className="link-btn" style={{fontSize:'10px',color:'var(--ink-4)'}} onClick={() => setStreamDropped(v => !v)}>
+            {streamDropped ? 'simulate reconnect' : 'simulate stream drop'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1120,6 +970,35 @@ function TaskDrawer({task, onClose, onUpdate, onMove, onOpenBead, constitution, 
           })()}
         </div>
       </header>
+
+      {/* ── Failed-run recovery banner ──────────────────────────────────────── */}
+      {task.steps.some(s => s.status === 'failed') && (
+        <div className="failed-run-banner" role="alert">
+          <span className="failed-run-glyph" aria-hidden="true">✕</span>
+          <span className="failed-run-msg">A step failed — choose how to proceed</span>
+          <div className="failed-run-actions">
+            <button
+              className="btn btn-ghost failed-run-btn"
+              onClick={() => onMove(task.id, 'scheduled')}
+              title="Put back in the dispatch queue"
+            >Requeue</button>
+            <button
+              className="btn btn-ghost failed-run-btn"
+              onClick={() => {
+                const updated = {...task, requeued: true, history: [...(task.history || []),
+                  {at: 'just now', kind: 'comment', actor: 'you@yours.dev', note: 'Split requested after failure'}]};
+                onUpdate(updated);
+              }}
+              title="Mark for splitting into smaller sub-beads"
+            >Split</button>
+            <button
+              className="btn btn-ghost failed-run-btn"
+              onClick={() => onMove(task.id, 'running')}
+              title="Re-dispatch this bead to a running agent"
+            >Re-dispatch</button>
+          </div>
+        </div>
+      )}
 
       <nav className="drawer-tabs">
         <button className={tab === 'overview'  ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button>

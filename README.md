@@ -4,6 +4,8 @@ A central hub that serves [beads](https://github.com/gastownhall/beads) issues o
 
 **M2 — Claude Code adapter:** dispatching a bead launches the `claude` CLI inside a per-bead **git worktree**, hosted in a **tmux** session, streaming its output over WebSocket (`runlog.line`) with live attach/send. Runtime deps: `git`, and `tmux` ≥ 3.2 (optional — without it agents still run via direct exec, but attach/send are disabled). Agent execution is exercisable via the API today; the embedded UI is not yet wired to the live runlog/attach stream (planned follow-up). muster defaults to listening on `127.0.0.1`; non-loopback binds are not yet refused and there is no auth/Origin check, so do not expose beyond localhost (see the `--addr` row below for the hardening follow-up).
 
+**M3 — Worktree & diff exposure:** the `/worktree` and `/diff` sub-routes on each bead expose the per-bead worktree's change summary and a git-format unified diff, respectively. `jj` ≥ 0.42 is supported as an alternative VCS backend via `--default-vcs=jj` (optional; `git` remains the default). Runtime dep: `jj` (optional, required only when `--default-vcs=jj`).
+
 ## Quick start
 
 ```bash
@@ -11,7 +13,7 @@ make build
 bin/muster serve --beads-dir /path/to/.beads
 ```
 
-See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quickstart.md) for a full walkthrough.
+See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quickstart.md) for a full walkthrough, or [`specs/004-m3-worktrees/quickstart.md`](specs/004-m3-worktrees/quickstart.md) for the M3 worktree/diff walkthrough.
 
 ## Flags
 
@@ -24,6 +26,7 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `--worktrees-dir` | `MUSTER_WORKTREES_DIR` | `~/.muster/worktrees` | Root directory for per-bead git worktrees (M2). |
 | `--run-timeout` | `MUSTER_RUN_TIMEOUT` | `0` (none) | Optional per-run wall-clock cap, e.g. `30m`. `0` = unbounded (M2). |
 | `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | — | Fallback claude autonomy (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`auto`) applied to **agent-mode** dispatches that omit `permissionMode`. `plan` is **not** valid here — it's implicit for plan-mode dispatches and rejected at startup as a default. muster never defaults autonomy silently (M2). |
+| `--default-vcs` | `MUSTER_DEFAULT_VCS` | `git` | VCS backend for per-bead worktrees: `git` or `jj`. `jj` requires `jj` ≥ 0.42 on PATH and a source repo that is already a jj workspace; plain git repos with `--default-vcs=jj` return an error at dispatch time (M3). |
 
 ## API
 
@@ -37,6 +40,8 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `POST` | `/api/v1/beads/{id}/dispatch` | Run a CLI agent on the bead — body `{agent, mode, permissionMode}` (M2) |
 | `GET` | `/api/v1/beads/{id}/steps/{idx}/attach` | tmux attach command + pane for a running step (M2; `idx=0`) |
 | `POST` | `/api/v1/beads/{id}/steps/{idx}/send` | Forward keystrokes to the live agent pane (M2; `idx=0`) |
+| `GET` | `/api/v1/beads/{id}/worktree` | Change summary for the bead's worktree — file list with `kind` (added/modified/deleted/renamed/copied), VCS name, and clean flag (M3) |
+| `GET` | `/api/v1/beads/{id}/diff` | Git-format unified diff of all worktree changes; optional `?path=` to scope to a single file (M3) |
 | `POST` | `/api/v1/beads/{id}/comments` | Add comment (requires `bd`) |
 | `GET` | `/api/v1/orchestrator/status` | Backend health, config, tmux + adapter availability |
 | `GET` | `/api/v1/stream` | WebSocket event stream (`bead.*`, `runlog.line`, `tmux.session.*`) |

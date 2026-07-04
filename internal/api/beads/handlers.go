@@ -2,12 +2,14 @@ package beads
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/wt"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -62,6 +64,11 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
 	case services.CodeAttachUnavailable:
 		render.WriteError(w, r, http.StatusNotImplemented, se.Code, se.Message)
+	// M3 worktree error codes.
+	case services.CodeWorktreeNotFound:
+		render.WriteError(w, r, http.StatusNotFound, se.Code, se.Message)
+	case services.CodeVCSUnavailable:
+		render.WriteError(w, r, http.StatusPreconditionFailed, se.Code, se.Message)
 	default:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	}
@@ -335,6 +342,73 @@ func (h *Handlers) Send(w http.ResponseWriter, r *http.Request) {
 // maxSendKeysLen bounds the Send request's keys payload (forwarded verbatim
 // to the agent's tmux pane).
 const maxSendKeysLen = 4096
+
+// WorktreeResponse is the JSON body for GET /api/v1/beads/{id}/worktree.
+type WorktreeResponse struct {
+	BeadID string          `json:"beadID"`
+	VCS    string          `json:"vcs"`
+	Clean  bool            `json:"clean"`
+	Files  []wt.FileChange `json:"files"`
+}
+
+// Worktree handles GET /api/v1/beads/{id}/worktree.
+// Returns the list of changed files in the bead's VCS worktree.
+func (h *Handlers) Worktree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	dto, err := h.svc.Worktree(r.Context(), id)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, WorktreeResponse{
+		BeadID: dto.BeadID,
+		VCS:    dto.VCS,
+		Clean:  dto.Clean,
+		Files:  dto.Files,
+	})
+}
+
+// Diff handles GET /api/v1/beads/{id}/diff[?path=<file>].
+// Returns a streaming unified diff (text/x-diff) for the whole worktree or a
+// single file. Validates ?path= with safeRelPath (FR-007).
+func (h *Handlers) Diff(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	// Validate the optional ?path= query parameter (FR-007).
+	rawPath := r.URL.Query().Get("path")
+
+	// wt.SafeRelPath (exported, format-only validation) rejects absolute and
+	// non-local paths; the VCS backend enforces the worktree boundary when it
+	// resolves the path. An empty path is valid (whole-worktree diff).
+	safePath, err := wt.SafeRelPath(rawPath)
+	if err != nil {
+		render.WriteError(w, r, http.StatusBadRequest, "INVALID_PATH", err.Error())
+		return
+	}
+
+	rc, svcErr := h.svc.Diff(r.Context(), id, safePath)
+	if mapServiceError(w, r, svcErr) {
+		return
+	}
+	defer rc.Close()
+
+	// Stream the diff body. Content-Type as per the HTTP contract.
+	w.Header().Set("Content-Type", "text/x-diff; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	// Flush the headers immediately so first-byte delivery isn't delayed by
+	// intermediary buffering — the diff contract calls out streaming.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	_, _ = io.Copy(w, rc)
+}
 
 // SendRequest is the body for POST /beads/{id}/steps/{idx}/send.
 type SendRequest struct {

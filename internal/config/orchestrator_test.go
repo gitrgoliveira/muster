@@ -146,3 +146,61 @@ func TestDefaultWorktreesDir(t *testing.T) {
 		t.Errorf("DefaultWorktreesDir %q should contain 'muster'", dir)
 	}
 }
+
+// ── T032: --default-vcs allow-list (FR-018) ──────────────────────────────
+
+func TestParseDefaultVCS(t *testing.T) {
+	t.Run("git is valid", func(t *testing.T) {
+		v, err := config.ParseDefaultVCS("git")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != "git" {
+			t.Errorf("want git got %q", v)
+		}
+	})
+
+	t.Run("jj is valid", func(t *testing.T) {
+		v, err := config.ParseDefaultVCS("jj")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != "jj" {
+			t.Errorf("want jj got %q", v)
+		}
+	})
+
+	t.Run("empty string defaults to git", func(t *testing.T) {
+		v, err := config.ParseDefaultVCS("")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if v != "git" {
+			t.Errorf("empty string: want git got %q", v)
+		}
+	})
+
+	t.Run("invalid value returns error", func(t *testing.T) {
+		_, err := config.ParseDefaultVCS("svn")
+		if err == nil {
+			t.Fatal("want error for 'svn'")
+		}
+		if !strings.Contains(err.Error(), "git") || !strings.Contains(err.Error(), "jj") {
+			t.Errorf("error %q should mention allowed values git and jj", err.Error())
+		}
+	})
+
+	t.Run("GIT (uppercase) is invalid", func(t *testing.T) {
+		_, err := config.ParseDefaultVCS("GIT")
+		if err == nil {
+			t.Fatal("want error for 'GIT' (case-sensitive allow-list)")
+		}
+	})
+
+	t.Run("mixed case invalid", func(t *testing.T) {
+		_, err := config.ParseDefaultVCS("Git")
+		if err == nil {
+			t.Fatal("want error for 'Git'")
+		}
+	})
+}

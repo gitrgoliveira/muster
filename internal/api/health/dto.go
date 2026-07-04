@@ -15,6 +15,24 @@ type AdapterInfo struct {
 	LoggedIn  bool   `json:"loggedIn"`
 }
 
+// VCSAvailability describes one VCS backend's availability at runtime.
+type VCSAvailability struct {
+	// Available is true when the VCS binary responds to `--version`.
+	Available bool `json:"available"`
+	// Version is the binary's version string (best-effort; empty when unavailable).
+	Version string `json:"version,omitempty"`
+}
+
+// VCSStatus describes the availability of VCS backends at runtime (M3 addition).
+type VCSStatus struct {
+	// DefaultVCS is the configured default VCS ("git" or "jj").
+	DefaultVCS string `json:"defaultVCS"`
+	// Git is the git backend's availability.
+	Git VCSAvailability `json:"git"`
+	// JJ is the jj backend's availability.
+	JJ VCSAvailability `json:"jj"`
+}
+
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.
 type OrchestratorStatusResponse struct {
 	Build         string `json:"build"`
@@ -34,4 +52,11 @@ type OrchestratorStatusResponse struct {
 	TmuxVersion   string        `json:"tmuxVersion,omitempty"`
 	RunningCount  int           `json:"runningCount"`
 	Adapters      []AdapterInfo `json:"adapters,omitempty"`
+
+	// M3 additions (FR-012: additive only — all M0/M1/M2 fields above are unchanged).
+	// VCS describes VCS backend availability and configuration.
+	VCS VCSStatus `json:"vcs"`
+	// WorktreeCount is the number of per-bead worktree directories under
+	// the configured --worktrees-dir.
+	WorktreeCount int `json:"worktreeCount"`
 }

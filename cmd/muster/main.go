@@ -28,6 +28,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/store/jsonl"
 	"github.com/gitrgoliveira/muster/internal/tmux"
 	"github.com/gitrgoliveira/muster/internal/ws"
+	"github.com/gitrgoliveira/muster/internal/wt"
 )
 
 // repoFlags is a flag.Value that supports repeatable --repo flags.
@@ -72,6 +73,7 @@ func main() {
 	}
 	runTimeoutFlag := fs.Duration("run-timeout", runTimeoutDefault, "optional per-run timeout (e.g. 30m); 0 = no timeout (env: MUSTER_RUN_TIMEOUT)")
 	defaultPermModeFlag := fs.String("default-permission-mode", os.Getenv("MUSTER_DEFAULT_PERMISSION_MODE"), "default claude permission mode (acceptEdits, dontAsk, etc.)")
+	defaultVCSFlag := fs.String("default-vcs", os.Getenv("MUSTER_DEFAULT_VCS"), "default VCS backend for per-bead worktrees: git (default) or jj (env: MUSTER_DEFAULT_VCS)")
 
 	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles the error
 
@@ -80,6 +82,13 @@ func main() {
 	// already expired); fail fast rather than silently breaking dispatch.
 	if *runTimeoutFlag < 0 {
 		fmt.Fprintf(os.Stderr, "invalid --run-timeout %s: must not be negative\n", *runTimeoutFlag)
+		os.Exit(1)
+	}
+
+	// Validate --default-vcs against the allow-list (git|jj); empty defaults to git.
+	defaultVCS, vcsErr := config.ParseDefaultVCS(*defaultVCSFlag)
+	if vcsErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", vcsErr)
 		os.Exit(1)
 	}
 
@@ -287,6 +296,7 @@ func main() {
 		Transport:       transport,
 		RepoMap:         orchestrator.RepoMap(repoMap),
 		WorktreesDir:    worktreesDir,
+		DefaultVCS:      wt.VCS(defaultVCS),
 		DefaultPermMode: defaultPermMode,
 		Publish:         func(f ws.Frame) { hub.Broadcast(f) },
 		RunTimeout:      *runTimeoutFlag,
@@ -302,7 +312,8 @@ func main() {
 	// single WS source there.
 	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase, cfg.Mode == "remote").
 		WithOrchestrator(orc.AsServiceDispatcher()).
-		WithAttacher(orc.AsSessionAttacher())
+		WithAttacher(orc.AsSessionAttacher()).
+		WithWorktreeAccessor(orc.AsWorktreeAccessor())
 
 	// M2: Recovery scan — re-discover running sessions from before restart.
 	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -324,6 +335,7 @@ func main() {
 	fmt.Printf("  bdCLI         = %s\n", bdCLIDisplay)
 	fmt.Printf("  tmux          = %s\n", tmuxDisplay)
 	fmt.Printf("  worktreesDir  = %s\n", worktreesDir)
+	fmt.Printf("  defaultVCS    = %s\n", defaultVCS)
 	if len(repoMap) > 0 {
 		// Sort keys so the banner is stable across runs (repoMap is a map).
 		keys := make([]string, 0, len(repoMap))
@@ -335,6 +347,11 @@ func main() {
 			fmt.Printf("  repo[%s]     = %s\n", k, repoMap[k])
 		}
 	}
+
+	// Reuse the orchestrator's startup VCS availability snapshot for the status
+	// endpoint rather than probing again — avoids a second git/jj --version and
+	// keeps status aligned with the dispatch-time availability checks.
+	vcsAvail := orc.VCSAvailability()
 
 	statusCfg := health.StatusConfig{
 		BeadsVersion:  beadsVersion,
@@ -351,6 +368,13 @@ func main() {
 		TmuxVersion:   tmuxVersion,
 		Adapters:      adapterInfos,
 		RunCounter:    orc,
+		// M3 additions.
+		VCS: health.VCSStatus{
+			DefaultVCS: defaultVCS,
+			Git:        health.VCSAvailability{Available: vcsAvail.Git, Version: vcsAvail.GitVer},
+			JJ:         health.VCSAvailability{Available: vcsAvail.JJ, Version: vcsAvail.JJVer},
+		},
+		WorktreeCounter: orc,
 	}
 
 	handler := api.NewRouter(svc, hub, UI, statusCfg)

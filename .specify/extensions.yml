@@ -1,0 +1,24 @@
+installed:
+- fleet
+- verify-tasks
+settings:
+  auto_execute_hooks: true
+hooks:
+  after_implement:
+  - extension: verify-tasks
+    command: speckit.verify-tasks.run
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Run verify-tasks in a fresh session to check for phantom completions
+    description: Post-implementation phantom completion detector
+    condition: null
+  after_tasks:
+  - extension: fleet
+    command: speckit.fleet.review
+    enabled: true
+    optional: true
+    priority: 10
+    prompt: Run cross-model review to evaluate plan and tasks before implementation?
+    description: Pre-implementation review gate
+    condition: null

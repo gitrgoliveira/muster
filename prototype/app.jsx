@@ -2,6 +2,96 @@
 
 const {useState: useStateA, useEffect: useEffectA, useMemo: useMemoA} = React;
 
+// ─── App Error Boundary ──────────────────────────────────────────────────────
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    // In production, send to error reporter
+    console.error('[muster] uncaught render error', error, info);
+  }
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    const msg = this.state.error?.message || String(this.state.error);
+    return (
+      <div className="app-error-root">
+        <div className="app-error-card">
+          <span className="app-error-glyph" aria-hidden="true">✕</span>
+          <div className="app-error-body">
+            <h2 className="app-error-title">Something went wrong</h2>
+            <p className="app-error-msg">{msg}</p>
+            <button className="btn btn-ghost app-error-reload" onClick={() => location.reload()}>
+              Reload
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+// ─── Toast system ─────────────────────────────────────────────────────────────
+// Returns { toasts, addToast, dismissToast }. addToast(msg, undoFn) adds a
+// 6-second auto-dismiss toast with an optional Undo action.
+
+function useToastSystem() {
+  const [toasts, setToasts] = useStateA([]);
+  const timers = React.useRef({});
+
+  const clearTimer = (id) => {
+    if (timers.current[id]) {
+      clearTimeout(timers.current[id]);
+      delete timers.current[id];
+    }
+  };
+  const dismissToast = (id) => {
+    clearTimer(id);
+    setToasts(ts => ts.filter(t => t.id !== id));
+  };
+  const addToast = (msg, undoFn) => {
+    const id = Date.now() + Math.random();
+    setToasts(ts => [...ts, { id, msg, undoFn }]);
+    timers.current[id] = setTimeout(() => dismissToast(id), 6000);
+    return id;
+  };
+
+  // Clear pending timers on unmount so a timeout never fires on an unmounted
+  // component (e.g. after the error boundary swaps out the tree).
+  useEffectA(() => () => {
+    Object.values(timers.current).forEach(clearTimeout);
+    timers.current = {};
+  }, []);
+
+  return { toasts, addToast, dismissToast };
+}
+
+function ToastContainer({ toasts, onDismiss }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-container" role="region" aria-live="polite" aria-label="Notifications">
+      {toasts.map(t => (
+        <div key={t.id} className="toast">
+          <span className="toast-msg">{t.msg}</span>
+          <div className="toast-actions">
+            {t.undoFn && (
+              <button className="toast-undo" onClick={() => { t.undoFn(); onDismiss(t.id); }}>
+                Undo
+              </button>
+            )}
+            <button className="toast-dismiss" onClick={() => onDismiss(t.id)} aria-label="Dismiss">×</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MobilePreview({tasks, onOpen}) {
   const {COLUMNS} = window.MUSTER_DATA;
   const [colIdx, setColIdx] = useStateA(2); // start on Running
@@ -228,6 +318,7 @@ function DoltChip() {
 function App() {
   const {TASKS: SEED_TASKS, CAPACITY: SEED_CAP, FRAMEWORKS} = window.MUSTER_DATA;
 
+  const { toasts, addToast, dismissToast } = useToastSystem();
   const [tasks, setTasks] = useStateA(SEED_TASKS);
   const [capacity, setCapacity] = useStateA(SEED_CAP);
   const [repos, setRepos] = useStateA(window.MUSTER_DATA.REPOS);
@@ -358,6 +449,19 @@ These rules apply to every bead, on top of the per-task instructions.
   };
 
   const onMove = (id, colId, beforeId, position) => {
+    // Snapshot current tasks for undo (tasks is the current state via closure).
+    const snapshot = tasks;
+    const movingTask = tasks.find(t => t.id === id);
+
+    // Toast for irreversible "Dispatch now" and "Approve & close" actions.
+    if (movingTask) {
+      if (colId === 'running' && (movingTask.column === 'scheduled' || movingTask.column === 'backlog')) {
+        addToast(`Dispatched ${id} · Undo`, () => setTasks(snapshot));
+      } else if (colId === 'done') {
+        addToast(`Closed ${id} · Undo`, () => setTasks(snapshot));
+      }
+    }
+
     setTasks(ts => {
       const moving = ts.find(t => t.id === id);
       if (!moving) return ts;
@@ -581,6 +685,8 @@ These rules apply to every bead, on top of the per-task instructions.
       <MemoriesPanel open={memoriesOpen} onClose={() => setMemoriesOpen(false)} />
       <FormulasPanel open={formulasOpen} onClose={() => setFormulasOpen(false)} />
 
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
       <TweaksPanel title="Tweaks">
         <TweakSection label="Layout">
           <TweakSelect
@@ -621,4 +727,8 @@ These rules apply to every bead, on top of the per-task instructions.
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <AppErrorBoundary>
+    <App />
+  </AppErrorBoundary>
+);
