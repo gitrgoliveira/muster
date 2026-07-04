@@ -1,7 +1,8 @@
-//go:build !windows
-
-// jj backend for the wt package. Unix-only: jj is not supported on Windows
-// in this codebase (JJ_CONFIG=/dev/null uses /dev/null which is Unix-only).
+// jj backend for the wt package. It only shells out to the `jj` binary, so it
+// is platform-agnostic and compiles everywhere; when jj is absent (e.g. on
+// Windows, which is not part of the supported toolchain) Detect reports it
+// unavailable and operations surface ErrVCSUnavailable. The jj *tests* are
+// Unix-only (they pin JJ_CONFIG=/dev/null for hermeticity) — see jj_test.go.
 
 package wt
 
