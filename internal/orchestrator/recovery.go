@@ -68,17 +68,23 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 		return
 	}
 
-	// Security: the step/loop indices are likewise parsed from the
-	// user-controllable session name, and ParseSessionName accepts any integer
-	// (including negatives). M2 only ever creates step 0 / loop 0 runs
-	// (tmux.SessionName(beadID, 0, 0) in Dispatch). A session encoding any
-	// other index — e.g. a locally-planted `muster/mp-abc/-1/0` — is not a real
-	// muster run: recovering it would register a phantom active run that
-	// permanently blocks dispatch for the bead (ErrRunAlreadyActive) yet can
-	// never be attached to or sent keys (those endpoints only accept idx=0), a
-	// DoS wedge. Kill the stray rather than register it.
-	if sess.StepIdx != 0 || sess.Loop != 0 {
-		slog.Warn("recovery: killing session with unsupported step/loop indices (M2 supports only 0/0)",
+	// Security: the step/loop indices are parsed from the user-controllable
+	// session name. Negative values and non-zero Loop are treated as malformed
+	// (not real muster runs) and are killed to prevent DoS wedging.
+	//
+	// M4 T053a relaxed guard: a non-negative StepIdx (≥0) is now accepted and
+	// re-registered so that a live multi-step build/review agent (StepIdx 1, 2,
+	// …) survives a muster restart. The chain is unknown at recovery time — it
+	// was in-memory only — so the recovered run is a single-step run pinned at
+	// the recovered StepIdx. Advance/LoopBack refuse to move it until the bead
+	// is re-dispatched (which re-supplies the chain); this is the safe, honest
+	// consequence of chain-unknown-at-recovery (see research.md R9).
+	//
+	// Loop remains kill-on-sight at any non-zero value: muster currently creates
+	// only Loop=0 sessions; a non-zero Loop is either malformed or from a future
+	// schema this binary cannot handle.
+	if sess.StepIdx < 0 || sess.Loop != 0 {
+		slog.Warn("recovery: killing session with malformed step/loop indices",
 			"session", sessionName, "beadID", beadID, "stepIdx", sess.StepIdx, "loop", sess.Loop)
 		_ = o.transport.Kill(sessionName)
 		return
@@ -111,6 +117,11 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	// exactly like Dispatch does (FR-018). run.cancel cancels the watcher
 	// context; it is wired for a future cancel path but is not yet reachable
 	// externally (M2 has no cancel endpoint — see the run-cancel follow-up).
+	//
+	// M4 T053: Chain is NOT persisted (Constitution II). The recovered run is
+	// reconstructed as a single-step run pinned at sess.StepIdx with no chain.
+	// Advance/LoopBack refuse to move it (ErrStepOutOfRange when Chain==nil)
+	// until the bead is re-dispatched with a new chain. See research.md R9.
 	runCtx, runCancel := context.WithCancel(context.Background())
 	run := &Run{
 		BeadID:    beadID,
@@ -121,10 +132,14 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 		State:     core.StepActive,
 		StartedAt: sess.StartedAt,
 		cancel:    runCancel,
+		// Chain is intentionally nil: chain-unknown-at-recovery (see R9).
 	}
 
 	o.mu.Lock()
 	o.registerRun(run)
+	// M4 T053c: register into the scheduler active set so capacity accounting is
+	// correct. Transient over-capacity is allowed (drains as recovered runs end).
+	o.sched.recoverActive(beadID)
 	o.mu.Unlock()
 
 	// Re-attach pipe for streaming. Set before watchRun starts so finishRun can

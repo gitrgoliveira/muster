@@ -59,6 +59,14 @@ func (s *scheduler) onRunEnd(beadID string) *Run {
 	return next
 }
 
+// recoverActive adds a beadID directly to the active set, bypassing the
+// capacity check. This is used only by RecoverSessions at startup: recovered
+// runs may transiently exceed capacity (the limit drains naturally as they
+// finish). Must be called with the orchestrator's write lock held.
+func (s *scheduler) recoverActive(beadID string) {
+	s.active[beadID] = struct{}{}
+}
+
 // SetCapacity changes the scheduler's capacity. n must be > 0. If n is larger
 // than the current capacity, the method admits as many waiters as possible FIFO
 // (up to the newly freed slots). If n is smaller, the capacity is lowered

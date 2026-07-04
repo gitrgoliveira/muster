@@ -442,16 +442,23 @@ func TestComment_501_CLIMissing(t *testing.T) {
 type fakeOrchestratorDispatcher struct {
 	dispatchErr error
 	result      *core.Bead
+	joined      bool
+	queued      bool
 }
 
-func (f *fakeOrchestratorDispatcher) Dispatch(_ context.Context, _ services.OrchestratorDispatchRequest) (*core.Bead, error) {
+func (f *fakeOrchestratorDispatcher) Dispatch(_ context.Context, _ services.OrchestratorDispatchRequest) (services.OrchestratorDispatchResult, error) {
 	if f.dispatchErr != nil {
-		return nil, f.dispatchErr
+		return services.OrchestratorDispatchResult{}, f.dispatchErr
 	}
-	if f.result != nil {
-		return f.result, nil
+	bead := f.result
+	if bead == nil {
+		bead = &core.Bead{ID: "mp-aaa", Column: core.ColRunning}
 	}
-	return &core.Bead{ID: "mp-aaa", Column: core.ColRunning}, nil
+	return services.OrchestratorDispatchResult{
+		Bead:   bead,
+		Joined: f.joined,
+		Queued: f.queued,
+	}, nil
 }
 
 // newTestServerWithOrchestrator creates a test server wired with a fake orchestrator.
@@ -486,9 +493,18 @@ func TestDispatch_202_WithOrchestrator(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
-func TestDispatch_409_RunAlreadyActive(t *testing.T) {
+// TestDispatch_200_JoinedRun asserts the idempotent dispatch contract (M4 US4 T048
+// migration): a duplicate dispatch of an in-flight bead returns 200 OK with the
+// existing run and joined:true, NOT 409. This test replaces the former
+// TestDispatch_409_RunAlreadyActive.
+func TestDispatch_200_JoinedRun(t *testing.T) {
+	activeBead := &core.Bead{
+		ID:     "mp-aaa",
+		Column: core.ColRunning,
+	}
 	orch := &fakeOrchestratorDispatcher{
-		dispatchErr: &services.ServiceError{Code: services.CodeRunAlreadyActive, Message: "run already active for bead"},
+		result: activeBead,
+		joined: true,
 	}
 	srv := newTestServerWithOrchestrator(t, orch)
 
@@ -497,8 +513,11 @@ func TestDispatch_409_RunAlreadyActive(t *testing.T) {
 		"mode":           "agent",
 		"permissionMode": "acceptEdits",
 	})
-	assert.Equal(t, http.StatusConflict, resp.StatusCode)
-	assert.Equal(t, "RUN_ALREADY_ACTIVE", errorCode(t, resp))
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]interface{}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, true, body["joined"], "joined field must be true for idempotent dispatch")
 }
 
 func TestDispatch_422_UnmappedPrefix(t *testing.T) {

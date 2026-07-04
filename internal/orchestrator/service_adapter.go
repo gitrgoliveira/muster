@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/wt"
 )
@@ -21,8 +20,9 @@ type serviceDispatcherAdapter struct {
 }
 
 // Dispatch implements services.OrchestratorDispatcher by translating the
-// import-cycle-avoiding request type into the orchestrator's own DispatchRequest.
-func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (*core.Bead, error) {
+// import-cycle-avoiding request type into the orchestrator's own DispatchRequest
+// and mirroring the result back into the services-layer type.
+func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (services.OrchestratorDispatchResult, error) {
 	res, err := a.o.Dispatch(ctx, DispatchRequest{
 		BeadID:         req.BeadID,
 		BeadTitle:      req.BeadTitle,
@@ -32,9 +32,13 @@ func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.Or
 		PermissionMode: req.PermissionMode,
 	})
 	if err != nil {
-		return nil, mapDispatchError(err)
+		return services.OrchestratorDispatchResult{}, mapDispatchError(err)
 	}
-	return res.Bead, nil
+	return services.OrchestratorDispatchResult{
+		Bead:   res.Bead,
+		Joined: res.Joined,
+		Queued: res.Queued,
+	}, nil
 }
 
 // mapDispatchError translates orchestrator sentinel errors into typed

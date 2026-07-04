@@ -306,12 +306,17 @@ func TestDispatch_ClientDisconnect_DoesNotAbortDetectOrEnsure(t *testing.T) {
 	}
 }
 
-func TestDispatch_409_DuplicateRun(t *testing.T) {
+// TestDispatch_200_JoinedRun is the M4 US4 T048 migration of the former
+// TestDispatch_409_DuplicateRun.  A duplicate dispatch of an active bead must
+// return 200 + joined:true, NOT ErrRunAlreadyActive.
+func TestDispatch_200_JoinedRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires unix shell")
 	}
 	repoPath := initGitRepo(t)
-	o, _ := newOrchestratorForTest(t, repoPath)
+	o, transport := newOrchestratorForTest(t, repoPath)
+	// Keep the watcher alive so the run stays active.
+	t.Cleanup(func() { transport.forceDead.Store(true) })
 
 	req := orchestrator.DispatchRequest{
 		BeadID:         "mp-abc",
@@ -322,16 +327,104 @@ func TestDispatch_409_DuplicateRun(t *testing.T) {
 		PermissionMode: core.PermAcceptEdits,
 	}
 
-	if _, err := o.Dispatch(context.Background(), req); err != nil {
+	first, err := o.Dispatch(context.Background(), req)
+	if err != nil {
 		t.Fatalf("first Dispatch: %v", err)
 	}
-
-	_, err := o.Dispatch(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error for duplicate run, got nil")
+	if first.Joined {
+		t.Fatal("first dispatch must not be joined")
 	}
-	if !errors.Is(err, orchestrator.ErrRunAlreadyActive) {
-		t.Errorf("want ErrRunAlreadyActive, got %v", err)
+
+	// Second dispatch of the same in-flight bead must join, not error.
+	second, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second (duplicate) Dispatch: %v", err)
+	}
+	if !second.Joined {
+		t.Error("second dispatch of an in-flight bead must return Joined:true")
+	}
+	if second.Bead == nil {
+		t.Fatal("second dispatch result must carry the existing bead")
+	}
+	if second.Bead.ID != "mp-abc" {
+		t.Errorf("joined bead ID want mp-abc got %q", second.Bead.ID)
+	}
+	// Exactly one run must exist (no new run registered).
+	if count := o.RunCount(); count != 1 {
+		t.Errorf("RunCount want 1 after join, got %d", count)
+	}
+}
+
+// TestDispatch_JoinWaitingBead verifies that a duplicate dispatch of a bead
+// that is already waiting (StepPending, queued) also joins (Joined:true) rather
+// than returning an error. This covers the case where capacity is full and the
+// first dispatch is queued, not yet active. (M4 US4 T049)
+func TestDispatch_JoinWaitingBead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	// Set capacity=1 and dispatch one run first so the second is queued.
+	transport := &fakeTransport{}
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:      reg,
+		Transport:     transport,
+		RepoMap:       orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:  t.TempDir(),
+		MaxConcurrent: 1,
+	})
+
+	reqA := orchestrator.DispatchRequest{
+		BeadID:         "mp-aaa",
+		BeadTitle:      "First",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+	reqB := orchestrator.DispatchRequest{
+		BeadID:         "mp-bbb",
+		BeadTitle:      "Second",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	// Fill the capacity slot.
+	if _, err := o.Dispatch(context.Background(), reqA); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+
+	// Dispatch mp-bbb — it goes into the queue (capacity full).
+	first, err := o.Dispatch(context.Background(), reqB)
+	if err != nil {
+		t.Fatalf("queued dispatch: %v", err)
+	}
+	if !first.Queued {
+		t.Fatal("expected first dispatch of mp-bbb to be queued")
+	}
+	if first.Joined {
+		t.Fatal("first dispatch of mp-bbb must not be joined")
+	}
+
+	// Second dispatch of mp-bbb (still waiting) — must join the waiter.
+	second, err := o.Dispatch(context.Background(), reqB)
+	if err != nil {
+		t.Fatalf("duplicate queued dispatch: %v", err)
+	}
+	if !second.Joined {
+		t.Error("duplicate dispatch of a waiting bead must return Joined:true")
+	}
+	if second.Bead == nil {
+		t.Fatal("joined result must carry the bead")
+	}
+	if second.Bead.ID != "mp-bbb" {
+		t.Errorf("joined bead ID want mp-bbb got %q", second.Bead.ID)
 	}
 }
 
@@ -729,9 +822,10 @@ func TestDispatch_OnComplete_Timeout(t *testing.T) {
 	}
 }
 
-// TestDispatch_ConcurrentDuplicate verifies FIX 2: two goroutines dispatching
-// the same bead → exactly one succeeds, one gets ErrRunAlreadyActive, and only
-// one tmux session is spawned (no TOCTOU double-spawn).
+// TestDispatch_ConcurrentDuplicate verifies FIX 2 (migrated for M4 US4): two
+// goroutines dispatching the same bead → exactly one creates the run, the other
+// joins it (Joined:true), and only one tmux session is spawned (no TOCTOU
+// double-spawn). This replaces the former 409/ErrRunAlreadyActive assertion.
 func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires unix shell")
@@ -741,6 +835,7 @@ func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 
 	// Pane stays alive so the run remains active during the race.
 	transport := &fakeTransport{deadDead: false, spawnDelay: 50 * time.Millisecond}
+	t.Cleanup(func() { transport.forceDead.Store(true) })
 	reg := adapter.NewRegistry()
 	reg.Register(claude.New(claude.Options{}))
 
@@ -760,19 +855,20 @@ func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	var successes, conflicts atomic.Int32
+	var successes, joiners atomic.Int32
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := o.Dispatch(context.Background(), req)
-			switch {
-			case err == nil:
-				successes.Add(1)
-			case errors.Is(err, orchestrator.ErrRunAlreadyActive):
-				conflicts.Add(1)
-			default:
+			res, err := o.Dispatch(context.Background(), req)
+			if err != nil {
 				t.Errorf("unexpected dispatch error: %v", err)
+				return
+			}
+			if res.Joined {
+				joiners.Add(1)
+			} else {
+				successes.Add(1)
 			}
 		}()
 	}
@@ -781,8 +877,8 @@ func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 	if s := successes.Load(); s != 1 {
 		t.Errorf("want exactly 1 success, got %d", s)
 	}
-	if c := conflicts.Load(); c != 1 {
-		t.Errorf("want exactly 1 conflict, got %d", c)
+	if j := joiners.Load(); j != 1 {
+		t.Errorf("want exactly 1 joiner, got %d", j)
 	}
 	if sc := transport.spawnCount.Load(); sc != 1 {
 		t.Errorf("want exactly 1 Spawn, got %d", sc)
@@ -869,6 +965,161 @@ func TestDispatchResult_ZeroValueSane(t *testing.T) {
 
 	// Exercise all fields to confirm they compile.
 	_ = orchestrator.DispatchResult{Bead: nil, Joined: true, Queued: true}
+}
+
+// ── T051: Race — many concurrent identical dispatches yield exactly one run ──
+
+// TestDispatch_RaceIdentical verifies that many concurrent dispatches for the
+// same bead yield exactly one run (no leaked sessions or goroutines). All
+// concurrent callers either succeed with Joined:true or are the sole winner
+// that creates the run. (M4 US4 T051, -race clean)
+func TestDispatch_RaceIdentical(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	o, transport := newOrchestratorForTest(t, repoPath)
+	// Keep the watcher alive so the run stays active for the full test.
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-race",
+		BeadTitle:      "Race test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	const n = 20
+	type result struct {
+		res orchestrator.DispatchResult
+		err error
+	}
+	results := make(chan result, n)
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := o.Dispatch(context.Background(), req)
+			results <- result{res, err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var winners, joiners, errs int
+	for r := range results {
+		if r.err != nil {
+			errs++
+			t.Errorf("concurrent dispatch error: %v", r.err)
+			continue
+		}
+		if r.res.Joined {
+			joiners++
+		} else {
+			winners++
+		}
+	}
+
+	if errs > 0 {
+		t.Fatalf("got %d errors from %d concurrent dispatches", errs, n)
+	}
+	if winners != 1 {
+		t.Errorf("want exactly 1 winner, got %d (joiners=%d)", winners, joiners)
+	}
+	if joiners != n-1 {
+		t.Errorf("want %d joiners, got %d", n-1, joiners)
+	}
+	// Exactly one run must be registered.
+	if count := o.RunCount(); count != 1 {
+		t.Errorf("RunCount want 1 got %d", count)
+	}
+}
+
+// ── T052: Fresh dispatch after terminal state starts a new run ───────────────
+
+// TestDispatch_FreshAfterTerminal verifies that after a run reaches a terminal
+// state (StepDone/StepFailed and evicted), a fresh dispatch starts a new run
+// rather than erroring or joining the old one. (M4 US4 T052)
+func TestDispatch_FreshAfterTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+
+	// Transport: pane is immediately dead (exit 0) so finishRun fires quickly.
+	transport := &fakeTransport{deadDead: true, deadCode: 0}
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	done := make(chan struct{})
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    transport,
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+		// Very short retention so the eviction fires promptly.
+		RunRetention: 10 * time.Millisecond,
+		OnComplete: func(beadID string, exitCode int, success bool) {
+			// Signal only for the first completion (close is idempotent on nil channel).
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		},
+	})
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-fresh",
+		BeadTitle:      "Fresh test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	// First dispatch — completes immediately.
+	first, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	if first.Joined {
+		t.Fatal("first dispatch must not be joined")
+	}
+
+	// Wait for completion + eviction.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnComplete not called")
+	}
+
+	// Wait for eviction.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if o.GetRun("mp-fresh") == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if o.GetRun("mp-fresh") != nil {
+		t.Fatal("run should have been evicted before second dispatch")
+	}
+
+	// Second dispatch after eviction must start a NEW run (not join the old one).
+	second, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second dispatch after terminal: %v", err)
+	}
+	if second.Joined {
+		t.Error("second dispatch after terminal must NOT be joined (new run)")
+	}
+	if second.Bead == nil {
+		t.Fatal("second dispatch must return a bead")
+	}
 }
 
 // ── T008: Run struct M4 extensions — compile-only skeleton ───────────────────

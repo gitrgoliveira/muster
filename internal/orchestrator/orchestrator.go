@@ -614,8 +614,19 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 	// An admitted run is marked StepActive; a queued run is marked StepPending.
 	o.mu.Lock()
 	if existing, ok := o.runs[req.BeadID]; ok && (existing.State == core.StepActive || existing.State == core.StepPending) {
+		// Idempotent join (M4 US4): a duplicate dispatch of an in-flight bead
+		// (active or waiting for capacity) returns the existing run rather than
+		// an error. The caller is joining the existing run, not racing a new one.
+		// Join is keyed on bead identity only (no parameter comparison).
+		joinedBead := &core.Bead{
+			ID:     existing.BeadID,
+			Title:  existing.BeadTitle,
+			Desc:   existing.BeadDesc,
+			Column: core.ColRunning,
+		}
+		isQueued := existing.State == core.StepPending
 		o.mu.Unlock()
-		return DispatchResult{}, ErrRunAlreadyActive
+		return DispatchResult{Bead: joinedBead, Joined: true, Queued: isQueued}, nil
 	}
 	// Resolve the step chain for this dispatch. M2 single-step behaviour
 	// (nil Chain) is preserved when no chain is supplied in the request and

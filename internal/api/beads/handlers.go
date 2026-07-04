@@ -276,8 +276,18 @@ func (h *Handlers) Move(w http.ResponseWriter, r *http.Request) {
 	render.WriteJSON(w, http.StatusOK, bead)
 }
 
+// dispatchResponse is the JSON body for a successful POST /beads/{id}/dispatch.
+// It is additive: existing fields (the bead) are unchanged; joined and queued
+// are new M4 US4/US1 fields. Clients that ignore unknown fields are unaffected.
+type dispatchResponse struct {
+	*core.Bead
+	Joined bool `json:"joined"` // true when joining an existing in-flight run (M4 US4)
+	Queued bool `json:"queued"` // true when admitted to the waiting queue (M4 US1)
+}
+
 // Dispatch handles POST /beads/{id}/dispatch.
-// On success returns 202 Accepted with the bead in running state (FR-002).
+// Returns 202 Accepted on fresh launch, or 200 OK + joined:true when joining
+// an existing in-flight run (idempotent dispatch, M4 US4 contract).
 func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !validateID(w, r, id) {
@@ -295,13 +305,24 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 		PermissionMode: req.PermissionMode,
 	}
 
-	bead, err := h.svc.Dispatch(r.Context(), id, input)
+	result, err := h.svc.Dispatch(r.Context(), id, input)
 	if mapServiceError(w, r, err) {
 		return
 	}
 
-	// 202 Accepted — run has been launched asynchronously.
-	render.WriteJSON(w, http.StatusAccepted, bead)
+	body := dispatchResponse{
+		Bead:   result.Bead,
+		Joined: result.Joined,
+		Queued: result.Queued,
+	}
+
+	if result.Joined {
+		// 200 OK — caller joined an existing in-flight run (idempotent).
+		render.WriteJSON(w, http.StatusOK, body)
+		return
+	}
+	// 202 Accepted — run has been launched (or queued) asynchronously.
+	render.WriteJSON(w, http.StatusAccepted, body)
 }
 
 // Attach handles GET /beads/{id}/steps/{idx}/attach.

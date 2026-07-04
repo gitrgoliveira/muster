@@ -102,6 +102,14 @@ type DispatchInput struct {
 	PermissionMode core.PermissionMode // NEW (FR-021); validated/allow-listed
 }
 
+// DispatchResult is the return value of BeadService.Dispatch.
+// It carries the active bead plus idempotency flags surfaced to the HTTP layer.
+type DispatchResult struct {
+	Bead   *core.Bead
+	Joined bool // true when joining an existing in-flight run (M4 US4)
+	Queued bool // true when the run is waiting for a capacity slot (M4 US1)
+}
+
 // CommentInput carries the validated comment parameters.
 type CommentInput struct {
 	Actor string
@@ -117,11 +125,13 @@ type CommentInput struct {
 // The Dispatch method accepts an OrchestratorDispatchRequest, which mirrors
 // orchestrator.DispatchRequest — kept in sync by the API layer.
 type OrchestratorDispatcher interface {
-	// Dispatch launches an agent run for the given bead, returning the active bead.
-	// Implementations return *ServiceError (with Code set per
-	// orchestrator.mapDispatchError) rather than raw orchestrator sentinels;
-	// anything else is treated as CodeInternal by wrapOrchestratorError.
-	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (*core.Bead, error)
+	// Dispatch launches an agent run for the given bead. On success it returns
+	// an OrchestratorDispatchResult containing the active bead plus idempotency
+	// flags (Joined, Queued). Implementations return *ServiceError (with Code
+	// set per orchestrator.mapDispatchError) rather than raw orchestrator
+	// sentinels; anything else is treated as CodeInternal by
+	// wrapOrchestratorError.
+	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (OrchestratorDispatchResult, error)
 }
 
 // OrchestratorDispatchRequest is the input for OrchestratorDispatcher.Dispatch.
@@ -139,13 +149,10 @@ type OrchestratorDispatchRequest struct {
 // orchestrator.DispatchResult; defined here (not in orchestrator) to avoid an
 // import cycle. Kept in sync with orchestrator.DispatchResult per the
 // OrchestratorDispatchRequest mirroring pattern.
-//
-// TODO(M4 US4): wire this into OrchestratorDispatcher.Dispatch return type when
-// idempotent join (US4) is implemented — the interface currently returns *core.Bead.
 type OrchestratorDispatchResult struct {
 	Bead   *core.Bead
-	Joined bool // true when joining an in-flight run (idempotent dispatch)
-	Queued bool // true when admitted to the waiting queue (capacity full)
+	Joined bool // true when joining an in-flight run (idempotent dispatch, M4 US4)
+	Queued bool // true when admitted to the waiting queue (capacity full, M4 US1)
 }
 
 // SchedulerSnapshot is the service-layer view of the scheduler's current state.
@@ -551,15 +558,18 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 // not fatal, since the run is already active) — beads is the source of truth
 // for issue state, so the launch alone is not enough. Otherwise it falls back
 // to the legacy bd-CLI path (stub).
-func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchInput) (*core.Bead, error) {
+//
+// Returns a DispatchResult carrying the active bead plus idempotency flags
+// (Joined=true when joining an existing in-flight run; Queued=true when waiting).
+func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchInput) (DispatchResult, error) {
 	if !input.Agent.Valid() {
-		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid agent"}
+		return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: "invalid agent"}
 	}
 	if !input.Mode.Valid() {
-		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid mode"}
+		return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: "invalid mode"}
 	}
 	if input.PermissionMode != "" && !input.PermissionMode.Valid() {
-		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid permissionMode"}
+		return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: "invalid permissionMode"}
 	}
 
 	// If an orchestrator is available, delegate real dispatch to it.
@@ -567,7 +577,7 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// Get the bead first to obtain title/desc for the prompt.
 		bead, err := svc.GetBead(ctx, id)
 		if err != nil {
-			return nil, err
+			return DispatchResult{}, err
 		}
 		req := OrchestratorDispatchRequest{
 			BeadID:         id,
@@ -577,15 +587,26 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			Mode:           input.Mode,
 			PermissionMode: input.PermissionMode,
 		}
-		result, orchErr := svc.orchestrator.Dispatch(ctx, req)
+		orchResult, orchErr := svc.orchestrator.Dispatch(ctx, req)
 		if orchErr != nil {
-			return nil, wrapOrchestratorError(orchErr)
+			return DispatchResult{}, wrapOrchestratorError(orchErr)
 		}
-		if result == nil {
-			// Defensive: a (nil, nil) return would otherwise fall through to
-			// `return result, nil` below and hand the HTTP layer a 200 with a
-			// null bead. Treat a missing bead with no error as an internal fault.
-			return nil, &ServiceError{Code: CodeInternal, Message: "orchestrator returned no bead"}
+		if orchResult.Bead == nil {
+			// Defensive: a zero-value result with no error would hand the HTTP
+			// layer a 200 with a null bead. Treat a missing bead with no error
+			// as an internal fault.
+			return DispatchResult{}, &ServiceError{Code: CodeInternal, Message: "orchestrator returned no bead"}
+		}
+
+		// Idempotent join: the bead is already in-flight. Skip the bd-claim
+		// and WS publish (the run transition already happened on the first
+		// dispatch) and return directly so the handler can render 200+joined.
+		if orchResult.Joined {
+			return DispatchResult{
+				Bead:   orchResult.Bead,
+				Joined: true,
+				Queued: orchResult.Queued,
+			}, nil
 		}
 
 		// Persist the running transition. Beads is the source of truth for
@@ -633,14 +654,14 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// a jsonl write into the hub, so this manual publish is the only
 		// signal beyond tmux.session.opened. Overlay the orchestrator's
 		// column so the frame carries a complete payload even if the bd
-		// claim above failed/was unavailable (result.Column is still
+		// claim above failed/was unavailable (orchResult.Bead.Column is still
 		// authoritative for "the run is active" either way).
 		// Return the same merged bead from the HTTP path so the response
 		// matches the WS frame (clients otherwise saw a stub here while a
 		// concurrent socket-listener saw the full bead).
-		// result is guaranteed non-nil here (the (nil,nil) case returned above).
+		// orchResult.Bead is guaranteed non-nil here (the nil-bead case returned above).
 		merged := *bead
-		merged.Column = result.Column
+		merged.Column = orchResult.Bead.Column
 		if svc.publishOnWrite || !persisted {
 			// svc.publishOnWrite: remote mode, no watcher runs at all, so
 			// this manual publish is the only signal regardless of
@@ -652,21 +673,21 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			// without a running-transition signal at all.
 			svc.publishForce(ws.EventBeadUpdated, &merged)
 		}
-		return &merged, nil
+		return DispatchResult{Bead: &merged, Queued: orchResult.Queued}, nil
 	}
 
 	// Legacy stub path: just move the bead to running via bd CLI.
 	if err := svc.requireCLI(); err != nil {
-		return nil, err
+		return DispatchResult{}, err
 	}
 
 	iss, err := svc.cli.Dispatch(ctx, id)
 	if err != nil {
-		return nil, wrapCLIError(err)
+		return DispatchResult{}, wrapCLIError(err)
 	}
 	b := IssueToBead(&iss, svc.repo)
 	svc.publishWrite(ws.EventBeadUpdated, &b)
-	return &b, nil
+	return DispatchResult{Bead: &b}, nil
 }
 
 // AttachResponse describes a live tmux session for user attachment.

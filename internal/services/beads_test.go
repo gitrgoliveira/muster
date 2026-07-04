@@ -238,11 +238,19 @@ func TestPublishOnWrite_EmbeddedModeSilent(t *testing.T) {
 // fakeOrchestrator is an OrchestratorDispatcher that returns a fixed stub
 // bead, mirroring what orchestrator.Dispatch actually returns (an in-memory
 // stub, not a store write).
-type fakeOrchestrator struct{ dispatchCalled bool }
+type fakeOrchestrator struct {
+	dispatchCalled bool
+	joined         bool // when true, Dispatch returns Joined:true (idempotent join)
+	queued         bool // when true, Dispatch returns Queued:true (capacity-waiting)
+}
 
-func (f *fakeOrchestrator) Dispatch(context.Context, OrchestratorDispatchRequest) (*core.Bead, error) {
+func (f *fakeOrchestrator) Dispatch(context.Context, OrchestratorDispatchRequest) (OrchestratorDispatchResult, error) {
 	f.dispatchCalled = true
-	return &core.Bead{ID: "mp-aaa", Column: core.ColRunning}, nil
+	return OrchestratorDispatchResult{
+		Bead:   &core.Bead{ID: "mp-aaa", Column: core.ColRunning},
+		Joined: f.joined,
+		Queued: f.queued,
+	}, nil
 }
 
 // TestDispatch_OrchestratorPath_PersistsRunningState verifies that
@@ -279,8 +287,8 @@ func TestDispatch_OrchestratorPath_PersistsRunningState(t *testing.T) {
 	if dispatchCalls != 1 {
 		t.Errorf("bd CLI Dispatch (claim) call count want 1 got %d", dispatchCalls)
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 
 	if len(frames) == 0 {
@@ -311,8 +319,8 @@ func TestDispatch_OrchestratorPath_CLIUnavailable(t *testing.T) {
 	if !orch.dispatchCalled {
 		t.Fatal("orchestrator.Dispatch was not called")
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 }
 
@@ -334,8 +342,8 @@ func TestDispatch_OrchestratorPath_CLIClaimFails(t *testing.T) {
 	if !orch.dispatchCalled {
 		t.Fatal("orchestrator.Dispatch was not called")
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 }
 
@@ -358,8 +366,8 @@ func TestDispatch_OrchestratorPath_EmbeddedMode_ForcesPublishWhenNotPersisted(t 
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 	if len(frames) == 0 {
 		t.Fatal("expected a forced bead.updated frame despite publishOnWrite=false, since no real bd write occurred")
