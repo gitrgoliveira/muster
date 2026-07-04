@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -11,6 +12,56 @@ import (
 // Pinger is implemented by store.Backend.
 type Pinger interface {
 	Ping(ctx context.Context) error
+}
+
+// SchedulerSnapshotter is implemented by services.BeadService (or a test double)
+// to expose scheduler state and capacity management to the health handler.
+// Defined here (not in services) to avoid import cycles.
+type SchedulerSnapshotter interface {
+	// SetCapacity changes the scheduler's maximum concurrency at runtime.
+	// n must be > 0; returns an error otherwise.
+	SetCapacity(n int) error
+	// SchedulerSnapshot returns the current scheduler state.
+	SchedulerSnapshot() SchedulerSnapshotDTO
+}
+
+// OrchestratorHandler handles orchestrator management endpoints
+// (PUT /orchestrator/capacity). It is separate from OrchestratorStatusHandler
+// so the handler can hold a reference to the service without changing the
+// existing StatusConfig closure pattern.
+type OrchestratorHandler struct {
+	sched SchedulerSnapshotter
+}
+
+// NewOrchestratorHandler constructs an OrchestratorHandler with the given
+// scheduler management interface.
+func NewOrchestratorHandler(sched SchedulerSnapshotter) *OrchestratorHandler {
+	return &OrchestratorHandler{sched: sched}
+}
+
+// SetCapacity handles PUT /api/v1/orchestrator/capacity.
+//
+// Request body: {"capacity": N}  (N must be > 0)
+// Response 200: SchedulerSnapshotDTO
+// Response 400: JSON error with code INVALID_CAPACITY
+func (h *OrchestratorHandler) SetCapacity(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Capacity int `json:"capacity"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "invalid JSON body")
+		return
+	}
+	if body.Capacity <= 0 {
+		render.WriteError(w, r, http.StatusBadRequest, "INVALID_CAPACITY", "capacity must be > 0")
+		return
+	}
+	if err := h.sched.SetCapacity(body.Capacity); err != nil {
+		render.WriteError(w, r, http.StatusBadRequest, "INVALID_CAPACITY", err.Error())
+		return
+	}
+	snap := h.sched.SchedulerSnapshot()
+	render.WriteJSON(w, http.StatusOK, snap)
 }
 
 // RunCounter is implemented by the orchestrator to report active run count.
@@ -49,6 +100,11 @@ type StatusConfig struct {
 	// May be supplied directly or via WorktreeCounter (counter takes priority).
 	WorktreeCount   int
 	WorktreeCounter WorktreeCounter // may be nil; takes priority over WorktreeCount
+
+	// M4 additions (additive — all M0–M3 fields unchanged).
+	// SchedulerSnapshotter provides live scheduler state for the status response.
+	// May be nil; scheduler fields are omitted (zero-valued) when nil.
+	SchedulerSnapshotter SchedulerSnapshotter
 }
 
 // HealthzHandler handles GET /api/v1/healthz.
@@ -83,6 +139,12 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			worktreeCount = cfg.WorktreeCounter.WorktreeCount()
 		}
 
+		// M4: read live scheduler state.
+		var schedSnap SchedulerSnapshotDTO
+		if cfg.SchedulerSnapshotter != nil {
+			schedSnap = cfg.SchedulerSnapshotter.SchedulerSnapshot()
+		}
+
 		resp := OrchestratorStatusResponse{
 			Build:         "dev",
 			SchemaVersion: schemaVersion,
@@ -103,6 +165,10 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			// M3 additions.
 			VCS:           cfg.VCS,
 			WorktreeCount: worktreeCount,
+			// M4 additions.
+			Capacity:    schedSnap.Capacity,
+			ActiveCount: schedSnap.ActiveCount,
+			Waiting:     schedSnap.Waiting,
 		}
 		render.WriteJSON(w, http.StatusOK, resp)
 	}

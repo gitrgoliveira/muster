@@ -41,9 +41,13 @@ func NewRouter(
 		render.WriteError(w, req, http.StatusMethodNotAllowed, render.CodeMethodNotAllowed, "method not allowed")
 	})
 
-	// Health endpoints.
+	// Health and orchestrator management endpoints.
 	r.Get("/api/v1/healthz", health.HealthzHandler)
 	r.Get("/api/v1/orchestrator/status", health.OrchestratorStatusHandler(statusCfg))
+	if statusCfg.SchedulerSnapshotter != nil {
+		oh := health.NewOrchestratorHandler(statusCfg.SchedulerSnapshotter)
+		r.With(middleware.BodyLimit).Put("/api/v1/orchestrator/capacity", oh.SetCapacity)
+	}
 
 	// WebSocket stream endpoint.
 	r.Get("/api/v1/stream", stream.StreamHandler(hub))

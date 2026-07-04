@@ -64,8 +64,10 @@ var ErrVCSUnavailable = errors.New("VCS binary unavailable")
 //   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt.
 type Run struct {
 	BeadID         string
-	StepIdx        int // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
-	Loop           int // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
+	BeadTitle      string // preserved for queued runs so launchAdmittedRun can build the prompt
+	BeadDesc       string // preserved for queued runs so launchAdmittedRun can build the prompt
+	StepIdx        int    // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
+	Loop           int    // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode
@@ -118,16 +120,14 @@ type DispatchRequest struct {
 // Queued is true when the bead was accepted but is waiting for a capacity slot
 // (M4 US1). A Joined result with Queued true means the bead is joining a waiter.
 // Bead is always the active *core.Bead (existing run on join, new run otherwise).
-//
-// TODO(M4 US1): replace the Dispatch return signature (*core.Bead, error) with
-// (DispatchResult, error) once the scheduler is wired in (US1/US4). For now
-// this type is defined so dependent packages can reference it without forcing
-// churn across the codebase when the return type changes.
 type DispatchResult struct {
 	Bead   *core.Bead
 	Joined bool // true when joining an in-flight run (idempotent dispatch)
 	Queued bool // true when admitted to the waiting queue (capacity full)
 }
+
+// defaultSchedulerCapacity is the capacity used when Config.MaxConcurrent is unset.
+const defaultSchedulerCapacity = 4
 
 // Publisher is a function that broadcasts a WS frame to connected clients.
 type Publisher func(frame ws.Frame)
@@ -136,6 +136,11 @@ type Publisher func(frame ws.Frame)
 type Orchestrator struct {
 	mu   sync.RWMutex
 	runs map[string]*Run // keyed by beadID
+
+	// sched is the capacity-gated FIFO scheduler (M4 US1). All sched methods
+	// must be called with mu held (write lock). setCapacity acquires the lock
+	// internally.
+	sched *scheduler
 
 	adapters        *adapter.Registry
 	transport       tmux.Manager // may be a fallback transport
@@ -196,6 +201,11 @@ type Config struct {
 	// Wired in main.go to record the agent-run outcome on the bead (FR-013):
 	// a note + bead.updated frame. It runs on the watcher goroutine.
 	OnComplete func(beadID string, exitCode int, success bool)
+
+	// MaxConcurrent is the maximum number of concurrently active runs (M4 US1).
+	// 0 or negative defaults to 4 (defaultSchedulerCapacity). Use SetCapacity
+	// to change it at runtime; Dispatch enforces it via the FIFO scheduler.
+	MaxConcurrent int
 }
 
 // defaultRunRetention is used when Config.RunRetention is unset (0).
@@ -240,8 +250,17 @@ func New(cfg Config) *Orchestrator {
 			backend = wt.NewGitBackend(cfg.WorktreesDir)
 		}
 	}
+
+	// Initialise the FIFO scheduler (M4 US1). Default to 4 concurrent runs
+	// when MaxConcurrent is unset (0) or negative.
+	schedCap := cfg.MaxConcurrent
+	if schedCap <= 0 {
+		schedCap = defaultSchedulerCapacity
+	}
+
 	return &Orchestrator{
 		runs:            make(map[string]*Run),
+		sched:           newScheduler(schedCap),
 		adapters:        cfg.Adapters,
 		transport:       transport,
 		repoMap:         cfg.RepoMap,
@@ -268,6 +287,29 @@ func (o *Orchestrator) RunCount() int {
 		}
 	}
 	return count
+}
+
+// SetCapacity changes the scheduler's maximum concurrency at runtime.
+// n must be > 0; returns ErrInvalidCapacity otherwise. Lowering below the
+// number of currently active runs drains (never kills running agents).
+// Raising above the current active count immediately admits waiters FIFO.
+func (o *Orchestrator) SetCapacity(n int) error {
+	admitted, err := o.sched.setCapacity(&o.mu, n)
+	if err != nil {
+		return err
+	}
+	// Launch newly admitted runs outside the lock (slow IO: Detect/Ensure/Spawn).
+	for _, run := range admitted {
+		go o.launchAdmittedRun(run)
+	}
+	return nil
+}
+
+// SchedulerSnapshot returns a point-in-time view of the scheduler state.
+func (o *Orchestrator) SchedulerSnapshot() SchedulerSnapshot {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.sched.snapshot()
 }
 
 // WorktreeCount returns the number of per-bead worktree directories currently
@@ -438,23 +480,22 @@ var promptingModes = map[core.PermissionMode]bool{
 
 // Dispatch launches an agent run for the given bead. It:
 //  1. Validates inputs and checks for duplicate run.
-//  2. Resolves the repo from the RepoMap.
-//  3. Ensures the per-bead worktree exists.
-//  4. Writes the assembled prompt to <worktree>/.muster-prompt-0.txt.
-//  5. Calls adapter.Invoke to get the Spec.
-//  6. Spawns the tmux session.
-//  7. Registers the Run and starts the exit-watcher goroutine.
-//  8. Emits tmux.session.opened.
+//  2. Admits or enqueues the run via the FIFO scheduler.
+//  3. If admitted: resolves repo, ensures worktree, writes prompt, invokes adapter, spawns session.
+//  4. If queued: registers a StepPending run and returns immediately (Queued:true).
+//     The agent session is launched in launchAdmittedRun when a slot opens.
+//  5. On success, returns DispatchResult with Queued indicating whether the run
+//     is waiting for a capacity slot.
 //
-// Returns a stub *core.Bead with updated column (the caller publishes bead.updated).
-func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core.Bead, error) {
+// Returns a DispatchResult with the bead and its queuing status.
+func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (DispatchResult, error) {
 	// Defense in depth: validate the bead ID before it flows into a repo-map
 	// lookup, a tmux session name, and (via worktree.Ensure) a filesystem path
 	// + git branch name. The HTTP handler already allow-lists IDs, but Dispatch
 	// is a public entry point and must not trust its caller — the same reason
 	// recovery validates session-derived IDs.
 	if !core.ValidBeadID(req.BeadID) {
-		return nil, ErrInvalidBeadID
+		return DispatchResult{}, ErrInvalidBeadID
 	}
 
 	// A missing worktreesDir is a construction/wiring error (cmd/muster always
@@ -463,7 +504,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// working directory. Fail fast, before reserving a run, rather than
 	// scattering worktrees wherever the process happens to be running.
 	if o.worktreesDir == "" {
-		return nil, fmt.Errorf("orchestrator: worktreesDir is not configured")
+		return DispatchResult{}, fmt.Errorf("orchestrator: worktreesDir is not configured")
 	}
 
 	// Refuse dispatch when the configured VCS binary was absent at startup
@@ -472,18 +513,18 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	switch o.defaultVCS {
 	case wt.VCSJJ:
 		if !o.vcsAvailable.JJ {
-			return nil, fmt.Errorf("%w: jj not found on PATH", ErrVCSUnavailable)
+			return DispatchResult{}, fmt.Errorf("%w: jj not found on PATH", ErrVCSUnavailable)
 		}
 	default: // git
 		if !o.vcsAvailable.Git {
-			return nil, fmt.Errorf("%w: git not found on PATH", ErrVCSUnavailable)
+			return DispatchResult{}, fmt.Errorf("%w: git not found on PATH", ErrVCSUnavailable)
 		}
 	}
 
 	// Resolve permission mode.
 	pm, err := o.resolvePermMode(req.Mode, req.PermissionMode)
 	if err != nil {
-		return nil, err
+		return DispatchResult{}, err
 	}
 
 	// FR-021: under the tmux-absent fallback there is no attachable session to
@@ -497,21 +538,59 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// same lock to close the TOCTOU window. Without the reservation, two
 	// concurrent dispatches for the same bead could both pass the check, both
 	// do the slow Detect/Ensure/Invoke/Spawn work, and both spawn a session —
-	// leaking a goroutine and orphaning a tmux session. The reservation marks
-	// the bead StepActive up-front so the second caller gets ErrRunAlreadyActive.
+	// leaking a goroutine and orphaning a tmux session.
+	//
+	// M4 US1: the scheduler admits or enqueues the reservation under the same lock.
+	// An admitted run is marked StepActive; a queued run is marked StepPending.
 	o.mu.Lock()
-	if existing, ok := o.runs[req.BeadID]; ok && existing.State == core.StepActive {
+	if existing, ok := o.runs[req.BeadID]; ok && (existing.State == core.StepActive || existing.State == core.StepPending) {
 		o.mu.Unlock()
-		return nil, ErrRunAlreadyActive
+		return DispatchResult{}, ErrRunAlreadyActive
 	}
 	reserved := &Run{
-		BeadID:    req.BeadID,
-		State:     core.StepActive,
-		StartedAt: time.Now(),
+		BeadID:         req.BeadID,
+		BeadTitle:      req.BeadTitle,
+		BeadDesc:       req.BeadDesc,
+		Agent:          req.Agent,
+		Mode:           req.Mode,
+		PermissionMode: pm,
+		State:          core.StepPending,
+		StartedAt:      time.Now(),
+	}
+	queued := o.sched.admitOrEnqueue(reserved)
+	if !queued {
+		// Admitted: flip state to active now.
+		reserved.State = core.StepActive
 	}
 	o.registerRun(reserved)
+
+	// Capture the waiting position for the queued event (0-based FIFO index).
+	var waitingPos int
+	if queued {
+		waitingPos = len(o.sched.waiting) - 1 // this run is last in the queue
+	}
 	o.mu.Unlock()
 
+	// If queued, emit dispatch.queued WS event and return immediately.
+	// The agent session is launched in launchAdmittedRun when a slot opens.
+	if queued {
+		if o.publish != nil {
+			o.publish(ws.Frame{
+				Type:       ws.EventDispatchQueued,
+				BeadID:     req.BeadID,
+				WaitingPos: &waitingPos,
+			})
+		}
+		bead := &core.Bead{
+			ID:     req.BeadID,
+			Title:  req.BeadTitle,
+			Desc:   req.BeadDesc,
+			Column: core.ColRunning,
+		}
+		return DispatchResult{Bead: bead, Queued: true}, nil
+	}
+
+	// Admitted path: do the slow IO work outside the lock.
 	// On any early-return error, release the reservation (only if it's still
 	// ours — a later success replaces the pointer's fields in place, not the
 	// pointer itself, so identity holds; but a subsequent dispatch could have
@@ -524,10 +603,23 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		o.mu.Lock()
 		if cur, ok := o.runs[req.BeadID]; ok && cur == reserved {
 			delete(o.runs, req.BeadID)
+			o.sched.onRunEnd(req.BeadID) // remove from active set
 		}
 		o.mu.Unlock()
 	}()
 
+	bead, err := o.doLaunch(ctx, reserved, req, pm)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	success = true
+	return DispatchResult{Bead: bead}, nil
+}
+
+// doLaunch performs the slow IO work for an admitted run: adapter detect,
+// worktree ensure, prompt write, adapter invoke, tmux spawn, watcher start.
+// Must NOT be called with o.mu held.
+func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchRequest, pm core.PermissionMode) (*core.Bead, error) {
 	// Resolve adapter.
 	if o.adapters == nil {
 		return nil, ErrAdapterNotFound
@@ -539,14 +631,12 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	// Detect adapter (installed + logged in). Bound the probe with an
 	// independent short deadline so a hung claude binary or slow HTTP client
-	// cannot pin the run reservation (`State=StepActive`, registered above)
-	// indefinitely — otherwise the bead would remain undispatchable until the
-	// server restarts. context.WithoutCancel detaches from ctx's cancellation
-	// (ctx is the HTTP request context; a client disconnect cancels it) so
-	// only OUR deadline can end the probe — a disconnecting client must not
-	// be able to SIGKILL an in-flight `claude` subprocess via
-	// exec.CommandContext, which would otherwise be indistinguishable from a
-	// hung probe.
+	// cannot pin the run reservation indefinitely — otherwise the bead would
+	// remain undispatchable until the server restarts.
+	// context.WithoutCancel detaches from ctx's cancellation (ctx is the HTTP
+	// request context; a client disconnect cancels it) so only OUR deadline can
+	// end the probe — a disconnecting client must not be able to SIGKILL an
+	// in-flight `claude` subprocess via exec.CommandContext.
 	detectCtx, detectCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	detectResult, err := adp.Detect(detectCtx)
 	detectCancel()
@@ -582,17 +672,9 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	// Ensure worktree. Bound the git subprocesses with an independent
 	// short deadline for the same reason as the Detect probe above: a hung
-	// `git rev-parse` / `git worktree add` (e.g. against a slow NFS mount or a
-	// stuck `.git` lock) would otherwise hold the run reservation forever.
-	// context.WithoutCancel detaches from ctx's cancellation for the same
-	// reason as the Detect probe above: a client disconnect must not
-	// SIGKILL a `git worktree add` mid-checkout via exec.CommandContext —
-	// git writes the worktree's `.git` gitlink file before the checkout
-	// completes, so a kill at the wrong moment would leave a directory that
-	// LOOKS like a complete worktree (isWorktreeDir returns true) but has an
-	// incomplete file checkout, and the backend's reuse fast-path has no way to
-	// distinguish that from a legitimately-reusable worktree. Only OUR
-	// deadline (a genuinely hung subprocess) should be able to trigger this.
+	// `git rev-parse` / `git worktree add` would otherwise hold the run
+	// reservation forever. context.WithoutCancel detaches from ctx's
+	// cancellation for the same reason as the Detect probe above.
 	ensureCtx, ensureCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	wtPath, err := o.backend.Create(ensureCtx, o.worktreesDir, repoPath, req.BeadID)
 	ensureCancel()
@@ -624,32 +706,22 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	}
 
 	// Spawn tmux session.
-	sessionName := tmux.SessionName(req.BeadID, 0, 0)
+	sessionName := tmux.SessionName(req.BeadID, run.StepIdx, run.Loop)
 	sess, err := o.transport.Spawn(sessionName, spec.Cwd, spec.Env, spec.Argv)
 	if err != nil {
 		return nil, fmt.Errorf("tmux spawn: %w", err)
 	}
 
-	// Fill the reserved run's fields in place (keeping the same pointer the
+	// Fill the run's fields in place (keeping the same pointer the
 	// reservation registered, so the TOCTOU guard's identity check holds).
-	// StepIdx and Loop are omitted: both are already zero-valued in the
-	// reservation allocation and M2 pins them at zero anyway (see the Run
-	// struct field comments).
 	runCtx, runCancel := context.WithCancel(context.Background())
-	run := reserved
 	o.mu.Lock()
-	run.Agent = req.Agent
-	run.Mode = req.Mode
-	run.PermissionMode = pm
 	run.Worktree = wtPath
 	run.Session = sess.Name
 	run.Pane = sess.Pane
 	run.State = core.StepActive
 	run.cancel = runCancel
 	o.mu.Unlock()
-
-	// Mark success so the deferred reservation-cleanup is a no-op.
-	success = true
 
 	// Start pipe + exit watcher goroutine.
 	// Pipe the pane output to the WS hub as runlog.line frames. Use sess.Name
@@ -678,7 +750,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		o.mu.Unlock()
 		streamer := &runlogStreamer{
 			beadID:  req.BeadID,
-			stepIdx: 0,
+			stepIdx: run.StepIdx,
 			publish: o.publish,
 		}
 		go streamer.stream(pipeReader)
@@ -686,12 +758,12 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	go o.watchRun(runCtx, run)
 
-	// Emit tmux.session.opened.
+	// Emit tmux.session.opened and dispatch.admitted (if this was a queued run).
 	if o.publish != nil {
 		o.publish(ws.Frame{
 			Type:    ws.EventTmuxOpened,
 			BeadID:  req.BeadID,
-			StepIdx: intPtr(0),
+			StepIdx: intPtr(run.StepIdx),
 			Session: sess.Name,
 		})
 	}
@@ -704,6 +776,45 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		Column: core.ColRunning,
 	}
 	return bead, nil
+}
+
+// launchAdmittedRun performs the slow IO work to start a previously-queued run
+// that has been admitted from the FIFO queue. It is called in a goroutine so it
+// doesn't block the finishRun/onRunEnd path.
+func (o *Orchestrator) launchAdmittedRun(run *Run) {
+	// Use a background context — the original request's context is long gone.
+	ctx := context.Background()
+
+	// Emit dispatch.admitted event.
+	if o.publish != nil {
+		o.publish(ws.Frame{
+			Type:    ws.EventDispatchAdmitted,
+			BeadID:  run.BeadID,
+			StepIdx: intPtr(run.StepIdx),
+		})
+	}
+
+	req := DispatchRequest{
+		BeadID:         run.BeadID,
+		BeadTitle:      run.BeadTitle,
+		BeadDesc:       run.BeadDesc,
+		Agent:          run.Agent,
+		Mode:           run.Mode,
+		PermissionMode: run.PermissionMode,
+	}
+
+	_, err := o.doLaunch(ctx, run, req, run.PermissionMode)
+	if err != nil {
+		slog.Error("launchAdmittedRun: failed to launch admitted queued run",
+			"bead", run.BeadID, "err", err)
+		// Remove from the registry and scheduler active set on failure.
+		o.mu.Lock()
+		if cur, ok := o.runs[run.BeadID]; ok && cur == run {
+			delete(o.runs, run.BeadID)
+			o.sched.onRunEnd(run.BeadID)
+		}
+		o.mu.Unlock()
+	}
 }
 
 // watchRun monitors a run for exit via DeadStatus polling, then transitions
@@ -791,11 +902,22 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	}
 
 	// Only NOW flip the State off StepActive — see the ordering note above.
+	// Also admit the next FIFO waiter (if any) while still holding the lock,
+	// then launch it outside the lock (slow IO: Detect/Ensure/Spawn).
 	o.mu.Lock()
 	run.State = state
 	run.ExitCode = exitCode
 	run.EndedAt = time.Now()
+	nextRun := o.sched.onRunEnd(run.BeadID)
+	if nextRun != nil {
+		nextRun.State = core.StepActive
+	}
 	o.mu.Unlock()
+
+	// Launch the next waiter outside the lock (Detect/Ensure/Invoke/Spawn are slow).
+	if nextRun != nil {
+		go o.launchAdmittedRun(nextRun)
+	}
 
 	// Emit tmux.session.closed.
 	if o.publish != nil {

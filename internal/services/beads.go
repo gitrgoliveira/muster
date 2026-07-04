@@ -140,13 +140,31 @@ type OrchestratorDispatchRequest struct {
 // import cycle. Kept in sync with orchestrator.DispatchResult per the
 // OrchestratorDispatchRequest mirroring pattern.
 //
-// TODO(M4 US1): wire this into OrchestratorDispatcher.Dispatch return type once
-// the scheduler is integrated (US1/US4). For now it is defined so handler code
-// can reference it without forcing churn when the signature changes.
+// TODO(M4 US4): wire this into OrchestratorDispatcher.Dispatch return type when
+// idempotent join (US4) is implemented — the interface currently returns *core.Bead.
 type OrchestratorDispatchResult struct {
 	Bead   *core.Bead
 	Joined bool // true when joining an in-flight run (idempotent dispatch)
 	Queued bool // true when admitted to the waiting queue (capacity full)
+}
+
+// SchedulerSnapshot is the service-layer view of the scheduler's current state.
+// It mirrors orchestrator.SchedulerSnapshot; defined here to avoid import cycles.
+type SchedulerSnapshot struct {
+	Capacity    int
+	ActiveCount int
+	Waiting     []string // bead IDs in FIFO order
+}
+
+// SchedulerManager is the interface BeadService uses to manage scheduler capacity.
+// The real implementation is *orchestrator.Orchestrator; tests substitute a fake.
+// Defined here (not in orchestrator) to avoid import cycles.
+type SchedulerManager interface {
+	// SetCapacity changes the scheduler's maximum concurrency at runtime.
+	// n must be > 0; returns an error (code INVALID_CAPACITY) otherwise.
+	SetCapacity(n int) error
+	// SchedulerSnapshot returns the current scheduler state (capacity, active, waiting).
+	SchedulerSnapshot() SchedulerSnapshot
 }
 
 // BeadService implements business logic on top of the store.
@@ -154,6 +172,7 @@ type BeadService struct {
 	backend      store.Backend
 	cli          CLIRunner              // may be nil; writes return CodeCLIMissing when nil
 	orchestrator OrchestratorDispatcher // may be nil; dispatch returns CodeCLIMissing when nil
+	scheduler    SchedulerManager       // may be nil; SetCapacity/SchedulerSnapshot return error when nil
 	attacher     SessionAttacher        // may be nil; attach/send return unavailable when nil
 	wtAccessor   WorktreeAccessor       // may be nil; worktree/diff return CodeVCSUnavailable when nil
 	repo         string
@@ -182,6 +201,36 @@ func (svc *BeadService) WithOrchestrator(o OrchestratorDispatcher) *BeadService 
 	svc2 := *svc
 	svc2.orchestrator = o
 	return &svc2
+}
+
+// WithScheduler returns a new BeadService with a scheduler manager attached.
+// The manager is used by SetCapacity and SchedulerSnapshot when present.
+func (svc *BeadService) WithScheduler(s SchedulerManager) *BeadService {
+	svc2 := *svc
+	svc2.scheduler = s
+	return &svc2
+}
+
+// SetCapacity changes the scheduler's maximum concurrency at runtime.
+// Returns *ServiceError{Code: CodeInvalidCapacity} when n ≤ 0, or when the
+// scheduler is not configured (scheduler == nil).
+func (svc *BeadService) SetCapacity(n int) error {
+	if svc.scheduler == nil {
+		return &ServiceError{Code: CodeInvalidCapacity, Message: "scheduler not configured"}
+	}
+	if err := svc.scheduler.SetCapacity(n); err != nil {
+		return &ServiceError{Code: CodeInvalidCapacity, Message: err.Error()}
+	}
+	return nil
+}
+
+// SchedulerSnapshot returns the current scheduler state. If the scheduler is
+// not configured, it returns a zero-value snapshot (capacity 0, no active runs).
+func (svc *BeadService) SchedulerSnapshot() SchedulerSnapshot {
+	if svc.scheduler == nil {
+		return SchedulerSnapshot{}
+	}
+	return svc.scheduler.SchedulerSnapshot()
 }
 
 // WithAttacher returns a new BeadService with a session attacher attached.

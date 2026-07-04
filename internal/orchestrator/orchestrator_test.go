@@ -31,11 +31,16 @@ type completion struct {
 // fakeTransport is a minimal tmux.Manager that records calls and returns
 // controllable results.
 type fakeTransport struct {
-	spawnErr       error
-	spawnPane      string // optional: Session.Pane to report from Spawn
-	deadCode       int
-	deadDead       bool
-	deadErr        error
+	spawnErr  error
+	spawnPane string // optional: Session.Pane to report from Spawn
+	deadCode  int
+	deadDead  bool
+	deadErr   error
+
+	// spawnedSession is protected by spawnMu because Spawn can be called
+	// concurrently (e.g. in T012 ConcurrentDispatch) and -race would detect
+	// the unsynchronized write.
+	spawnMu        sync.Mutex
 	spawnedSession *tmux.Session
 
 	// killCalled/pipeCalled are written from watcher goroutines
@@ -88,7 +93,9 @@ func (f *fakeTransport) Spawn(name, cwd string, env, argv []string) (*tmux.Sessi
 		Pane:      f.spawnPane,
 		StartedAt: time.Now(),
 	}
+	f.spawnMu.Lock()
 	f.spawnedSession = sess
+	f.spawnMu.Unlock()
 	return sess, nil
 }
 

@@ -23,7 +23,7 @@ type serviceDispatcherAdapter struct {
 // Dispatch implements services.OrchestratorDispatcher by translating the
 // import-cycle-avoiding request type into the orchestrator's own DispatchRequest.
 func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (*core.Bead, error) {
-	bead, err := a.o.Dispatch(ctx, DispatchRequest{
+	res, err := a.o.Dispatch(ctx, DispatchRequest{
 		BeadID:         req.BeadID,
 		BeadTitle:      req.BeadTitle,
 		BeadDesc:       req.BeadDesc,
@@ -31,7 +31,10 @@ func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.Or
 		Mode:           req.Mode,
 		PermissionMode: req.PermissionMode,
 	})
-	return bead, mapDispatchError(err)
+	if err != nil {
+		return nil, mapDispatchError(err)
+	}
+	return res.Bead, nil
 }
 
 // mapDispatchError translates orchestrator sentinel errors into typed
@@ -79,3 +82,34 @@ func (o *Orchestrator) AsSessionAttacher() services.SessionAttacher {
 
 // Verify Orchestrator implements services.SessionAttacher.
 var _ services.SessionAttacher = (*Orchestrator)(nil)
+
+// AsSchedulerManager returns a services.SchedulerManager that delegates to
+// this Orchestrator's capacity-gated FIFO scheduler. Use this when wiring
+// into services.BeadService.WithScheduler.
+func (o *Orchestrator) AsSchedulerManager() services.SchedulerManager {
+	return &schedulerManagerAdapter{o: o}
+}
+
+// schedulerManagerAdapter adapts Orchestrator to services.SchedulerManager.
+type schedulerManagerAdapter struct {
+	o *Orchestrator
+}
+
+// SetCapacity implements services.SchedulerManager.
+func (a *schedulerManagerAdapter) SetCapacity(n int) error {
+	if err := a.o.SetCapacity(n); err != nil {
+		return &services.ServiceError{Code: services.CodeInvalidCapacity, Message: err.Error()}
+	}
+	return nil
+}
+
+// SchedulerSnapshot implements services.SchedulerManager, converting from
+// orchestrator.SchedulerSnapshot to services.SchedulerSnapshot.
+func (a *schedulerManagerAdapter) SchedulerSnapshot() services.SchedulerSnapshot {
+	snap := a.o.SchedulerSnapshot()
+	return services.SchedulerSnapshot{
+		Capacity:    snap.Capacity,
+		ActiveCount: snap.ActiveCount,
+		Waiting:     snap.Waiting,
+	}
+}

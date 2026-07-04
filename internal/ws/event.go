@@ -66,6 +66,9 @@ type Frame struct {
 	// M2: tmux.session.opened / tmux.session.closed
 	Session  string `json:"session,omitempty"`
 	ExitCode *int   `json:"exitCode,omitempty"` // on closed; nil on opened
+
+	// M4: dispatch.queued / dispatch.admitted
+	WaitingPos *int `json:"waitingPos,omitempty"` // 0-based FIFO position; dispatch.queued only
 }
 
 // ClientFrame is the only accepted client-to-server frame shape.

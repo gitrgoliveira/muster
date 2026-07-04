@@ -33,6 +33,14 @@ type VCSStatus struct {
 	JJ VCSAvailability `json:"jj"`
 }
 
+// SchedulerSnapshotDTO is the JSON shape for the scheduler's current state.
+// Used by both GET /orchestrator/status (embedded) and PUT /orchestrator/capacity (body).
+type SchedulerSnapshotDTO struct {
+	Capacity    int      `json:"capacity"`
+	ActiveCount int      `json:"activeCount"`
+	Waiting     []string `json:"waiting"`
+}
+
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.
 type OrchestratorStatusResponse struct {
 	Build         string `json:"build"`
@@ -59,4 +67,12 @@ type OrchestratorStatusResponse struct {
 	// WorktreeCount is the number of per-bead worktree directories under
 	// the configured --worktrees-dir.
 	WorktreeCount int `json:"worktreeCount"`
+
+	// M4 additions (additive — all M0–M3 fields unchanged).
+	// Capacity is the scheduler's maximum concurrency.
+	Capacity int `json:"capacity"`
+	// ActiveCount is the number of currently-running agent sessions.
+	ActiveCount int `json:"activeCount"`
+	// Waiting is the bead IDs in FIFO order waiting for a capacity slot.
+	Waiting []string `json:"waiting"`
 }

@@ -512,6 +512,101 @@ func TestM4ErrorCodes(t *testing.T) {
 	}
 }
 
+// T018: SetCapacity and SchedulerSnapshot service-layer wiring tests.
+
+// fakeSchedulerManager is a test double for SchedulerManager.
+type fakeSchedulerManager struct {
+	capacity    int
+	activeCount int
+	waiting     []string
+	setErr      error // non-nil causes SetCapacity to fail
+}
+
+func (f *fakeSchedulerManager) SetCapacity(n int) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
+	f.capacity = n
+	return nil
+}
+
+func (f *fakeSchedulerManager) SchedulerSnapshot() SchedulerSnapshot {
+	return SchedulerSnapshot{
+		Capacity:    f.capacity,
+		ActiveCount: f.activeCount,
+		Waiting:     f.waiting,
+	}
+}
+
+func TestT018_SetCapacity_NoScheduler(t *testing.T) {
+	svc := NewBeadService(nil, nil, nil)
+	err := svc.SetCapacity(4)
+	if err == nil {
+		t.Fatal("expected error when scheduler not configured")
+	}
+	se, ok := err.(*ServiceError)
+	if !ok {
+		t.Fatalf("expected *ServiceError, got %T", err)
+	}
+	if se.Code != CodeInvalidCapacity {
+		t.Errorf("code want %q got %q", CodeInvalidCapacity, se.Code)
+	}
+}
+
+func TestT018_SetCapacity_ValidCapacity(t *testing.T) {
+	fake := &fakeSchedulerManager{capacity: 2}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	if err := svc.SetCapacity(5); err != nil {
+		t.Fatalf("SetCapacity(5): %v", err)
+	}
+	if fake.capacity != 5 {
+		t.Errorf("capacity want 5 got %d", fake.capacity)
+	}
+}
+
+func TestT018_SetCapacity_InvalidCapacity(t *testing.T) {
+	fake := &fakeSchedulerManager{setErr: fmt.Errorf("capacity must be > 0")}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	err := svc.SetCapacity(0)
+	if err == nil {
+		t.Fatal("expected error for capacity 0")
+	}
+	se, ok := err.(*ServiceError)
+	if !ok {
+		t.Fatalf("expected *ServiceError, got %T", err)
+	}
+	if se.Code != CodeInvalidCapacity {
+		t.Errorf("code want %q got %q", CodeInvalidCapacity, se.Code)
+	}
+}
+
+func TestT018_SchedulerSnapshot_NoScheduler(t *testing.T) {
+	svc := NewBeadService(nil, nil, nil)
+	snap := svc.SchedulerSnapshot()
+	if snap.Capacity != 0 || snap.ActiveCount != 0 || len(snap.Waiting) != 0 {
+		t.Errorf("zero-value snapshot expected when no scheduler; got %+v", snap)
+	}
+}
+
+func TestT018_SchedulerSnapshot_WithScheduler(t *testing.T) {
+	fake := &fakeSchedulerManager{
+		capacity:    3,
+		activeCount: 2,
+		waiting:     []string{"bd-1", "bd-2"},
+	}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	snap := svc.SchedulerSnapshot()
+	if snap.Capacity != 3 {
+		t.Errorf("Capacity want 3 got %d", snap.Capacity)
+	}
+	if snap.ActiveCount != 2 {
+		t.Errorf("ActiveCount want 2 got %d", snap.ActiveCount)
+	}
+	if len(snap.Waiting) != 2 || snap.Waiting[0] != "bd-1" {
+		t.Errorf("Waiting want [bd-1 bd-2] got %v", snap.Waiting)
+	}
+}
+
 func TestMapWorktreeReadError(t *testing.T) {
 	// A REAL missing-binary error, wrapped the way the wt backend wraps exec
 	// failures. In modern Go *exec.Error unwraps to exec.ErrNotFound, so this

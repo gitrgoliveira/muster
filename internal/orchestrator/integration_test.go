@@ -172,12 +172,12 @@ func TestIntegration_Dispatch_FakeClaude_RealTmux(t *testing.T) {
 		PermissionMode: core.PermAcceptEdits,
 	}
 
-	bead, err := o.Dispatch(context.Background(), req)
+	res, err := o.Dispatch(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	if bead.Column != core.ColRunning {
-		t.Errorf("bead column want running got %q", bead.Column)
+	if res.Bead.Column != core.ColRunning {
+		t.Errorf("bead column want running got %q", res.Bead.Column)
 	}
 
 	// Run should be registered.

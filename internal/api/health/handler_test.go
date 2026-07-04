@@ -3,8 +3,10 @@ package health_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,4 +395,157 @@ func mustHaveKey(t *testing.T, m map[string]json.RawMessage, key string) {
 	if _, ok := m[key]; !ok {
 		t.Errorf("response missing key %q", key)
 	}
+}
+
+// ── T019/T020: SetCapacity handler ────────────────────────────────────────────
+
+type fakeCapacitySetter struct {
+	gotN     int
+	setErr   error
+	snapshot health.SchedulerSnapshotDTO
+}
+
+func (f *fakeCapacitySetter) SetCapacity(n int) error {
+	f.gotN = n
+	if f.setErr != nil {
+		return f.setErr
+	}
+	return nil
+}
+
+func (f *fakeCapacitySetter) SchedulerSnapshot() health.SchedulerSnapshotDTO {
+	return f.snapshot
+}
+
+func TestSetCapacityHandler_ValidCapacity(t *testing.T) {
+	fake := &fakeCapacitySetter{snapshot: health.SchedulerSnapshotDTO{Capacity: 5, ActiveCount: 1, Waiting: []string{}}}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":5}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 got %d", res.StatusCode)
+	}
+	if fake.gotN != 5 {
+		t.Errorf("want capacity=5 got %d", fake.gotN)
+	}
+	var snap health.SchedulerSnapshotDTO
+	if err := json.NewDecoder(res.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.Capacity != 5 {
+		t.Errorf("response capacity want 5 got %d", snap.Capacity)
+	}
+}
+
+func TestSetCapacityHandler_MissingBody(t *testing.T) {
+	fake := &fakeCapacitySetter{}
+	h := health.NewOrchestratorHandler(fake)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("want 400 got %d", w.Result().StatusCode)
+	}
+}
+
+func TestSetCapacityHandler_InvalidCapacity(t *testing.T) {
+	fake := &fakeCapacitySetter{setErr: fmt.Errorf("capacity must be > 0")}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":0}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("want 400 got %d", w.Result().StatusCode)
+	}
+}
+
+// ── T021: M4 scheduler fields in status DTO ────────────────────────────────────
+
+type fakeSchedulerSnapshotter struct {
+	snap health.SchedulerSnapshotDTO
+}
+
+func (f *fakeSchedulerSnapshotter) SetCapacity(_ int) error { return nil }
+func (f *fakeSchedulerSnapshotter) SchedulerSnapshot() health.SchedulerSnapshotDTO {
+	return f.snap
+}
+
+func TestOrchestratorStatus_M4_SchedulerFields(t *testing.T) {
+	snap := health.SchedulerSnapshotDTO{
+		Capacity:    4,
+		ActiveCount: 2,
+		Waiting:     []string{"bd-001", "bd-002"},
+	}
+	cfg := health.StatusConfig{
+		BeadsVersion:       "1.0.0",
+		SchemaVersion:      1,
+		SchedulerSnapshotter: &fakeSchedulerSnapshotter{snap: snap},
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Capacity != 4 {
+		t.Errorf("capacity want 4 got %d", body.Capacity)
+	}
+	if body.ActiveCount != 2 {
+		t.Errorf("activeCount want 2 got %d", body.ActiveCount)
+	}
+	if len(body.Waiting) != 2 || body.Waiting[0] != "bd-001" {
+		t.Errorf("waiting want [bd-001 bd-002] got %v", body.Waiting)
+	}
+}
+
+func TestOrchestratorStatus_M4_M3FieldsIntact(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "2.0.0",
+		BeadsDir:      "/data/beads",
+		SchemaVersion: 2,
+		TmuxAvailable: true,
+		TmuxVersion:   "3.6",
+		RunCounter:    &fakeRunCounter{count: 1},
+		VCS: health.VCSStatus{
+			DefaultVCS: "git",
+			Git:        health.VCSAvailability{Available: true},
+		},
+		WorktreeCount: 2,
+		SchedulerSnapshotter: &fakeSchedulerSnapshotter{snap: health.SchedulerSnapshotDTO{
+			Capacity: 4, ActiveCount: 1, Waiting: []string{},
+		}},
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(w.Result().Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// M4 additions.
+	mustHaveKey(t, raw, "capacity")
+	mustHaveKey(t, raw, "activeCount")
+	mustHaveKey(t, raw, "waiting")
+	// Prior-milestone fields still present.
+	mustHaveKey(t, raw, "build")
+	mustHaveKey(t, raw, "vcs")
+	mustHaveKey(t, raw, "worktreeCount")
 }
