@@ -348,10 +348,10 @@ func main() {
 		}
 	}
 
-	// Probe VCS availability for the status endpoint (best-effort, bounded).
-	vcsProbeCtx, vcsProbeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	vcsAvail := wt.Detect(vcsProbeCtx)
-	vcsProbeCancel()
+	// Reuse the orchestrator's startup VCS availability snapshot for the status
+	// endpoint rather than probing again — avoids a second git/jj --version and
+	// keeps status aligned with the dispatch-time availability checks.
+	vcsAvail := orc.VCSAvailability()
 
 	statusCfg := health.StatusConfig{
 		BeadsVersion:  beadsVersion,

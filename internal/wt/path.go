@@ -7,10 +7,13 @@ import (
 )
 
 // SafeRelPath validates that path is safe for use as a worktree-relative file
-// path in HTTP query parameters (FR-007). It performs format-only validation:
-// rejects absolute paths, non-local paths (containing ".." or reserved names),
-// and returns the cleaned form. It does NOT check a specific worktree boundary —
-// that happens in the VCS backend when the path is resolved.
+// path in HTTP query parameters (FR-007). It is the sole validator the /diff
+// handler applies. Validation is format-only: it rejects absolute paths,
+// non-local paths (containing ".." or reserved names), and paths beginning with
+// "-" (which a VCS could read as an option), and returns the cleaned form. It
+// does NOT resolve symlinks or walk the filesystem — the git/jj backends pass
+// the path after a "--" terminator and skip untracked symlinks
+// (untrackedDiffSafe) so a request can't read or escape outside the worktree.
 //
 // An empty path is allowed (means "whole worktree").
 func SafeRelPath(path string) (string, error) {

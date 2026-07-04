@@ -3,6 +3,7 @@ package wt
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -360,7 +361,7 @@ func diffSingleFile(ctx context.Context, wtPath, relPath string) (io.ReadCloser,
 	}
 	cmd.Dir = wtPath
 
-	return startStreamingCmd(cmd)
+	return startStreamingCmd(cmd, true)
 }
 
 // untrackedDiffSafe reports whether an untracked worktree-relative path is safe
@@ -422,7 +423,7 @@ func diffAll(ctx context.Context, wtPath string) (io.ReadCloser, error) {
 	// Tracked diff (may be empty if there are only untracked files).
 	headCmd := exec.CommandContext(ctx, "git", "diff", "HEAD")
 	headCmd.Dir = wtPath
-	headRC, err := startStreamingCmd(headCmd)
+	headRC, err := startStreamingCmd(headCmd, true)
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +434,7 @@ func diffAll(ctx context.Context, wtPath string) (io.ReadCloser, error) {
 	for _, f := range untracked {
 		niCmd := exec.CommandContext(ctx, "git", "diff", "--no-index", "--", "/dev/null", f)
 		niCmd.Dir = wtPath
-		rc, err := startStreamingCmd(niCmd)
+		rc, err := startStreamingCmd(niCmd, true)
 		if err != nil {
 			// Clean up already-opened readers.
 			_ = headRC.Close()
@@ -480,6 +481,10 @@ func (m *multiReadCloser) Close() error {
 type streamingCmd struct {
 	cmd    *exec.Cmd
 	stdout io.ReadCloser
+	// tolerateExit1 is true for `git diff` commands, which exit 1 when there ARE
+	// differences (expected, not a failure). jj diff exits 0 on success, so its
+	// exit 1 is a real error and must not be tolerated.
+	tolerateExit1 bool
 }
 
 func (s *streamingCmd) Read(p []byte) (int, error) {
@@ -489,17 +494,25 @@ func (s *streamingCmd) Read(p []byte) (int, error) {
 func (s *streamingCmd) Close() error {
 	// Close stdout first so any blocked Read unblocks.
 	_ = s.stdout.Close()
-	// Reap the child. If the process already exited (e.g. diff was empty),
-	// Wait returns an *exec.ExitError with exit code 1 for `git diff` (which
-	// exits 1 when there ARE differences — that is expected, not an error).
-	// We discard the error since we've already consumed the output we want.
-	_ = s.cmd.Wait()
-	return nil
+	// Reap the child. Surface a genuine failure so callers/tests can detect a
+	// broken worktree — but tolerate `git diff`'s exit 1 (differences found),
+	// which is expected. The HTTP handler ignores this (output already streamed);
+	// tests and multiReadCloser aggregation rely on it.
+	err := s.cmd.Wait()
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if s.tolerateExit1 && errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return nil
+	}
+	return err
 }
 
 // startStreamingCmd starts cmd, pipes its stdout, and returns a ReadCloser.
-// The caller must close the returned ReadCloser to reap the child.
-func startStreamingCmd(cmd *exec.Cmd) (io.ReadCloser, error) {
+// The caller must close the returned ReadCloser to reap the child. Set
+// tolerateExit1 for `git diff` commands (exit 1 = differences found, expected).
+func startStreamingCmd(cmd *exec.Cmd, tolerateExit1 bool) (io.ReadCloser, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("wt: stdout pipe: %w", err)
@@ -511,5 +524,5 @@ func startStreamingCmd(cmd *exec.Cmd) (io.ReadCloser, error) {
 		_ = stdout.Close()
 		return nil, fmt.Errorf("wt: start %v: %w", cmd.Args, err)
 	}
-	return &streamingCmd{cmd: cmd, stdout: stdout}, nil
+	return &streamingCmd{cmd: cmd, stdout: stdout, tolerateExit1: tolerateExit1}, nil
 }

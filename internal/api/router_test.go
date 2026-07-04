@@ -116,7 +116,7 @@ func TestRouter_PanicRecovered_Returns500JSON(t *testing.T) {
 func TestRouter_AdditiveRegression_RoutesPresent(t *testing.T) {
 	srv := newRouterTestServer(t)
 
-	// Table of M0/M1/M2 routes: (method, path, expected-status-not-5xx).
+	// Table of M0/M1/M2/M3 routes: (method, path, expected-status-not-5xx).
 	// Some routes return 404 BEAD_NOT_FOUND or 400 for a missing bead — that's
 	// expected; the point is the route exists (not 405 METHOD_NOT_ALLOWED).
 	routes := []struct {

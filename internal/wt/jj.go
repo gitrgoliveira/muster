@@ -220,7 +220,7 @@ func JJDiffAt(ctx context.Context, worktreesDir, beadID, path string) (io.ReadCl
 	cmd := exec.CommandContext(ctx, "jj", args...)
 	cmd.Dir = wtPath
 
-	return startStreamingCmd(cmd)
+	return startStreamingCmd(cmd, false)
 }
 
 // parseJJSummary parses `jj diff --summary` output into FileChange entries.

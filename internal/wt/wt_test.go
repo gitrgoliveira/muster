@@ -136,7 +136,7 @@ func TestDetect_FakeJJ(t *testing.T) {
 	binDir := t.TempDir()
 	dest := filepath.Join(binDir, "jj")
 	if err := os.Symlink(abs, dest); err != nil {
-		t.Fatalf("symlink: %v", err)
+		t.Skipf("symlink not permitted (e.g. Windows without dev mode): %v", err)
 	}
 	oldPath := os.Getenv("PATH")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
