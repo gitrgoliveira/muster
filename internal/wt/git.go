@@ -169,12 +169,18 @@ func gitAheadBehind(ctx context.Context, wtPath string) (ahead, behind int) {
 func GitDiffSummaryAt(ctx context.Context, worktreesDir, beadID string) ([]FileChange, error) {
 	path := filepath.Join(worktreesDir, beadID)
 
-	// Verify the worktree exists.
-	if _, err := os.Lstat(path); err != nil {
+	// Verify the worktree exists and is a directory. A non-dir path maps to
+	// ErrWorktreeNotFound (404), matching GitStatusAt, rather than letting the
+	// git command fail and surface as a generic 500.
+	info, err := os.Lstat(path)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrWorktreeNotFound
 		}
 		return nil, fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return nil, ErrWorktreeNotFound
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain=v1", "-z")
@@ -193,17 +199,21 @@ func GitDiffSummaryAt(ctx context.Context, worktreesDir, beadID string) ([]FileC
 // GitDiffAt returns a streaming unified diff for the bead's worktree.
 // When path is empty, the diff covers all files (git diff HEAD + per-untracked
 // --no-index). When path is non-empty it covers only that single file.
-// path MUST already be validated by safeRelPath before calling.
+// path MUST already be validated by SafeRelPath before calling.
 // The returned ReadCloser wraps child stdout; Close reaps the child (no zombies).
 func GitDiffAt(ctx context.Context, worktreesDir, beadID, path string) (io.ReadCloser, error) {
 	wtPath := filepath.Join(worktreesDir, beadID)
 
-	// Verify the worktree exists.
-	if _, err := os.Lstat(wtPath); err != nil {
+	// Verify the worktree exists and is a directory (non-dir → 404, not 500).
+	info, err := os.Lstat(wtPath)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrWorktreeNotFound
 		}
 		return nil, fmt.Errorf("wt git: lstat worktree %q: %w", wtPath, err)
+	}
+	if !info.IsDir() {
+		return nil, ErrWorktreeNotFound
 	}
 
 	if path != "" {

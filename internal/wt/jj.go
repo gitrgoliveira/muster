@@ -158,11 +158,18 @@ func JJStatusAt(ctx context.Context, worktreesDir, beadID string) (WorktreeStatu
 func JJDiffSummaryAt(ctx context.Context, worktreesDir, beadID string) ([]FileChange, error) {
 	path := filepath.Join(worktreesDir, beadID)
 
-	if _, err := os.Lstat(path); err != nil {
+	// Verify the workspace exists and is a directory. A non-dir path maps to
+	// ErrWorktreeNotFound (404), matching JJStatusAt, rather than letting the
+	// jj command fail (chdir error) and surface as a generic 500.
+	info, err := os.Lstat(path)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrWorktreeNotFound
 		}
 		return nil, fmt.Errorf("wt jj: lstat workspace %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return nil, ErrWorktreeNotFound
 	}
 
 	cmd := exec.CommandContext(ctx, "jj", "diff", "--summary")
@@ -181,17 +188,22 @@ func JJDiffSummaryAt(ctx context.Context, worktreesDir, beadID string) ([]FileCh
 // JJDiffAt returns a streaming unified diff (git format) for the bead's workspace.
 // When path is empty, the diff covers all files (`jj diff --git`).
 // When path is non-empty, it covers the single file (`jj diff --git <path>`).
-// path MUST already be validated by safeRelPath before calling.
+// path MUST already be validated by SafeRelPath before calling.
 // The returned ReadCloser wraps child stdout; Close reaps the child.
 // ctx cancellation kills the child via exec.CommandContext (review note W2).
 func JJDiffAt(ctx context.Context, worktreesDir, beadID, path string) (io.ReadCloser, error) {
 	wtPath := filepath.Join(worktreesDir, beadID)
 
-	if _, err := os.Lstat(wtPath); err != nil {
+	// Verify the workspace exists and is a directory (non-dir → 404, not 500).
+	info, err := os.Lstat(wtPath)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrWorktreeNotFound
 		}
 		return nil, fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	}
+	if !info.IsDir() {
+		return nil, ErrWorktreeNotFound
 	}
 
 	var args []string

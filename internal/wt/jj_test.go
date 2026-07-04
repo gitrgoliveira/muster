@@ -7,6 +7,7 @@ package wt_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -450,8 +451,28 @@ func TestJJBackend_DiffSummary_FileNotDir(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := wt.JJDiffSummaryAt(ctx, worktreesDir, beadID)
-	if err == nil {
-		t.Fatal("JJDiffSummaryAt(file instead of dir): expected error, got nil")
+	// A non-directory path maps to ErrWorktreeNotFound (404), matching JJStatusAt.
+	if !errors.Is(err, wt.ErrWorktreeNotFound) {
+		t.Fatalf("JJDiffSummaryAt(file instead of dir): want ErrWorktreeNotFound, got %v", err)
+	}
+}
+
+// TestJJBackend_Diff_FileNotDir verifies JJDiffAt returns ErrWorktreeNotFound
+// when the workspace path exists but is a file, not a directory (404, not 500).
+func TestJJBackend_Diff_FileNotDir(t *testing.T) {
+	binDir := t.TempDir()
+	addFakeJJToBinDir(t, binDir)
+
+	worktreesDir := t.TempDir()
+	beadID := "jj-diffatfilenotdir"
+	if err := os.WriteFile(filepath.Join(worktreesDir, beadID), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ctx := context.Background()
+	_, err := wt.JJDiffAt(ctx, worktreesDir, beadID, "")
+	if !errors.Is(err, wt.ErrWorktreeNotFound) {
+		t.Fatalf("JJDiffAt(file instead of dir): want ErrWorktreeNotFound, got %v", err)
 	}
 }
 

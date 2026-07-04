@@ -2,6 +2,7 @@ package wt_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -476,10 +477,27 @@ func TestGitBackend_DiffSummaryAt_FileNotDir(t *testing.T) {
 	}
 
 	_, err := wt.GitDiffSummaryAt(ctx, worktreesDir, beadID)
-	// GitDiffSummaryAt doesn't check IsDir — git status will just fail on a file path.
-	// This verifies we get some error (not panic).
-	if err == nil {
-		t.Fatal("DiffSummaryAt(file instead of dir): expected error, got nil")
+	// A non-directory path is treated as a missing worktree (ErrWorktreeNotFound
+	// → 404), matching GitStatusAt — not a generic error the service maps to 500.
+	if !errors.Is(err, wt.ErrWorktreeNotFound) {
+		t.Fatalf("DiffSummaryAt(file instead of dir): want ErrWorktreeNotFound, got %v", err)
+	}
+}
+
+// TestGitBackend_DiffAt_FileNotDir verifies GitDiffAt returns ErrWorktreeNotFound
+// when the path exists but is a file, not a directory (404, not a generic 500).
+func TestGitBackend_DiffAt_FileNotDir(t *testing.T) {
+	worktreesDir := t.TempDir()
+	ctx := context.Background()
+
+	beadID := "mp-diffatfilenotdir"
+	if err := os.WriteFile(filepath.Join(worktreesDir, beadID), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := wt.GitDiffAt(ctx, worktreesDir, beadID, "")
+	if !errors.Is(err, wt.ErrWorktreeNotFound) {
+		t.Fatalf("DiffAt(file instead of dir): want ErrWorktreeNotFound, got %v", err)
 	}
 }
 
