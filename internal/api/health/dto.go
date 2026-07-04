@@ -41,6 +41,16 @@ type SchedulerSnapshotDTO struct {
 	Waiting     []string `json:"waiting"`
 }
 
+// RunQuotaDTO is the best-effort token/cost usage for a run (M4 US5 T063).
+// Known is false when no on-disk session record was found (advisory only —
+// never fails a run). CostUSD is 0 for interactive claude sessions.
+type RunQuotaDTO struct {
+	Known        bool    `json:"known"`
+	InputTokens  int64   `json:"inputTokens"`
+	OutputTokens int64   `json:"outputTokens"`
+	CostUSD      float64 `json:"costUSD"`
+}
+
 // RunSummaryDTO is a per-run summary included in OrchestratorStatusResponse.
 // It carries per-step chain progress (T047).
 type RunSummaryDTO struct {
@@ -52,6 +62,9 @@ type RunSummaryDTO struct {
 	ChainLen int `json:"chainLen"`
 	// State is the run's current state: "pending", "active", "done", "failed".
 	State string `json:"state"`
+	// Quota is the best-effort token/cost usage captured at run end (M4 US5).
+	// Omitted from JSON when nil (active runs that have not yet captured quota).
+	Quota *RunQuotaDTO `json:"quota,omitempty"`
 }
 
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.

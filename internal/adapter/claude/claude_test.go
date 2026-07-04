@@ -229,10 +229,14 @@ func TestLogin_ReturnsErrNotSupported(t *testing.T) {
 	}
 }
 
-func TestQuotaSource_None(t *testing.T) {
+// TestQuotaSource_CLIOutput verifies that the claude adapter reports
+// QuotaCLIOutput now that US5 reads Claude Code's on-disk JSONL transcript
+// (spike R8). This replaces the prior TestQuotaSource_None — an intentional
+// additive-in-spirit migration listed in Complexity Tracking (T062).
+func TestQuotaSource_CLIOutput(t *testing.T) {
 	a := claude.New(claude.Options{})
-	if qs := a.QuotaSource(); qs != adapter.QuotaNone {
-		t.Errorf("QuotaSource want QuotaNone got %v", qs)
+	if qs := a.QuotaSource(); qs != adapter.QuotaCLIOutput {
+		t.Errorf("QuotaSource want QuotaCLIOutput got %v", qs)
 	}
 }
 

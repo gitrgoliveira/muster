@@ -229,5 +229,6 @@ func (a *Adapter) Login(_ context.Context) (adapter.LoginFlow, error) {
 	return adapter.LoginFlow{}, adapter.ErrNotSupported
 }
 
-// QuotaSource implements adapter.Adapter. M2 does not track quota.
-func (a *Adapter) QuotaSource() adapter.QuotaSource { return adapter.QuotaNone }
+// QuotaSource implements adapter.Adapter. M4 US5 reads Claude Code's on-disk
+// per-session JSONL transcript (spike R8) — QuotaCLIOutput is the honest value.
+func (a *Adapter) QuotaSource() adapter.QuotaSource { return adapter.QuotaCLIOutput }

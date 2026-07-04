@@ -186,6 +186,11 @@ type Orchestrator struct {
 	// (FR-012a) — a chain with an empty PermissionMode on any step will cause
 	// an ErrNoPermissionMode when that step is launched.
 	defaultChain *StepChain
+
+	// quotaHomeDir is the home directory used to locate Claude Code's on-disk
+	// per-session JSONL transcripts. Empty string means os.UserHomeDir() is
+	// called at run end. Overridable via Config.QuotaHomeDir for testing (T063).
+	quotaHomeDir string
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -236,6 +241,13 @@ type Config struct {
 	// supply an explicit chain. nil means single implicit step 0 (M2 behaviour).
 	// Per-step PermissionMode is NEVER silently defaulted (FR-012a).
 	DefaultChain *StepChain
+
+	// QuotaHomeDir is the home directory used to locate Claude Code's on-disk
+	// per-session JSONL transcripts (~/.claude/projects/<encoded-cwd>/).
+	// Empty string means os.UserHomeDir() is called at run end.
+	// Set in tests to inject a fake home directory so quota capture can be
+	// exercised without a real claude installation (T063).
+	QuotaHomeDir string
 }
 
 // defaultRunRetention is used when Config.RunRetention is unset (0).
@@ -304,6 +316,7 @@ func New(cfg Config) *Orchestrator {
 		runRetention:    runRetention,
 		onComplete:      cfg.OnComplete,
 		defaultChain:    cfg.DefaultChain,
+		quotaHomeDir:    cfg.QuotaHomeDir,
 	}
 }
 
@@ -391,6 +404,7 @@ type RunSummary struct {
 	StepIdx  int
 	ChainLen int // 0 when no chain (single-step M2 run)
 	State    core.StepStatus
+	Quota    QuotaUsage // best-effort token/cost usage; Known=false when unavailable
 }
 
 // ListRunSummaries returns a snapshot of all currently-tracked runs, ordered
@@ -410,6 +424,7 @@ func (o *Orchestrator) ListRunSummaries() []RunSummary {
 			StepIdx:  r.StepIdx,
 			ChainLen: chainLen,
 			State:    r.State,
+			Quota:    r.Quota,
 		})
 	}
 	return summaries
@@ -1081,6 +1096,32 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 			}()
 			o.onComplete(run.BeadID, exitCode, state == core.StepDone)
 		}()
+	}
+
+	// Capture quota usage from Claude Code's on-disk per-session JSONL (M4 US5 T063).
+	// Best-effort: never fails the run. quotaHomeDir is empty in production
+	// (os.UserHomeDir() is called here) and overridden in tests for isolation.
+	homeDir := o.quotaHomeDir
+	if homeDir == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			homeDir = h
+		}
+	}
+	quota := ReadSessionQuotaForWorktree(run.Worktree, homeDir)
+	o.mu.Lock()
+	run.Quota = quota
+	o.mu.Unlock()
+	if o.publish != nil {
+		o.publish(ws.Frame{
+			Type:   ws.EventRunQuota,
+			BeadID: run.BeadID,
+			Quota: &ws.QuotaPayload{
+				Known:        quota.Known,
+				InputTokens:  quota.InputTokens,
+				OutputTokens: quota.OutputTokens,
+				CostUSD:      quota.CostUSD,
+			},
+		})
 	}
 
 	// Evict this run from the registry after the retention window so a

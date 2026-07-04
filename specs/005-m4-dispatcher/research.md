@@ -150,4 +150,67 @@ Format per decision: **Decision** / **Rationale** / **Alternatives considered**.
   - `jj describe -m` + `jj new` is the finalize incantation (not `jj commit -m`,
     which also works but would auto-create a new WC without a separate `jj new`).
 
-- [ ] **R8 claude on-disk quota** — pinned path + sample payload: _pending_
+- [x] **R8 claude on-disk quota** — pinned path + sample payload:
+
+  **Environment**: claude 2.1.193, macOS, claude Code interactive mode (stdin redirect, no `-p`).
+
+  **On-disk path pattern:**
+  ```
+  ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
+  ```
+  where `<encoded-cwd>` = worktree path with `/.` → `--` then `/` → `-`.
+  Example: `/Users/alice/repos/proj/.claude/worktrees/abc-123`
+         → `-Users-alice-repos-proj--claude-worktrees-abc-123`
+
+  **Encoding algorithm (Go):**
+  ```go
+  encoded := strings.ReplaceAll(cwd, "/.", "--")
+  encoded  = strings.ReplaceAll(encoded, "/", "-")
+  ```
+  Verified against three real paths (spike run).
+
+  **JSONL message type and field names:**
+  Each assistant turn appends one JSON line with `"type": "assistant"` containing:
+  ```json
+  {
+    "type": "assistant",
+    "uuid": "<turn-uuid>",
+    "message": {
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 17285,
+        "cache_read_input_tokens": 22408,
+        "output_tokens": 8
+      }
+    }
+  }
+  ```
+  Fields `cache_creation_input_tokens` and `cache_read_input_tokens` are present but
+  optional (may be absent on older builds). There is **no per-session cost summary** in
+  the JSONL for interactive sessions — `costUSD` is only available in `--output-format
+  json` stdout (used only in `-p`/SDK mode, not muster's stdin-redirect invocation).
+
+  **Correlation strategy (run → session file):**
+  After `finishRun` kills the tmux session:
+  1. Compute `projectDir = encodePath(run.Worktree)`.
+  2. Glob `~/.claude/projects/<projectDir>/*.jsonl`.
+  3. Pick the file with the latest mtime (best-effort; at capacity/end of run the
+     agent is the only active writer in that directory for that bead).
+  4. Sum `message.usage.input_tokens` + `message.usage.output_tokens` across all
+     `"type":"assistant"` lines in the chosen file.
+  5. `CostUSD` = 0.0 — not present in JSONL for interactive sessions; not fabricated.
+  6. `Known` = true when ≥1 assistant line found; false on missing/garbled file.
+
+  **QuotaSource decision:** `QuotaCLIOutput` is appropriate — we DO read a file that
+  Claude Code writes. `CostUSD` is legitimately 0 (interactive sessions do not record
+  it on disk; this is not a parse failure). Changing `QuotaSource()` from `QuotaNone`
+  to `QuotaCLIOutput` is therefore honest (T062 proceeds).
+
+  **Redacted sample from real spike run** (`claude -p "say hi"` CWD `/Users/Shared/claude-spike-8heGo8`):
+  ```
+  ~/.claude/projects/-Users-Shared-claude-spike-8heGo8/2a7589b7-XXXX-XXXX-XXXX-XXXXXXXXXXXX.jsonl
+  ```
+  ```json
+  {"type":"assistant","uuid":"3b1857cb-XXXX","message":{"usage":{"input_tokens":6,"cache_creation_input_tokens":17285,"cache_read_input_tokens":22408,"output_tokens":8,"service_tier":"standard"}}}
+  ```
+  Summed result: `InputTokens=6, OutputTokens=8, CostUSD=0.0, Known=true`.

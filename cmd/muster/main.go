@@ -70,12 +70,21 @@ func (a *orchestratorRunListerAdapter) ListRuns() []health.RunSummaryDTO {
 	summaries := a.orc.ListRunSummaries()
 	dtos := make([]health.RunSummaryDTO, len(summaries))
 	for i, s := range summaries {
-		dtos[i] = health.RunSummaryDTO{
+		dto := health.RunSummaryDTO{
 			BeadID:   s.BeadID,
 			StepIdx:  s.StepIdx,
 			ChainLen: s.ChainLen,
 			State:    string(s.State),
 		}
+		if s.Quota.Known {
+			dto.Quota = &health.RunQuotaDTO{
+				Known:        s.Quota.Known,
+				InputTokens:  s.Quota.InputTokens,
+				OutputTokens: s.Quota.OutputTokens,
+				CostUSD:      s.Quota.CostUSD,
+			}
+		}
+		dtos[i] = dto
 	}
 	return dtos
 }

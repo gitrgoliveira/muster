@@ -72,6 +72,21 @@ type Frame struct {
 
 	// M4: step.advanced / step.loopedback
 	ChainLen *int `json:"chainLen,omitempty"` // total number of steps in the chain
+
+	// M4 US5: run.quota — best-effort token/cost record captured at run end.
+	// Non-nil only on run.quota frames; nil on all other frame types.
+	Quota *QuotaPayload `json:"quota,omitempty"`
+}
+
+// QuotaPayload is the run.quota event body.
+// Known is false when no on-disk session record was found (best-effort advisory).
+// CostUSD is 0 for interactive sessions (claude does not write costUSD to JSONL
+// for non -p runs; see spike R8 in specs/005-m4-dispatcher/research.md).
+type QuotaPayload struct {
+	Known        bool    `json:"known"`
+	InputTokens  int64   `json:"inputTokens"`
+	OutputTokens int64   `json:"outputTokens"`
+	CostUSD      float64 `json:"costUSD"`
 }
 
 // ClientFrame is the only accepted client-to-server frame shape.
