@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/wt"
 )
 
 // TestMapDispatchError verifies orchestrator sentinels map to the right
@@ -26,6 +27,8 @@ func TestMapDispatchError(t *testing.T) {
 		{"unsupported mode", ErrUnsupportedMode, services.CodeInvalidRequest},
 		{"perm mode error", &PermModeError{Mode: "bogus"}, services.CodeInvalidRequest},
 		{"wrapped sentinel", fmt.Errorf("dispatch: %w", ErrUnmappedPrefix), services.CodeUnmappedPrefix},
+		{"orchestrator vcs unavailable", ErrVCSUnavailable, services.CodeVCSUnavailable},
+		{"wt vcs unavailable (jj on non-jj repo, wrapped by Dispatch)", fmt.Errorf("worktree: %w", wt.ErrVCSUnavailable), services.CodeVCSUnavailable},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

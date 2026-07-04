@@ -6,6 +6,7 @@ import (
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/wt"
 )
 
 // AsServiceDispatcher returns a services.OrchestratorDispatcher that delegates
@@ -58,7 +59,11 @@ func mapDispatchError(err error) error {
 		return &services.ServiceError{Code: services.CodeAdapterNotInstalled, Message: err.Error()}
 	case errors.Is(err, ErrAdapterNotLoggedIn):
 		return &services.ServiceError{Code: services.CodeAdapterNotLoggedIn, Message: err.Error()}
-	case errors.Is(err, ErrVCSUnavailable):
+	case errors.Is(err, ErrVCSUnavailable), errors.Is(err, wt.ErrVCSUnavailable):
+		// wt.ErrVCSUnavailable reaches here when backend.Create refuses the source
+		// repo — e.g. vcs=jj against a non-jj repo (FR-011/FR-004a). Dispatch wraps
+		// it as "worktree: %w", so match the wt sentinel too, not just the
+		// orchestrator one (binary-missing), to honor the 412 contract.
 		return &services.ServiceError{Code: services.CodeVCSUnavailable, Message: err.Error()}
 	case errors.Is(err, ErrNoPermissionMode), errors.Is(err, ErrUnsupportedMode), errors.Is(err, ErrInvalidBeadID), errors.As(err, &pme):
 		return &services.ServiceError{Code: services.CodeInvalidRequest, Message: err.Error()}
