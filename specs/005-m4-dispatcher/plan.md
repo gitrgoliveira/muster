@@ -38,7 +38,7 @@ Turn M2's single-shot `Dispatch` into a managed **dispatcher**: (1) a **capacity
 | **II. Beads Is Source of Truth** | ✅ Scheduler queue, step pointer, and quota are in-memory, reconstructable run state — **not** new authoritative durable issue state. Any bead-visible status still flows through `bd` (`store/bdshell`). No direct-to-Dolt writes. Step chains are config/request-supplied, not a new beads column (same posture as M2 `review` / M3 `vcs`). |
 | **III. Layered Architecture** | ✅ Scheduler lives inside the `orchestrator` package behind its existing service-facing interfaces; finalize/push/remove live behind the `wt.Backend` interface. Handlers stay thin (parse → service → render). No business logic in `internal/api`. |
 | **IV. Test-First, Per-Layer Coverage** | ✅ TDD: failing tests first, per layer. Fakes-on-`$PATH` for git-push/jj/claude-quota **plus** skip-gated real-binary integration tests. `-race` clean, with dedicated concurrency tests for admission and idempotency. Per-package gates below. |
-| **V. Additive, Backward-Compatible Surface** | ⚠️ **One intentional migration**: duplicate dispatch changes from **409 Conflict** (M2 `ErrRunAlreadyActive`) to **200 + existing-run + `joined:true`** to deliver idempotency (FR-017/FR-018). Everything else is strictly additive (new routes, new `dispatch.*`/`step.*`/`worktree.*`/`run.quota` events, additive status fields). Justified in Complexity Tracking; the two M2 contract tests are migrated, not silently broken. |
+| **V. Additive, Backward-Compatible Surface** | ⚠️ **No prior REST route/shape/event is removed.** One duplicate-dispatch **status** change (409→200+join) plus a small set of **prior-milestone tests intentionally migrated** (enumerated in Complexity Tracking): the 409 pair, `TestQuotaSource_None`, `TestRecoverSessions_UnsupportedIndicesKilled`, and the `parseStepIdx` `idx=1`→404 expectation. All new routes/events/fields are additive. SC-008 is read as "no prior route/shape/event removed"; the listed tests are migrated, not silently broken. |
 | **Security & Orchestration** | ✅ No credentials (push reuses the repo's configured remote/auth; muster stores nothing). Per-step permission mode is user-supplied, never silently defaulted (FR-012a). Isolation preserved (write-side operates only on the per-bead worktree). Adapter-agnostic (quota via the `QuotaSource` interface, claude-specific reader behind it). Local-first. |
 
 ## Project Structure
@@ -126,6 +126,18 @@ cmd/muster/main.go          # + --max-concurrent-dispatches flag; construct sche
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|-------------------------------------|
 | **Duplicate-dispatch contract change (409 → 200 + `joined:true`)** — the single non-additive surface change (Constitution V), migrating M2 tests `TestDispatch_409_RunAlreadyActive` / `TestDispatch_409_DuplicateRun`. | FR-017/FR-018 require an idempotent, retry-safe `/dispatch` that **returns the existing run** rather than surfacing a retry as an error; the clarified decision (Session 2026-07-04) chose bead-identity idempotency with no key header. A 409 makes a benign retry look like a failure. | **Keep 409, enrich body** was considered (fully additive, zero migration) but rejected: a 409 is still an error status, contradicting the clarified "return the existing run, not an error," and would leave clients special-casing an error path for a successful join. The change is small, mechanical, and versioned (the two M2 tests are rewritten to assert the new idempotent contract, not deleted) — exactly the "explicit, versioned migration decision" Constitution V permits. |
+
+### Prior-milestone tests intentionally migrated (Constitution V "versioned migration")
+
+These passing M2/M3 tests are rewritten by M4. None removes a shipped **route/shape/event** — they assert *old internal behavior* that M4 deliberately changes; each is listed here so the "M0–M3 suites stay green" gate (FR-025/SC-008) is not silently redefined.
+
+| Test | File | Change | Task |
+|---|---|---|---|
+| `TestDispatch_409_RunAlreadyActive` | `internal/api/beads/handlers_test.go:489` | 409 → 200 + `joined:true` (idempotency) | T048 |
+| `TestDispatch_409_DuplicateRun` | `internal/orchestrator/orchestrator_test.go:302` | duplicate returns existing run, not `ErrRunAlreadyActive` | T048 |
+| `TestQuotaSource_None` | `internal/adapter/claude/claude_test.go:232` | `QuotaNone` → `QuotaCLIOutput` (additive-in-spirit) | T062 |
+| `TestRecoverSessions_UnsupportedIndicesKilled` | `internal/orchestrator/recovery_test.go:149` | recovered `StepIdx∈[0,chainLen)` re-registers instead of being killed | T053 |
+| `parseStepIdx` handler test | `internal/api/beads/handlers_test.go` | `idx=1` no longer forced to 404 (accepts valid in-range) | T045 |
 
 *All other principles: no violations (no new modules, no heavyweight deps, new engine behind existing interfaces, additive surface).*
 

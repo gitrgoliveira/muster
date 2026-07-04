@@ -79,7 +79,8 @@
 - [ ] T036 [US2] Implement `remote.go` remote-name resolution + branch helper in `internal/wt/remote.go`
 
 <!-- sequential (service → api) -->
-- [ ] T037 [US2] Add `FinalizeWorktree`/`PushWorktree`/`RemoveWorktree` service methods with a guard that refuses when the step agent is active (failing test first) in `internal/services/beads_test.go` → `internal/services/beads.go`
+- [ ] T036a [US2] **(review C5)** Widen the `services.WorktreeAccessor` interface with `Finalize`/`Push`/`Remove`, add the three passthrough methods to `worktreeAccessorAdapter` (thin delegation to `a.o.backend.Finalize/Push/Remove` — `worktreesDir` already baked in), and update the `var _ services.WorktreeAccessor` compile-time assertion in `internal/orchestrator/worktree_adapter.go` + `internal/services/beads.go` (failing/compile test first). Without this the write-side does not compile.
+- [ ] T037 [US2] Add `FinalizeWorktree`/`PushWorktree`/`RemoveWorktree` service methods that permit finalize/remove only in terminal run states (`StepDone`/`StepFailed`) and reject `StepActive`/`StepPending` with `CodeRunAlreadyActive` **(review M1)** — failing test first (incl. the finish-window race) in `internal/services/beads_test.go` → `internal/services/beads.go`
 - [ ] T038 [US2] Write failing handler tests for `POST /beads/{id}/worktree/finalize`, `POST .../worktree/push`, `DELETE /beads/{id}/worktree` in `internal/api/beads/handlers_test.go`
 - [ ] T039 [US2] Implement the three thin handlers + register routes in `internal/api/beads/handlers.go` and `internal/api/router.go`
 - [ ] T040 [US2] Emit `worktree.finalized`/`worktree.pushed`/`worktree.removed` events (failing test first) in the service/orchestrator layer
@@ -96,7 +97,9 @@
 <!-- sequential (test before impl) -->
 - [ ] T041 [US3] Write failing `steps_test.go`: chain resolution order (request override → config default → single step 0), advance range-check (< len), loopback range-check (≥0 and < current), `ErrStepOutOfRange` on out-of-range in `internal/orchestrator/steps_test.go`
 - [ ] T042 [US3] Write failing test asserting M2 single-step (idx 0, no chain) behavior is byte-for-byte preserved in `internal/orchestrator/steps_test.go`
-- [ ] T043 [US3] Implement `steps.go` (`StepChain`, `StepProfile{Name,PermissionMode,PromptRef}`, pointer via `Run.StepIdx`, `Advance`, `LoopBack`, chain resolution) in `internal/orchestrator/steps.go`
+- [ ] T043 [US3] Implement `steps.go` (`StepChain`, `StepProfile{Name,PermissionMode,PromptRef}`, pointer via `Run.StepIdx`, `Advance`, `LoopBack`, chain resolution) in `internal/orchestrator/steps.go`. **(review L2)** `PromptRef` is stored but resolves to the M2 bead prompt in M4 (real assembly is M6) — do not build M6 assembly here.
+- [ ] T043a [US3] **(review C4)** Thread `stepIdx` through the launch path (currently hard-coded to literal `0`): session name via `tmux.SessionName(beadID, stepIdx, loop)` (orchestrator.go:593), prompt file `.muster-prompt-<stepIdx>.txt` (orchestrator.go:378), `runlogStreamer.stepIdx` (orchestrator.go:648), and the `tmux.session.opened/closed` events' `StepIdx` (orchestrator.go:659). Failing test first asserting step 1's session/prompt do not collide with step 0's. This is the bulk of US3.
+- [ ] T043b [US3] **(review C2)** Specify + implement the run-vs-step interlock: advance/loopback finishes the current step's run, then starts the next step's run under the same `beadID` key carrying forward `Chain` + accumulated `Quota`; `finishRun` must NOT evict a bead whose chain has a pending advance. Add a `-race` test: "advance while the prior step's watcher is finishing" (guards the identity-eviction race at orchestrator.go:314-322/486-495). Failing test first in `internal/orchestrator/orchestrator_test.go`.
 - [ ] T044 [US3] Add optional `chain` override to `DispatchRequest` + a configured default chain (never silently default a step's permission mode) in `internal/orchestrator/orchestrator.go` (+ `internal/config/` if a config knob is needed)
 
 <!-- sequential (handler widening + routes) -->
@@ -115,11 +118,11 @@
 
 <!-- sequential (migration + impl are coupled) -->
 - [ ] T048 [US4] **MIGRATION**: rewrite M2 tests `TestDispatch_409_RunAlreadyActive` (in `internal/api/beads/handlers_test.go`) and `TestDispatch_409_DuplicateRun` (in `internal/orchestrator/orchestrator_test.go`) to assert the idempotent contract (200 + existing run + `joined:true`); update `maperr_internal_test.go` if the sentinel mapping changes
-- [ ] T049 [US4] Change `Orchestrator.Dispatch` to return `DispatchResult{Joined:true, Bead: existing}` for an in-flight (active or waiting) bead instead of `ErrRunAlreadyActive`, under the existing `mu` in `internal/orchestrator/orchestrator.go`
+- [ ] T049 [US4] Change `Orchestrator.Dispatch` to return `DispatchResult{Joined:true, Bead: existing}` for an in-flight bead instead of `ErrRunAlreadyActive`, under the existing `mu`. **(review M2)** The in-flight check MUST consider **both** `StepActive` (running) and `StepPending` (waiting in the queue) — a duplicate dispatch of a *waiting* bead joins the waiter. Join on bead-identity regardless of params (no key header). Add a test "duplicate dispatch of a waiting bead joins the waiter" in `internal/orchestrator/orchestrator.go` + `orchestrator_test.go`
 - [ ] T050 [US4] Update `service_adapter.go` + the `Dispatch` handler to render 200 + `joined`/`queued` fields in `internal/orchestrator/service_adapter.go`, `internal/api/beads/handlers.go`
 - [ ] T051 [US4] Write failing `-race` test: many racing identical dispatches yield exactly one run + no leaked session/goroutine in `internal/orchestrator/orchestrator_test.go`
 - [ ] T052 [US4] Write failing test: after a run reaches terminal state, a fresh dispatch starts a NEW run (no permanent lock) in `internal/orchestrator/orchestrator_test.go`
-- [ ] T053 [US4] Ensure recovery reconciles recovered runs into the scheduler active set + idempotency (failing test first) in `internal/orchestrator/recovery.go` + `recovery_test.go`
+- [ ] T053 [US4] **(review C1 — CRITICAL)** Recovery: (a) relax the `recovery.go:80` guard that currently **kills** any recovered session with `StepIdx != 0` — a `StepIdx` within `[0, chainLen)` must **re-register** (not kill) so a live build/review agent survives a restart; keep killing genuinely malformed/negative indices; (b) **rewrite** `TestRecoverSessions_UnsupportedIndicesKilled` (recovery_test.go:149) to assert the new boundary (list it in Complexity Tracking per C3); (c) decide the chain-unknown-at-recovery behavior — the session name carries `StepIdx` but NOT the chain, so a recovered run reconstructs a single-step run at that index and **refuses to advance until re-dispatched** (document this in research.md R9); (d) register recovered actives into the scheduler active set (may transiently exceed capacity → drains, per review L1) and treat a recovered run as in-flight for idempotency. Failing tests first in `internal/orchestrator/recovery.go` + `recovery_test.go`
 
 **Checkpoint US4**: idempotent `/dispatch`; the two migrated tests + new race/recovery tests green.
 
@@ -136,7 +139,7 @@
 <!-- sequential -->
 - [ ] T060 [US5] Write failing `quota_test.go`: parse a fake on-disk session file → `QuotaUsage{Known:true,...}`; missing/garbled → `{Known:false}`; never errors the run in `internal/orchestrator/quota_test.go`
 - [ ] T061 [US5] Implement the on-disk quota reader (spike-pinned path/format) in `internal/orchestrator/quota.go`
-- [ ] T062 [US5] Change claude adapter `QuotaSource()` from `QuotaNone` to `QuotaCLIOutput` (failing test first) in `internal/adapter/claude/claude.go` (+ `claude_test.go`)
+- [ ] T062 [US5] Change claude adapter `QuotaSource()` from `QuotaNone` to `QuotaCLIOutput` (failing test first) in `internal/adapter/claude/claude.go`. **(review C3)** This rewrites the passing `TestQuotaSource_None` (claude_test.go:232) — an intentional additive-in-spirit test migration listed in Complexity Tracking. Update `claude_test.go`.
 - [ ] T063 [US5] Capture quota at run end, attach to `Run`, emit `run.quota` event + additive status field (failing test first) in `internal/orchestrator/orchestrator.go` + `internal/api/health/`
 
 ---
@@ -176,4 +179,4 @@
 
 ## Task Count
 
-75 task IDs (T001–T010, T011–T022, T030–T040, T041–T047, T048–T053, T059–T063, T070–T075). Test tasks precede their implementations throughout (TDD).
+57 distinct task IDs across phases (T001–T010, T011–T022, T030–T040, T041–T047, T048–T053, T059–T063, T070–T075; numbering gaps T023–29 and T054–58 are intentional per-phase headroom). Test tasks precede their implementations throughout (TDD).

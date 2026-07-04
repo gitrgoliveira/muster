@@ -4,7 +4,7 @@
 
 | New EventType | Emitted when | Payload (additive to Envelope) |
 |---|---|---|
-| `dispatch.queued` | a dispatch is accepted but at capacity (waiting) | `beadID`, `waitingPos` |
+| `dispatch.queued` | a dispatch is accepted but at capacity (waiting) | `beadID`, `waitingPos` (0-based index in the FIFO at emit time; `Snapshot().waiting` preserves FIFO order) |
 | `dispatch.admitted` | a waiting dispatch is admitted (slot freed) and its agent launches | `beadID`, `stepIdx` |
 | `step.advanced` | the step pointer advances +1 and the next step's run starts | `beadID`, `stepIdx`, `chainLen` |
 | `step.loopedback` | the step pointer moves to an earlier index and that step's run starts | `beadID`, `stepIdx`, `chainLen` |

@@ -43,4 +43,4 @@ Remove(ctx context.Context, beadID string) error
 
 ## Safety
 
-- Finalize/Remove must not run while the bead's step agent is **active** — the service guards on run state and returns `CodeRunAlreadyActive` rather than racing a live agent (consistent with M3's non-mutating-read rule). This is the write-side analogue of M3's "don't race the agent" invariant.
+- **Permitted run states for Finalize/Remove (review M1):** allow only when the bead's current run is in a **terminal** state (`StepDone` or `StepFailed`). Reject `StepActive` (agent still running) **and** `StepPending` (queued; worktree may not exist yet) with `CodeRunAlreadyActive`. Note the deliberate `finishRun` window where the session is already killed but `State` is still `StepActive` (orchestrator.go:759-764) — a finalize arriving there is refused; a test covers this finish-window race. This is the write-side analogue of M3's non-mutating-read "don't race the agent" invariant.

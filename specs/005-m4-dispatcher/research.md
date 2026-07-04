@@ -75,9 +75,11 @@ Format per decision: **Decision** / **Rationale** / **Alternatives considered**.
 
 **Decision.** On startup recovery (M2 `recovery.go`), each recovered active session re-registers into the scheduler's `active` set so capacity accounting is correct, and idempotency treats a recovered run as in-flight (a re-dispatch joins it). Recovered runs carry `StepIdx` from the session name (already parsed), so the step pointer survives restart for the current step.
 
-**Rationale.** Keeps FR-019 (idempotent after crash-recovery) and correct capacity accounting without a new persistence mechanism — the recovered tmux sessions are the source of truth for "what's active," exactly as in M2.
+**CRITICAL correction (review C1).** `recovery.go:80-85` **today kills** any recovered session with `StepIdx != 0 || Loop != 0` (`TestRecoverSessions_UnsupportedIndicesKilled` asserts this). M4 MUST relax this: a recovered `StepIdx` within `[0, chainLen)` **re-registers** rather than being killed — otherwise a restart destroys a live build/review agent (StepIdx 1/2). **Chain-unknown-at-recovery:** the session name carries `StepIdx` but NOT the chain (chain lived only in memory). So a recovered run is reconstructed as a **single-step run pinned at its recovered `StepIdx`** and **refuses to advance/loop-back until the bead is re-dispatched** (which re-supplies the chain). Genuinely malformed/negative indices are still killed. This is task T053; the assertion test is migrated (Complexity Tracking).
 
-**Alternatives considered.** Ignore recovered runs in capacity — rejected (would over-admit past capacity after a restart).
+**Rationale.** Keeps FR-019 (idempotent after crash-recovery) and correct capacity accounting without a new persistence mechanism — the recovered tmux sessions are the source of truth for "what's active," exactly as in M2. Not persisting the chain honors Constitution II (no new durable state); the "refuse to advance until re-dispatched" rule is the safe, honest consequence.
+
+**Alternatives considered.** Ignore recovered runs in capacity — rejected (would under-count; drain-not-kill tolerates a transient over-count instead, review L1). Persist the chain to survive restart — rejected (new durable muster state, Constitution II).
 
 ## Spike Log
 
