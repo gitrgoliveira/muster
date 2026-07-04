@@ -107,7 +107,7 @@ type Orchestrator struct {
 	transport       tmux.Manager // may be a fallback transport
 	repoMap         RepoMap
 	worktreesDir    string
-	backend         wt.Backend // VCS backend; defaults to git (NewGitBackend) when nil at construction
+	backend         wt.Backend // VCS backend; defaults to the backend for defaultVCS (git or jj) when nil at construction
 	defaultVCS      wt.VCS     // VCS selected at startup; "" defaults to git
 	vcsAvailable    wt.Availability
 	defaultPermMode core.PermissionMode
@@ -144,7 +144,7 @@ type Config struct {
 	Transport       tmux.Manager
 	RepoMap         RepoMap
 	WorktreesDir    string
-	Backend         wt.Backend // VCS backend; defaults to wt.NewGitBackend(WorktreesDir) when nil
+	Backend         wt.Backend // VCS backend; defaults to the backend for DefaultVCS (git or jj) when nil
 	DefaultVCS      wt.VCS     // "git" (default) or "jj"; checked against wt.Detect at construction
 	DefaultPermMode core.PermissionMode
 	Publish         Publisher
@@ -194,10 +194,17 @@ func New(cfg Config) *Orchestrator {
 	avail := wt.Detect(probeCtx)
 	probeCancel()
 
-	// Default to the git backend with worktreesDir baked in.
+	// Default to the backend matching defaultVCS, with worktreesDir baked in.
+	// Selecting by defaultVCS (rather than always git) avoids silently running
+	// git operations on an instance configured for jj — no cross-backend fallback.
 	backend := cfg.Backend
 	if backend == nil {
-		backend = wt.NewGitBackend(cfg.WorktreesDir)
+		switch defaultVCS {
+		case wt.VCSJJ:
+			backend = wt.NewJJBackend(cfg.WorktreesDir)
+		default:
+			backend = wt.NewGitBackend(cfg.WorktreesDir)
+		}
 	}
 	return &Orchestrator{
 		runs:            make(map[string]*Run),

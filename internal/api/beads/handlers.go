@@ -402,6 +402,11 @@ func (h *Handlers) Diff(w http.ResponseWriter, r *http.Request) {
 	// Stream the diff body. Content-Type as per the HTTP contract.
 	w.Header().Set("Content-Type", "text/x-diff; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	// Flush the headers immediately so first-byte delivery isn't delayed by
+	// intermediary buffering — the diff contract calls out streaming.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 	_, _ = io.Copy(w, rc)
 }
 

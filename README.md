@@ -40,7 +40,7 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `POST` | `/api/v1/beads/{id}/dispatch` | Run a CLI agent on the bead — body `{agent, mode, permissionMode}` (M2) |
 | `GET` | `/api/v1/beads/{id}/steps/{idx}/attach` | tmux attach command + pane for a running step (M2; `idx=0`) |
 | `POST` | `/api/v1/beads/{id}/steps/{idx}/send` | Forward keystrokes to the live agent pane (M2; `idx=0`) |
-| `GET` | `/api/v1/beads/{id}/worktree` | Change summary for the bead's worktree — file list with `kind` (added/modified/deleted/renamed/copied), VCS name, ahead/behind counts (M3) |
+| `GET` | `/api/v1/beads/{id}/worktree` | Change summary for the bead's worktree — file list with `kind` (added/modified/deleted/renamed/copied), VCS name, and clean flag (M3) |
 | `GET` | `/api/v1/beads/{id}/diff` | Git-format unified diff of all worktree changes; optional `?path=` to scope to a single file (M3) |
 | `POST` | `/api/v1/beads/{id}/comments` | Add comment (requires `bd`) |
 | `GET` | `/api/v1/orchestrator/status` | Backend health, config, tmux + adapter availability |

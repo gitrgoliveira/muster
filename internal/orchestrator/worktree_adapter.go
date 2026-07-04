@@ -19,22 +19,21 @@ type worktreeAccessorAdapter struct {
 	o *Orchestrator
 }
 
-// WorktreeStatus delegates to wt.GitStatusAt using the orchestrator's
-// configured worktreesDir.
+// WorktreeStatus delegates to the orchestrator's selected wt.Backend so reads
+// honor the configured VCS (git or jj) rather than always using git.
 func (a *worktreeAccessorAdapter) WorktreeStatus(ctx context.Context, beadID string) (wt.WorktreeStatus, error) {
-	return wt.GitStatusAt(ctx, a.o.worktreesDir, beadID)
+	return a.o.backend.Status(ctx, beadID)
 }
 
-// DiffSummary delegates to wt.GitDiffSummaryAt using the orchestrator's
-// configured worktreesDir.
+// DiffSummary delegates to the orchestrator's selected wt.Backend.
 func (a *worktreeAccessorAdapter) DiffSummary(ctx context.Context, beadID string) ([]wt.FileChange, error) {
-	return wt.GitDiffSummaryAt(ctx, a.o.worktreesDir, beadID)
+	return a.o.backend.DiffSummary(ctx, beadID)
 }
 
-// Diff delegates to wt.GitDiffAt using the orchestrator's worktreesDir.
+// Diff delegates to the orchestrator's selected wt.Backend.
 // path must already be validated by safeRelPath before reaching this method.
 func (a *worktreeAccessorAdapter) Diff(ctx context.Context, beadID, path string) (io.ReadCloser, error) {
-	return wt.GitDiffAt(ctx, a.o.worktreesDir, beadID, path)
+	return a.o.backend.Diff(ctx, beadID, path)
 }
 
 // DefaultVCS returns the string representation of the orchestrator's default VCS.

@@ -338,6 +338,12 @@ func diffSingleFile(ctx context.Context, wtPath, relPath string) (io.ReadCloser,
 
 	var cmd *exec.Cmd
 	if untracked {
+		// `git diff --no-index` follows symlinks, so an untracked symlink could
+		// leak files outside the worktree. Refuse to diff an unsafe path; an
+		// empty diff is the safe, non-erroring response.
+		if !untrackedDiffSafe(wtPath, relPath) {
+			return io.NopCloser(strings.NewReader("")), nil
+		}
 		cmd = exec.CommandContext(ctx, "git", "diff", "--no-index", "--", "/dev/null", relPath)
 	} else {
 		cmd = exec.CommandContext(ctx, "git", "diff", "HEAD", "--", relPath)
@@ -345,6 +351,31 @@ func diffSingleFile(ctx context.Context, wtPath, relPath string) (io.ReadCloser,
 	cmd.Dir = wtPath
 
 	return startStreamingCmd(cmd)
+}
+
+// untrackedDiffSafe reports whether an untracked worktree-relative path is safe
+// to feed to `git diff --no-index`, which follows symlinks. It rejects a leaf
+// symlink and any path whose symlink-resolved location escapes the worktree,
+// preventing exfiltration of files outside the worktree via a malicious symlink
+// (e.g. an agent creating `leak -> /etc/passwd` inside the worktree).
+func untrackedDiffSafe(wtPath, relPath string) bool {
+	full := filepath.Join(wtPath, relPath)
+	fi, err := os.Lstat(full)
+	if err != nil {
+		return false
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return false // leaf is a symlink — refuse to follow it
+	}
+	real, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return false
+	}
+	base, err := filepath.EvalSymlinks(wtPath)
+	if err != nil {
+		return false
+	}
+	return real == base || strings.HasPrefix(real, base+string(filepath.Separator))
 }
 
 // diffAll returns the diff for the whole worktree: `git diff HEAD` for tracked
@@ -365,7 +396,13 @@ func diffAll(ctx context.Context, wtPath string) (io.ReadCloser, error) {
 	var untracked []string
 	for _, entry := range bytes.Split(summaryOut, []byte{0}) {
 		if len(entry) >= 4 && entry[0] == '?' && entry[1] == '?' {
-			untracked = append(untracked, string(entry[3:]))
+			relPath := string(entry[3:])
+			// Skip symlinked/escaping untracked entries: `git diff --no-index`
+			// follows symlinks and would leak files outside the worktree.
+			if !untrackedDiffSafe(wtPath, relPath) {
+				continue
+			}
+			untracked = append(untracked, relPath)
 		}
 	}
 
@@ -455,14 +492,14 @@ func (s *streamingCmd) Close() error {
 func startStreamingCmd(cmd *exec.Cmd) (io.ReadCloser, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("wt git: stdout pipe: %w", err)
+		return nil, fmt.Errorf("wt: stdout pipe: %w", err)
 	}
 	// Discard stderr so it doesn't mix into the diff stream.
 	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
 		_ = stdout.Close()
-		return nil, fmt.Errorf("wt git: start %v: %w", cmd.Args, err)
+		return nil, fmt.Errorf("wt: start %v: %w", cmd.Args, err)
 	}
 	return &streamingCmd{cmd: cmd, stdout: stdout}, nil
 }

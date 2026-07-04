@@ -51,9 +51,11 @@ type WorktreeStatus struct {
 	Exists bool
 	// Clean is true when the worktree has no uncommitted changes.
 	Clean bool
-	// Ahead is the number of commits ahead of the upstream (best-effort; 0 in M3).
+	// Ahead is the number of commits ahead of the upstream. Best-effort: the git
+	// backend computes it via `git rev-list --count --left-right @{u}...HEAD`,
+	// returning 0 when there is no upstream or on error; the jj backend returns 0.
 	Ahead int
-	// Behind is the number of commits behind the upstream (best-effort; 0 in M3).
+	// Behind is the number of commits behind the upstream (same best-effort rules).
 	Behind int
 }
 

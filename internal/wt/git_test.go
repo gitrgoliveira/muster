@@ -391,6 +391,56 @@ func TestGitBackend_DiffAt_SingleUntracked(t *testing.T) {
 	}
 }
 
+// TestGitBackend_DiffAt_UntrackedSymlinkNotFollowed verifies the symlink
+// exfiltration guard: an untracked symlink pointing outside the worktree must
+// NOT be followed by `git diff --no-index` (which would otherwise leak the
+// target's contents). diffAll skips it; diffSingleFile returns an empty diff.
+func TestGitBackend_DiffAt_UntrackedSymlinkNotFollowed(t *testing.T) {
+	repoPath := initGitRepo(t)
+	worktreesDir := t.TempDir()
+	ctx := context.Background()
+
+	b, _ := wt.For(wt.VCSGit)
+	wtPath, err := b.Create(ctx, worktreesDir, repoPath, "mp-symleak")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A secret file OUTSIDE the worktree.
+	secretDir := t.TempDir()
+	secretFile := filepath.Join(secretDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("TOP_SECRET_VALUE\n"), 0o644); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	// An untracked symlink inside the worktree pointing at the secret.
+	if err := os.Symlink(secretFile, filepath.Join(wtPath, "leak")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	// Whole-worktree diff must not leak the symlink target's contents.
+	rc, err := wt.GitDiffAt(ctx, worktreesDir, "mp-symleak", "")
+	if err != nil {
+		t.Fatalf("DiffAt(whole): %v", err)
+	}
+	data, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if strings.Contains(string(data), "TOP_SECRET_VALUE") {
+		t.Errorf("whole-worktree diff leaked symlink target contents:\n%s", data)
+	}
+
+	// Single-file diff of the symlink must be empty (skipped), not an error.
+	rc2, err := wt.GitDiffAt(ctx, worktreesDir, "mp-symleak", "leak")
+	if err != nil {
+		t.Fatalf("DiffAt(leak): unexpected error: %v", err)
+	}
+	data2, _ := io.ReadAll(rc2)
+	_ = rc2.Close()
+	if len(data2) != 0 {
+		t.Errorf("single-file diff of untracked symlink should be empty, got:\n%s", data2)
+	}
+}
+
 // ── T029: Ahead/Behind ────────────────────────────────────────────────────
 
 // TestGitBackend_StatusAt_FileNotDir verifies that StatusAt returns
