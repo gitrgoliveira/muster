@@ -475,9 +475,10 @@ func (m *multiReadCloser) Close() error {
 }
 
 // streamingCmd is a ReadCloser that wraps a running child process.
-// Read reads from the child's stdout; Close kills the child (if still running)
-// and calls Wait to reap it (no zombies). ctx cancellation also kills the child
-// via exec.CommandContext.
+// Read reads from the child's stdout; Close closes stdout (unblocking any Read)
+// and calls Wait to reap the child (no zombies), surfacing a genuine non-zero
+// exit. Close does not itself signal the child — cancelling the ctx passed to
+// exec.CommandContext is what kills a still-running process.
 type streamingCmd struct {
 	cmd    *exec.Cmd
 	stdout io.ReadCloser
