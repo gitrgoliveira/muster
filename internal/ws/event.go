@@ -69,6 +69,9 @@ type Frame struct {
 
 	// M4: dispatch.queued / dispatch.admitted
 	WaitingPos *int `json:"waitingPos,omitempty"` // 0-based FIFO position; dispatch.queued only
+
+	// M4: step.advanced / step.loopedback
+	ChainLen *int `json:"chainLen,omitempty"` // total number of steps in the chain
 }
 
 // ClientFrame is the only accepted client-to-server frame shape.

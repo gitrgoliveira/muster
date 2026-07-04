@@ -83,6 +83,62 @@ func (o *Orchestrator) AsSessionAttacher() services.SessionAttacher {
 // Verify Orchestrator implements services.SessionAttacher.
 var _ services.SessionAttacher = (*Orchestrator)(nil)
 
+// AsStepAdvancer returns a services.StepAdvancer backed by this Orchestrator.
+func (o *Orchestrator) AsStepAdvancer() services.StepAdvancer {
+	return &stepAdvancerAdapter{o: o}
+}
+
+// stepAdvancerAdapter adapts Orchestrator.Advance/LoopBack to services.StepAdvancer.
+type stepAdvancerAdapter struct {
+	o *Orchestrator
+}
+
+// Advance implements services.StepAdvancer.
+func (a *stepAdvancerAdapter) Advance(_ context.Context, beadID string) (stepIdx, chainLen int, err error) {
+	if err := a.o.Advance(beadID); err != nil {
+		return 0, 0, mapStepError(err)
+	}
+	// Read back the new stepIdx and chainLen under the lock.
+	a.o.mu.RLock()
+	run, ok := a.o.runs[beadID]
+	if ok && run.Chain != nil {
+		stepIdx = run.StepIdx
+		chainLen = len(*run.Chain)
+	}
+	a.o.mu.RUnlock()
+	return stepIdx, chainLen, nil
+}
+
+// LoopBack implements services.StepAdvancer.
+func (a *stepAdvancerAdapter) LoopBack(_ context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error) {
+	if err := a.o.LoopBack(beadID, toIdx); err != nil {
+		return 0, 0, mapStepError(err)
+	}
+	// Read back the chainLen under the lock.
+	a.o.mu.RLock()
+	run, ok := a.o.runs[beadID]
+	if ok && run.Chain != nil {
+		chainLen = len(*run.Chain)
+	}
+	a.o.mu.RUnlock()
+	return toIdx, chainLen, nil
+}
+
+// mapStepError translates orchestrator step errors into typed *services.ServiceError.
+func mapStepError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var se *services.ServiceError
+	if errors.As(err, &se) {
+		return se
+	}
+	if errors.Is(err, ErrStepOutOfRange) {
+		return &services.ServiceError{Code: services.CodeStepOutOfRange, Message: err.Error()}
+	}
+	return &services.ServiceError{Code: services.CodeInternal, Message: err.Error()}
+}
+
 // AsSchedulerManager returns a services.SchedulerManager that delegates to
 // this Orchestrator's capacity-gated FIFO scheduler. Use this when wiring
 // into services.BeadService.WithScheduler.

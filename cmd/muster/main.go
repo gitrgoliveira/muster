@@ -58,6 +58,28 @@ func (a *beadServiceSchedulerAdapter) SchedulerSnapshot() health.SchedulerSnapsh
 	}
 }
 
+// orchestratorRunListerAdapter adapts *orchestrator.Orchestrator to the
+// health.RunLister interface, converting orchestrator.RunSummary to
+// health.RunSummaryDTO at the wiring layer (avoids a circular import between
+// api/health and orchestrator).
+type orchestratorRunListerAdapter struct {
+	orc *orchestrator.Orchestrator
+}
+
+func (a *orchestratorRunListerAdapter) ListRuns() []health.RunSummaryDTO {
+	summaries := a.orc.ListRunSummaries()
+	dtos := make([]health.RunSummaryDTO, len(summaries))
+	for i, s := range summaries {
+		dtos[i] = health.RunSummaryDTO{
+			BeadID:   s.BeadID,
+			StepIdx:  s.StepIdx,
+			ChainLen: s.ChainLen,
+			State:    string(s.State),
+		}
+	}
+	return dtos
+}
+
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		fmt.Fprintf(os.Stderr, "Usage: muster serve [--addr HOST:PORT] [--beads-dir DIR] [--bd-bin PATH]\n")
@@ -345,7 +367,8 @@ func main() {
 		WithOrchestrator(orc.AsServiceDispatcher()).
 		WithScheduler(orc.AsSchedulerManager()).
 		WithAttacher(orc.AsSessionAttacher()).
-		WithWorktreeAccessor(orc.AsWorktreeAccessor())
+		WithWorktreeAccessor(orc.AsWorktreeAccessor()).
+		WithStepAdvancer(orc.AsStepAdvancer())
 
 	// M2: Recovery scan — re-discover running sessions from before restart.
 	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -409,6 +432,8 @@ func main() {
 		WorktreeCounter: orc,
 		// M4 additions (US1): live scheduler state for status + capacity management.
 		SchedulerSnapshotter: &beadServiceSchedulerAdapter{svc: svc},
+		// M4 T047: per-run step chain progress for status DTO.
+		RunLister: &orchestratorRunListerAdapter{orc: orc},
 	}
 
 	handler := api.NewRouter(svc, hub, UI, statusCfg)

@@ -417,6 +417,121 @@ func (f *fakeCapacitySetter) SchedulerSnapshot() health.SchedulerSnapshotDTO {
 	return f.snapshot
 }
 
+// ── T047: per-run stepIdx/chainLen in status DTO ─────────────────────────────
+
+// fakeRunLister implements RunLister for handler tests.
+type fakeRunLister struct {
+	runs []health.RunSummaryDTO
+}
+
+func (f *fakeRunLister) ListRuns() []health.RunSummaryDTO { return f.runs }
+
+// TestOrchestratorStatus_T047_RunsField verifies that the "runs" field carries
+// per-run stepIdx and chainLen (additive field; nil RunLister → empty/absent).
+func TestOrchestratorStatus_T047_RunsField(t *testing.T) {
+	lister := &fakeRunLister{
+		runs: []health.RunSummaryDTO{
+			{BeadID: "mp-aaa", StepIdx: 1, ChainLen: 3, State: "active"},
+			{BeadID: "mp-bbb", StepIdx: 0, ChainLen: 0, State: "active"},
+		},
+	}
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		RunLister:     lister,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Runs) != 2 {
+		t.Fatalf("want 2 runs got %d", len(body.Runs))
+	}
+	r0 := body.Runs[0]
+	if r0.BeadID != "mp-aaa" {
+		t.Errorf("runs[0].beadID want mp-aaa got %q", r0.BeadID)
+	}
+	if r0.StepIdx != 1 {
+		t.Errorf("runs[0].stepIdx want 1 got %d", r0.StepIdx)
+	}
+	if r0.ChainLen != 3 {
+		t.Errorf("runs[0].chainLen want 3 got %d", r0.ChainLen)
+	}
+	if r0.State != "active" {
+		t.Errorf("runs[0].state want active got %q", r0.State)
+	}
+}
+
+// TestOrchestratorStatus_T047_NilRunLister verifies nil RunLister produces
+// an empty/absent runs array (no regression for prior-milestone config).
+func TestOrchestratorStatus_T047_NilRunLister(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		// RunLister intentionally nil.
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Runs) != 0 {
+		t.Errorf("want empty runs got %v", body.Runs)
+	}
+}
+
+// TestOrchestratorStatus_T047_M4FieldsIntact verifies all M4 fields remain
+// present when RunLister is also wired (additive surface check).
+func TestOrchestratorStatus_T047_M4FieldsIntact(t *testing.T) {
+	lister := &fakeRunLister{
+		runs: []health.RunSummaryDTO{
+			{BeadID: "mp-aaa", StepIdx: 0, ChainLen: 2, State: "active"},
+		},
+	}
+	cfg := health.StatusConfig{
+		BeadsVersion:  "2.0.0",
+		SchemaVersion: 2,
+		TmuxAvailable: true,
+		RunCounter:    &fakeRunCounter{count: 1},
+		VCS: health.VCSStatus{
+			DefaultVCS: "git",
+			Git:        health.VCSAvailability{Available: true},
+		},
+		SchedulerSnapshotter: &fakeSchedulerSnapshotter{snap: health.SchedulerSnapshotDTO{
+			Capacity: 4, ActiveCount: 1, Waiting: []string{},
+		}},
+		RunLister: lister,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(w.Result().Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// New T047 field.
+	mustHaveKey(t, raw, "runs")
+	// Prior fields still present.
+	mustHaveKey(t, raw, "capacity")
+	mustHaveKey(t, raw, "activeCount")
+	mustHaveKey(t, raw, "waiting")
+	mustHaveKey(t, raw, "vcs")
+	mustHaveKey(t, raw, "worktreeCount")
+}
+
+// ── T019/T020: SetCapacity handler ────────────────────────────────────────────
+
 func TestSetCapacityHandler_ValidCapacity(t *testing.T) {
 	fake := &fakeCapacitySetter{snapshot: health.SchedulerSnapshotDTO{Capacity: 5, ActiveCount: 1, Waiting: []string{}}}
 	h := health.NewOrchestratorHandler(fake)

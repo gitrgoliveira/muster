@@ -175,6 +175,7 @@ type BeadService struct {
 	scheduler    SchedulerManager       // may be nil; SetCapacity/SchedulerSnapshot return error when nil
 	attacher     SessionAttacher        // may be nil; attach/send return unavailable when nil
 	wtAccessor   WorktreeAccessor       // may be nil; worktree/diff return CodeVCSUnavailable when nil
+	stepAdvancer StepAdvancer           // may be nil; advance/loopback return unavailable when nil
 	repo         string
 	publish      Publisher
 	// publishOnWrite broadcasts a WS frame after each successful CLI write.
@@ -914,6 +915,55 @@ func (svc *BeadService) RemoveWorktree(ctx context.Context, id string) error {
 		svc.publish(ws.Frame{Type: ws.EventWorktreeRemoved, BeadID: id})
 	}
 	return nil
+}
+
+// StepAdvancer is the interface BeadService uses to advance or loop back the
+// step pointer for a live multi-step run. The real implementation is
+// *orchestrator.Orchestrator (wrapped in service_adapter.go); tests may
+// substitute a fake. Defined here (not in orchestrator) to avoid import cycles.
+type StepAdvancer interface {
+	// Advance moves the step pointer forward by 1 for the run keyed by beadID.
+	// Returns (newStepIdx, chainLen, nil) on success, or (0, 0, *ServiceError)
+	// with Code==CodeStepOutOfRange when already at the last step or no chain.
+	Advance(ctx context.Context, beadID string) (stepIdx, chainLen int, err error)
+	// LoopBack moves the step pointer back to toIdx for the run keyed by beadID.
+	// Returns (toIdx, chainLen, nil) on success, or (0, 0, *ServiceError) with
+	// Code==CodeStepOutOfRange when toIdx is out of range.
+	LoopBack(ctx context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error)
+}
+
+// WithStepAdvancer returns a new BeadService with a step advancer attached.
+// The advancer is used by AdvanceStep and LoopBackStep when present.
+func (svc *BeadService) WithStepAdvancer(a StepAdvancer) *BeadService {
+	svc2 := *svc
+	svc2.stepAdvancer = a
+	return &svc2
+}
+
+// AdvanceStep moves the chain step pointer forward by 1 for the given bead.
+// Returns (newStepIdx, chainLen) on success; maps ErrStepOutOfRange → CodeStepOutOfRange.
+func (svc *BeadService) AdvanceStep(ctx context.Context, beadID string) (stepIdx, chainLen int, err error) {
+	// Verify the bead exists before touching the orchestrator.
+	if _, err := svc.GetBead(ctx, beadID); err != nil {
+		return 0, 0, err
+	}
+	if svc.stepAdvancer == nil {
+		return 0, 0, &ServiceError{Code: CodeAttachUnavailable, Message: "advance not available: no multi-step dispatcher configured"}
+	}
+	return svc.stepAdvancer.Advance(ctx, beadID)
+}
+
+// LoopBackStep moves the chain step pointer back to toIdx for the given bead.
+// Returns (toIdx, chainLen) on success; maps ErrStepOutOfRange → CodeStepOutOfRange.
+func (svc *BeadService) LoopBackStep(ctx context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error) {
+	// Verify the bead exists before touching the orchestrator.
+	if _, err := svc.GetBead(ctx, beadID); err != nil {
+		return 0, 0, err
+	}
+	if svc.stepAdvancer == nil {
+		return 0, 0, &ServiceError{Code: CodeAttachUnavailable, Message: "loopback not available: no multi-step dispatcher configured"}
+	}
+	return svc.stepAdvancer.LoopBack(ctx, beadID, toIdx)
 }
 
 // AddComment appends a comment via the CLI.

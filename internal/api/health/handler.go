@@ -69,6 +69,14 @@ type RunCounter interface {
 	RunCount() int
 }
 
+// RunLister is implemented by the orchestrator to provide per-run summaries for
+// the status endpoint (T047). Returns a snapshot list — callers must not mutate it.
+// May be nil; Runs will be an empty (non-null) slice in that case.
+type RunLister interface {
+	// ListRuns returns a point-in-time summary of all tracked runs.
+	ListRuns() []RunSummaryDTO
+}
+
 // WorktreeCounter is implemented by the orchestrator to report the number of
 // per-bead worktree directories under the configured --worktrees-dir.
 type WorktreeCounter interface {
@@ -105,6 +113,10 @@ type StatusConfig struct {
 	// SchedulerSnapshotter provides live scheduler state for the status response.
 	// May be nil; scheduler fields are omitted (zero-valued) when nil.
 	SchedulerSnapshotter SchedulerSnapshotter
+
+	// RunLister provides per-run summaries (stepIdx, chainLen) for T047.
+	// May be nil; Runs field will be an empty (non-null) slice when nil.
+	RunLister RunLister
 }
 
 // HealthzHandler handles GET /api/v1/healthz.
@@ -145,6 +157,14 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			schedSnap = cfg.SchedulerSnapshotter.SchedulerSnapshot()
 		}
 
+		// T047: read per-run summaries (stepIdx, chainLen).
+		runs := []RunSummaryDTO{} // never nil; clients get [] not null
+		if cfg.RunLister != nil {
+			if listed := cfg.RunLister.ListRuns(); len(listed) > 0 {
+				runs = listed
+			}
+		}
+
 		resp := OrchestratorStatusResponse{
 			Build:         "dev",
 			SchemaVersion: schemaVersion,
@@ -169,6 +189,8 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			Capacity:    schedSnap.Capacity,
 			ActiveCount: schedSnap.ActiveCount,
 			Waiting:     schedSnap.Waiting,
+			// T047: per-run step chain progress.
+			Runs: runs,
 		}
 		render.WriteJSON(w, http.StatusOK, resp)
 	}

@@ -41,6 +41,19 @@ type SchedulerSnapshotDTO struct {
 	Waiting     []string `json:"waiting"`
 }
 
+// RunSummaryDTO is a per-run summary included in OrchestratorStatusResponse.
+// It carries per-step chain progress (T047).
+type RunSummaryDTO struct {
+	// BeadID is the bead this run belongs to.
+	BeadID string `json:"beadID"`
+	// StepIdx is the current (or last completed) step index.
+	StepIdx int `json:"stepIdx"`
+	// ChainLen is the total number of steps in the chain. 0 means single-step (M2).
+	ChainLen int `json:"chainLen"`
+	// State is the run's current state: "pending", "active", "done", "failed".
+	State string `json:"state"`
+}
+
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.
 type OrchestratorStatusResponse struct {
 	Build         string `json:"build"`
@@ -75,4 +88,7 @@ type OrchestratorStatusResponse struct {
 	ActiveCount int `json:"activeCount"`
 	// Waiting is the bead IDs in FIFO order waiting for a capacity slot.
 	Waiting []string `json:"waiting"`
+	// Runs is a per-run summary list including stepIdx and chainLen (T047).
+	// Empty (not null) when no runs are tracked.
+	Runs []RunSummaryDTO `json:"runs"`
 }

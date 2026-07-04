@@ -103,6 +103,16 @@ type Run struct {
 	// run is admitted and the agent session is actually launched.
 	// Mutable under o.mu.
 	Waiting bool
+
+	// pendingAdvance is true while an Advance/LoopBack is in progress for this
+	// run. When true, finishRun skips eviction and instead relaunches the next
+	// step (at pendingAdvanceNextIdx) under the same beadID key.
+	// Mutable under o.mu.
+	pendingAdvance bool
+
+	// pendingAdvanceNextIdx is the target step index set by Advance/LoopBack.
+	// Valid only when pendingAdvance is true. Mutable under o.mu.
+	pendingAdvanceNextIdx int
 }
 
 // DispatchRequest carries the inputs for Orchestrator.Dispatch.
@@ -113,6 +123,13 @@ type DispatchRequest struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode // empty = use DefaultPermissionMode
+
+	// Chain is an optional step chain override for this dispatch. When non-nil
+	// it takes precedence over the orchestrator's configured default chain.
+	// nil means: use the configured default chain, or single implicit step 0
+	// (M2 behaviour) if no default chain is set. Per-step PermissionMode is
+	// never silently defaulted (FR-012a).
+	Chain *StepChain
 }
 
 // DispatchResult is the return value of Orchestrator.Dispatch.
@@ -161,6 +178,14 @@ type Orchestrator struct {
 	// in_progress per the beads mapper), so completion is recorded via a bead
 	// note + a bead.updated WS frame rather than a column move.
 	onComplete func(beadID string, exitCode int, success bool)
+
+	// defaultChain is the per-orchestrator default step chain applied to all
+	// dispatches that do not supply an explicit chain (nil DispatchRequest.Chain).
+	// nil means single implicit step 0 (M2 behaviour). Set at construction via
+	// Config.DefaultChain. Per-step PermissionMode is NEVER silently defaulted
+	// (FR-012a) — a chain with an empty PermissionMode on any step will cause
+	// an ErrNoPermissionMode when that step is launched.
+	defaultChain *StepChain
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -206,6 +231,11 @@ type Config struct {
 	// 0 or negative defaults to 4 (defaultSchedulerCapacity). Use SetCapacity
 	// to change it at runtime; Dispatch enforces it via the FIFO scheduler.
 	MaxConcurrent int
+
+	// DefaultChain is the default step chain applied to dispatches that do not
+	// supply an explicit chain. nil means single implicit step 0 (M2 behaviour).
+	// Per-step PermissionMode is NEVER silently defaulted (FR-012a).
+	DefaultChain *StepChain
 }
 
 // defaultRunRetention is used when Config.RunRetention is unset (0).
@@ -273,6 +303,7 @@ func New(cfg Config) *Orchestrator {
 		runTimeout:      cfg.RunTimeout,
 		runRetention:    runRetention,
 		onComplete:      cfg.OnComplete,
+		defaultChain:    cfg.DefaultChain,
 	}
 }
 
@@ -349,6 +380,39 @@ func (o *Orchestrator) VCSAvailability() wt.Availability {
 // DefaultVCSString returns the string form of the configured default VCS.
 func (o *Orchestrator) DefaultVCSString() string {
 	return string(o.defaultVCS)
+}
+
+// RunSummary is a lightweight point-in-time snapshot of a Run for status reporting.
+// It is returned by ListRunSummaries and consumed by the health status handler via
+// an adapter in main.go (which converts to health.RunSummaryDTO to avoid an
+// import cycle between orchestrator and api/health).
+type RunSummary struct {
+	BeadID   string
+	StepIdx  int
+	ChainLen int // 0 when no chain (single-step M2 run)
+	State    core.StepStatus
+}
+
+// ListRunSummaries returns a snapshot of all currently-tracked runs, ordered
+// by BeadID for deterministic output. Callers may read the returned slice
+// without holding a lock.
+func (o *Orchestrator) ListRunSummaries() []RunSummary {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	summaries := make([]RunSummary, 0, len(o.runs))
+	for _, r := range o.runs {
+		chainLen := 0
+		if r.Chain != nil {
+			chainLen = len(*r.Chain)
+		}
+		summaries = append(summaries, RunSummary{
+			BeadID:   r.BeadID,
+			StepIdx:  r.StepIdx,
+			ChainLen: chainLen,
+			State:    r.State,
+		})
+	}
+	return summaries
 }
 
 // GetRun returns a snapshot copy of the Run for a beadID, or nil if not found.
@@ -450,8 +514,14 @@ func (e *PermModeError) Error() string {
 	return "invalid permissionMode: " + string(e.Mode)
 }
 
-// promptFileName is the filename of the prompt file within the worktree.
-const promptFileName = ".muster-prompt-0.txt"
+// promptFileNameForStep returns the prompt filename for the given step index.
+// Each step gets its own file so step 1 does not overwrite step 0's prompt
+// (which may still be in use by the watcher goroutine or for debugging).
+// For step 0 this returns ".muster-prompt-0.txt" — byte-for-byte identical to
+// the M2 constant, preserving backward compatibility.
+func promptFileNameForStep(stepIdx int) string {
+	return fmt.Sprintf(".muster-prompt-%d.txt", stepIdx)
+}
 
 // modeSupported reports whether the adapter's Modes() table contains mode.
 func modeSupported(adp adapter.Adapter, mode core.Mode) bool {
@@ -547,6 +617,11 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		o.mu.Unlock()
 		return DispatchResult{}, ErrRunAlreadyActive
 	}
+	// Resolve the step chain for this dispatch. M2 single-step behaviour
+	// (nil Chain) is preserved when no chain is supplied in the request and
+	// no default chain is configured.
+	resolvedChain := o.resolveChain(req)
+
 	reserved := &Run{
 		BeadID:         req.BeadID,
 		BeadTitle:      req.BeadTitle,
@@ -556,6 +631,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		PermissionMode: pm,
 		State:          core.StepPending,
 		StartedAt:      time.Now(),
+		Chain:          resolvedChain,
 	}
 	queued := o.sched.admitOrEnqueue(reserved)
 	if !queued {
@@ -688,7 +764,10 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	// hard-coded "/") keeps this portable to Windows, where the adapter's own
 	// filepath.Rel(Worktree, PromptFile) contract check expects an OS-native
 	// separator throughout.
-	promptPath := filepath.Join(wtPath, promptFileName)
+	// Each step gets its own prompt file (.muster-prompt-<stepIdx>.txt) so
+	// step 1 does not overwrite step 0's file. For step 0 this is
+	// ".muster-prompt-0.txt" — M2 byte-for-byte identical.
+	promptPath := filepath.Join(wtPath, promptFileNameForStep(run.StepIdx))
 	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
@@ -820,9 +899,17 @@ func (o *Orchestrator) launchAdmittedRun(run *Run) {
 // watchRun monitors a run for exit via DeadStatus polling, then transitions
 // the bead and emits tmux.session.closed.
 func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
+	// Capture the cancel func once, under the read lock, immediately on entry.
+	// doLaunch sets run.cancel before calling go watchRun, so it is already set
+	// when this goroutine starts. We must NOT read run.cancel again after this
+	// point: relaunchNextStep resets it to nil under the write lock (the advance
+	// path), so any later bare read of run.cancel would race.
+	o.mu.RLock()
+	cancelFn := run.cancel
+	o.mu.RUnlock()
 	defer func() {
-		if run.cancel != nil {
-			run.cancel()
+		if cancelFn != nil {
+			cancelFn()
 		}
 	}()
 
@@ -855,7 +942,13 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 		case <-ticker.C:
 		}
 
-		code, dead, err := o.transport.DeadStatus(run.Session)
+		// Read run.Session under the lock: the M4 advance path (Advance/LoopBack)
+		// clears this field under the write lock so a bare read here would race.
+		o.mu.RLock()
+		sess := run.Session
+		o.mu.RUnlock()
+
+		code, dead, err := o.transport.DeadStatus(sess)
 		if err != nil {
 			// Session vanished (e.g. killed externally) — unknown exit, treat as
 			// a failure with code -1 (not 0, which would look successful).
@@ -885,32 +978,53 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		state = core.StepFailed
 	}
 
+	// Snapshot session and pipe under the read lock. These fields were
+	// "immutable after launch" in M2 (set once in doLaunch), but the M4
+	// advance path (Advance/LoopBack in steps.go) now writes them under the
+	// write lock to clear them before relaunchNextStep sets new values. Reading
+	// them under the read lock here avoids a data race while preserving the
+	// Kill-before-state-flip ordering (Kill happens below, after this lock release,
+	// which is still before the write lock's state flip further down).
+	o.mu.RLock()
+	session := run.Session
+	pipe := run.pipe
+	o.mu.RUnlock()
+
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
 	// Log a failure: a non-"session gone" error means the session may persist,
 	// and a later re-dispatch of this bead would then fail with a duplicate
 	// session whose root cause would otherwise be invisible.
-	if err := o.transport.Kill(run.Session); err != nil {
+	if err := o.transport.Kill(session); err != nil {
 		slog.Warn("finishRun: tmux Kill failed; session may persist and block re-dispatch",
-			"bead", run.BeadID, "session", run.Session, "err", err)
+			"bead", run.BeadID, "session", session, "err", err)
 	}
 
 	// Close the pane pipe so the real tmux manager removes its FIFO + temp dir.
 	// The session is killed above, so the stream goroutine has hit (or will hit)
 	// EOF; closing is idempotent-safe here as finishRun runs once per run.
-	if run.pipe != nil {
-		_ = run.pipe.Close()
+	if pipe != nil {
+		_ = pipe.Close()
 	}
 
 	// Only NOW flip the State off StepActive — see the ordering note above.
 	// Also admit the next FIFO waiter (if any) while still holding the lock,
 	// then launch it outside the lock (slow IO: Detect/Ensure/Spawn).
+	//
+	// INTERLOCK (T043b): when pendingAdvance is set, the bead is being advanced
+	// to the next step under the SAME beadID key. Do NOT call onRunEnd — that
+	// would free the scheduler capacity slot and potentially admit a waiter for
+	// a different bead, leaving the advancing bead un-counted. The slot stays
+	// occupied for the duration of the next step.
 	o.mu.Lock()
 	run.State = state
 	run.ExitCode = exitCode
 	run.EndedAt = time.Now()
-	nextRun := o.sched.onRunEnd(run.BeadID)
-	if nextRun != nil {
-		nextRun.State = core.StepActive
+	var nextRun *Run
+	if !run.pendingAdvance {
+		nextRun = o.sched.onRunEnd(run.BeadID)
+		if nextRun != nil {
+			nextRun.State = core.StepActive
+		}
 	}
 	o.mu.Unlock()
 
@@ -919,14 +1033,15 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		go o.launchAdmittedRun(nextRun)
 	}
 
-	// Emit tmux.session.closed.
+	// Emit tmux.session.closed. Use the local snapshot of session name
+	// (captured under the read lock above) for the same race-safety reason.
 	if o.publish != nil {
 		ec := exitCode
 		o.publish(ws.Frame{
 			Type:     ws.EventTmuxClosed,
 			BeadID:   run.BeadID,
 			StepIdx:  intPtr(run.StepIdx),
-			Session:  run.Session,
+			Session:  session,
 			ExitCode: &ec,
 		})
 	}
@@ -959,7 +1074,20 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 
 	// Evict this run from the registry after the retention window so a
 	// long-lived server doesn't accumulate an entry per bead ever dispatched.
-	o.scheduleRunEviction(run)
+	// INTERLOCK (T043b): if pendingAdvance is set, Advance/LoopBack already
+	// set pendingAdvanceNextIdx and is waiting for this finishRun to do the
+	// Kill+pipe.Close (above) before relaunching the next step. Spawn
+	// relaunchNextStep on a new goroutine so this watcher goroutine can exit
+	// promptly. relaunchNextStep will schedule eviction on its own if
+	// doLaunch fails; on success the next step's finishRun will do so.
+	o.mu.RLock()
+	pending := run.pendingAdvance
+	o.mu.RUnlock()
+	if pending {
+		go o.relaunchNextStep(run)
+	} else {
+		o.scheduleRunEviction(run)
+	}
 }
 
 // buildPrompt assembles the bead title and description into a prompt string.

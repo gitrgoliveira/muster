@@ -566,12 +566,16 @@ func TestAttach_404_WrongBead(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
-func TestAttach_404_NonZeroIdx(t *testing.T) {
+// TestAttach_200_NonZeroIdx verifies that idx≥1 is accepted by the widened
+// parseStepIdx (T045). With no orchestrator/attacher wired, the service returns
+// {available:false} (200 OK) — the 404 only fires for an unknown bead, not an
+// unknown step index (step index validation is service-layer, not handler-layer).
+func TestAttach_200_NonZeroIdx(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 
 	resp := doGet(t, srv, "/beads/mp-aaa/steps/1/attach")
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 // TestAttach_404_NonCanonicalZeroIdx verifies the step-index route requires
@@ -600,12 +604,14 @@ func TestSend_400_BadBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-func TestSend_404_NonZeroIdx(t *testing.T) {
+// TestSend_501_NonZeroIdx verifies that idx≥1 is accepted by the widened
+// parseStepIdx (T045). With no attacher, the service returns 501 ATTACH_UNAVAILABLE.
+func TestSend_501_NonZeroIdx(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 
 	resp := doPost(t, srv, "/beads/mp-aaa/steps/2/send", map[string]string{"keys": "y\n"})
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 }
 
 func TestSend_400_EmptyKeys(t *testing.T) {
@@ -622,4 +628,122 @@ func TestSend_400_KeysTooLarge(t *testing.T) {
 
 	resp := doPost(t, srv, "/beads/mp-aaa/steps/0/send", map[string]string{"keys": strings.Repeat("y", 4097)})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ── Advance / LoopBack (T046) ─────────────────────────────────────────────────
+
+// fakeStepAdvancer is a minimal services.StepAdvancer for handler tests.
+type fakeStepAdvancer struct {
+	advanceErr  error
+	loopbackErr error
+	stepIdx     int
+	chainLen    int
+}
+
+func (f *fakeStepAdvancer) Advance(_ context.Context, beadID string) (stepIdx, chainLen int, err error) {
+	if f.advanceErr != nil {
+		return 0, 0, f.advanceErr
+	}
+	return f.stepIdx, f.chainLen, nil
+}
+
+func (f *fakeStepAdvancer) LoopBack(_ context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error) {
+	if f.loopbackErr != nil {
+		return 0, 0, f.loopbackErr
+	}
+	return toIdx, f.chainLen, nil
+}
+
+// newTestServerWithStepAdvancer creates a test server wired with a fake step advancer.
+func newTestServerWithStepAdvancer(t *testing.T, adv services.StepAdvancer) *httptest.Server {
+	t.Helper()
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	pub := services.Publisher(func(f ws.Frame) {})
+	svc := services.NewBeadService(backend, nil, pub).WithStepAdvancer(adv)
+	h := beads.NewHandlers(svc)
+	r := chi.NewRouter()
+	r.Post("/beads/{id}/steps/advance", h.AdvanceStep)
+	r.Post("/beads/{id}/steps/loopback", h.LoopBackStep)
+	r.Get("/beads/{id}/steps/{idx}/attach", h.Attach)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestAdvance_200 verifies the happy path: 200 with {stepIdx, chainLen}.
+func TestAdvance_200(t *testing.T) {
+	adv := &fakeStepAdvancer{stepIdx: 1, chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/advance", map[string]interface{}{})
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		StepIdx  int `json:"stepIdx"`
+		ChainLen int `json:"chainLen"`
+	}
+	decodeBody(t, resp, &body)
+	assert.Equal(t, 1, body.StepIdx)
+	assert.Equal(t, 3, body.ChainLen)
+}
+
+// TestAdvance_400_OutOfRange verifies that ErrStepOutOfRange maps to 400 STEP_OUT_OF_RANGE.
+func TestAdvance_400_OutOfRange(t *testing.T) {
+	adv := &fakeStepAdvancer{
+		advanceErr: &services.ServiceError{Code: services.CodeStepOutOfRange, Message: "already at last step"},
+	}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/advance", map[string]interface{}{})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, services.CodeStepOutOfRange, errorCode(t, resp))
+}
+
+// TestAdvance_404_UnknownBead verifies that an unknown bead returns 404.
+func TestAdvance_404_UnknownBead(t *testing.T) {
+	adv := &fakeStepAdvancer{stepIdx: 1, chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-zzzz/steps/advance", map[string]interface{}{})
+	// bead not found in the store → 404 before advancer is called
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestLoopBack_200 verifies the happy path: 200 with {stepIdx, chainLen}.
+func TestLoopBack_200(t *testing.T) {
+	adv := &fakeStepAdvancer{chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/loopback", map[string]interface{}{"toIdx": 0})
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		StepIdx  int `json:"stepIdx"`
+		ChainLen int `json:"chainLen"`
+	}
+	decodeBody(t, resp, &body)
+	assert.Equal(t, 0, body.StepIdx)
+	assert.Equal(t, 3, body.ChainLen)
+}
+
+// TestLoopBack_400_MissingToIdx verifies that a missing/invalid toIdx returns 400.
+func TestLoopBack_400_MissingToIdx(t *testing.T) {
+	adv := &fakeStepAdvancer{chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	// Body with no toIdx field.
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/loopback", map[string]interface{}{})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestLoopBack_400_OutOfRange verifies that ErrStepOutOfRange maps to 400.
+func TestLoopBack_400_OutOfRange(t *testing.T) {
+	adv := &fakeStepAdvancer{
+		loopbackErr: &services.ServiceError{Code: services.CodeStepOutOfRange, Message: "toIdx out of range"},
+	}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/loopback", map[string]interface{}{"toIdx": 5})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, services.CodeStepOutOfRange, errorCode(t, resp))
 }

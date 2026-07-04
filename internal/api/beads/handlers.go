@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
@@ -69,6 +70,9 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusNotFound, se.Code, se.Message)
 	case services.CodeVCSUnavailable:
 		render.WriteError(w, r, http.StatusPreconditionFailed, se.Code, se.Message)
+	// M4 step-chain error codes.
+	case services.CodeStepOutOfRange:
+		render.WriteError(w, r, http.StatusBadRequest, se.Code, se.Message)
 	default:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	}
@@ -84,18 +88,34 @@ func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
 	return true
 }
 
-// parseStepIdx parses and validates the {idx} path param shared by Attach and
-// Send. M2 only supports step 0, so it requires the canonical "0" exactly and
-// writes a 404 (unknown step) with ok=false for anything else. Requiring the
-// literal "0" (rather than strconv.Atoi(idxStr)==0) rejects non-canonical zero
-// forms — "-0", "+0", "00" — that the contract doesn't define, keeping routing
-// unambiguous.
+// parseStepIdx parses and validates the {idx} path param shared by Attach, Send,
+// and the advance/loopback endpoints.
+//
+// T045 (widened from M2): accepts any non-negative canonical decimal integer.
+// Non-canonical forms ("-0", "+0", "00", leading-zero strings) and negative
+// values are rejected with 404 so the routing surface stays unambiguous. The
+// service layer enforces chain-range validation — the handler only ensures the
+// path token is a valid non-negative integer.
 func parseStepIdx(w http.ResponseWriter, r *http.Request, idxStr string) (idx int, ok bool) {
-	if idxStr != "0" {
+	// Reject non-canonical forms before Atoi. A valid canonical decimal integer:
+	//   - is non-empty
+	//   - does not start with "+" or "-" (Atoi accepts both; we don't)
+	//   - does not have a leading zero unless the string is exactly "0"
+	if idxStr == "" || idxStr[0] == '+' || idxStr[0] == '-' {
 		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
 		return 0, false
 	}
-	return 0, true
+	if len(idxStr) > 1 && idxStr[0] == '0' {
+		// Leading zero: "00", "01", etc. — reject.
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return 0, false
+	}
+	n, err := strconv.Atoi(idxStr)
+	if err != nil || n < 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return 0, false
+	}
+	return n, true
 }
 
 // decodeJSON decodes the request body with DisallowUnknownFields. On error,
@@ -503,6 +523,65 @@ func (h *Handlers) RemoveWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	render.WriteJSON(w, http.StatusOK, RemoveResponse{Removed: true})
+}
+
+// StepActionResponse is the body returned by POST /beads/{id}/steps/advance and
+// POST /beads/{id}/steps/loopback.
+type StepActionResponse struct {
+	StepIdx  int `json:"stepIdx"`
+	ChainLen int `json:"chainLen"`
+}
+
+// LoopBackRequest is the body for POST /beads/{id}/steps/loopback.
+type LoopBackRequest struct {
+	ToIdx *int `json:"toIdx"` // pointer so we can detect missing field vs 0
+}
+
+// AdvanceStep handles POST /beads/{id}/steps/advance.
+// Advances the run's chain pointer forward by 1 and starts the next step.
+// Returns 200 { "stepIdx": N+1, "chainLen": L }.
+// Returns 400/STEP_OUT_OF_RANGE when already at the last step or no chain.
+func (h *Handlers) AdvanceStep(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	stepIdx, chainLen, err := h.svc.AdvanceStep(r.Context(), id)
+	if mapServiceError(w, r, err) {
+		return
+	}
+	render.WriteJSON(w, http.StatusOK, StepActionResponse{StepIdx: stepIdx, ChainLen: chainLen})
+}
+
+// LoopBackStep handles POST /beads/{id}/steps/loopback.
+// Moves the run's chain pointer back to toIdx and starts that step.
+// Body: {"toIdx": N}. Returns 200 { "stepIdx": toIdx, "chainLen": L }.
+// Returns 400 when toIdx is missing, negative, or out of range.
+func (h *Handlers) LoopBackStep(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req LoopBackRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.ToIdx == nil {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "toIdx is required")
+		return
+	}
+	if *req.ToIdx < 0 {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "toIdx must be >= 0")
+		return
+	}
+
+	stepIdx, chainLen, err := h.svc.LoopBackStep(r.Context(), id, *req.ToIdx)
+	if mapServiceError(w, r, err) {
+		return
+	}
+	render.WriteJSON(w, http.StatusOK, StepActionResponse{StepIdx: stepIdx, ChainLen: chainLen})
 }
 
 // Comment handles POST /beads/{id}/comments.
