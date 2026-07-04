@@ -17,6 +17,16 @@ const (
 	EventRunlogLine EventType = "runlog.line"         // agent pane output
 	EventTmuxOpened EventType = "tmux.session.opened" // session spawned
 	EventTmuxClosed EventType = "tmux.session.closed" // session ended
+
+	// M4 additions (additive; M0–M3 events unchanged).
+	EventDispatchQueued   EventType = "dispatch.queued"    // bead enqueued waiting for scheduler capacity
+	EventDispatchAdmitted EventType = "dispatch.admitted"  // bead admitted from queue and run started
+	EventStepAdvanced     EventType = "step.advanced"      // operator advanced the chain to the next step
+	EventStepLoopedBack   EventType = "step.loopedback"    // operator looped the chain back to a prior step
+	EventWorktreeFinalized EventType = "worktree.finalized" // agent worktree committed (finalize complete)
+	EventWorktreePushed   EventType = "worktree.pushed"    // agent worktree branch pushed to remote
+	EventWorktreeRemoved  EventType = "worktree.removed"   // agent worktree directory removed
+	EventRunQuota         EventType = "run.quota"          // token/cost quota captured at run end
 )
 
 // Frame is the server-to-client event envelope. Each event type populates a

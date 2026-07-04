@@ -427,6 +427,91 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
+// ── T009: OrchestratorDispatchResult service-layer mirror ────────────────────
+
+// TestOrchestratorDispatchResult_ZeroValueSane verifies that the service-layer
+// DispatchResult mirror has sane zero values and the expected fields, mirroring
+// the OrchestratorDispatchRequest pattern.
+func TestOrchestratorDispatchResult_ZeroValueSane(t *testing.T) {
+	var r OrchestratorDispatchResult
+
+	if r.Bead != nil {
+		t.Errorf("OrchestratorDispatchResult.Bead zero value: want nil, got %v", r.Bead)
+	}
+	if r.Joined {
+		t.Error("OrchestratorDispatchResult.Joined zero value: want false")
+	}
+	if r.Queued {
+		t.Error("OrchestratorDispatchResult.Queued zero value: want false")
+	}
+
+	// Exercise the struct with non-zero values to confirm field names compile.
+	b := &core.Bead{ID: "mp-001"}
+	r2 := OrchestratorDispatchResult{Bead: b, Joined: true, Queued: false}
+	if r2.Bead != b {
+		t.Error("Bead field assignment failed")
+	}
+	if !r2.Joined {
+		t.Error("Joined field assignment failed")
+	}
+}
+
+// ── T003: M4 additive service error codes ────────────────────────────────────
+
+// TestM4ErrorCodes verifies that CodeStepOutOfRange and CodeInvalidCapacity are
+// distinct non-empty strings that do not collide with any existing code.
+func TestM4ErrorCodes(t *testing.T) {
+	existing := []string{
+		CodeInvalidRequest,
+		CodeInvalidState,
+		CodeNotFound,
+		CodeInternal,
+		CodeCLIMissing,
+		CodeCLIValidation,
+		CodeCLIUnavailable,
+		CodeCLITimeout,
+		CodeRunAlreadyActive,
+		CodeUnmappedPrefix,
+		CodeAdapterNotFound,
+		CodeAdapterNotInstalled,
+		CodeAdapterNotLoggedIn,
+		CodeAttachUnavailable,
+		CodeWorktreeNotFound,
+		CodeVCSUnavailable,
+	}
+	newCodes := []string{CodeStepOutOfRange, CodeInvalidCapacity}
+
+	for _, code := range newCodes {
+		if code == "" {
+			t.Errorf("new code must not be empty")
+		}
+	}
+
+	// Build a set of existing codes and check no collision.
+	set := make(map[string]struct{}, len(existing))
+	for _, c := range existing {
+		set[c] = struct{}{}
+	}
+	for _, nc := range newCodes {
+		if _, ok := set[nc]; ok {
+			t.Errorf("new code %q collides with an existing code", nc)
+		}
+	}
+
+	// The two new codes must themselves be distinct.
+	if CodeStepOutOfRange == CodeInvalidCapacity {
+		t.Errorf("CodeStepOutOfRange and CodeInvalidCapacity must be distinct, both are %q", CodeStepOutOfRange)
+	}
+
+	// Verify they form valid ServiceErrors.
+	for _, code := range newCodes {
+		se := &ServiceError{Code: code, Message: "test"}
+		if se.Error() == "" {
+			t.Errorf("ServiceError with code %q must have non-empty Error()", code)
+		}
+	}
+}
+
 func TestMapWorktreeReadError(t *testing.T) {
 	// A REAL missing-binary error, wrapped the way the wt backend wraps exec
 	// failures. In modern Go *exec.Error unwraps to exec.ErrNotFound, so this

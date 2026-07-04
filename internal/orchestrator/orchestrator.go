@@ -83,6 +83,24 @@ type Run struct {
 	// pipe is the pane output reader (tmux FIFO or fallback stdout). Closed in
 	// finishRun so the real tmux manager removes the FIFO + temp dir (no leak).
 	pipe io.ReadCloser
+
+	// M4 additions (additive; immutable after Dispatch populates them).
+
+	// Chain is the ordered step pipeline for this run. nil means single-step
+	// (M2 default behaviour is preserved). Set at dispatch time; US3 advances
+	// a per-bead pointer through the chain.
+	Chain *StepChain
+
+	// Quota holds the token/cost usage captured at run end. Known=false until
+	// US5 wires the on-disk quota reader; runs before US5 leave it zero.
+	// Mutable under o.mu (set in finishRun once the session exits).
+	Quota QuotaUsage
+
+	// Waiting is true while the run is queued in the scheduler waiting for
+	// a free capacity slot (State==StepPending). Flipped to false when the
+	// run is admitted and the agent session is actually launched.
+	// Mutable under o.mu.
+	Waiting bool
 }
 
 // DispatchRequest carries the inputs for Orchestrator.Dispatch.
@@ -93,6 +111,22 @@ type DispatchRequest struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode // empty = use DefaultPermissionMode
+}
+
+// DispatchResult is the return value of Orchestrator.Dispatch.
+// Joined is true when the bead was already in-flight (idempotent join, M4 US4).
+// Queued is true when the bead was accepted but is waiting for a capacity slot
+// (M4 US1). A Joined result with Queued true means the bead is joining a waiter.
+// Bead is always the active *core.Bead (existing run on join, new run otherwise).
+//
+// TODO(M4 US1): replace the Dispatch return signature (*core.Bead, error) with
+// (DispatchResult, error) once the scheduler is wired in (US1/US4). For now
+// this type is defined so dependent packages can reference it without forcing
+// churn across the codebase when the return type changes.
+type DispatchResult struct {
+	Bead   *core.Bead
+	Joined bool // true when joining an in-flight run (idempotent dispatch)
+	Queued bool // true when admitted to the waiting queue (capacity full)
 }
 
 // Publisher is a function that broadcasts a WS frame to connected clients.

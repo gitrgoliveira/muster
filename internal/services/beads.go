@@ -48,6 +48,10 @@ const (
 	// M3 worktree codes.
 	CodeWorktreeNotFound = "WORKTREE_NOT_FOUND" // 404 — bead exists but has no worktree
 	CodeVCSUnavailable   = "VCS_UNAVAILABLE"    // 412 — VCS binary absent or wrong VCS type
+
+	// M4 dispatcher codes (additive).
+	CodeStepOutOfRange  = "STEP_OUT_OF_RANGE"  // 422 — step index outside [0, chainLen)
+	CodeInvalidCapacity = "INVALID_CAPACITY"   // 400 — scheduler capacity ≤0
 )
 
 // ServiceError wraps a validation or state error with a code understood by
@@ -129,6 +133,20 @@ type OrchestratorDispatchRequest struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode
+}
+
+// OrchestratorDispatchResult is the service-layer mirror of
+// orchestrator.DispatchResult; defined here (not in orchestrator) to avoid an
+// import cycle. Kept in sync with orchestrator.DispatchResult per the
+// OrchestratorDispatchRequest mirroring pattern.
+//
+// TODO(M4 US1): wire this into OrchestratorDispatcher.Dispatch return type once
+// the scheduler is integrated (US1/US4). For now it is defined so handler code
+// can reference it without forcing churn when the signature changes.
+type OrchestratorDispatchResult struct {
+	Bead   *core.Bead
+	Joined bool // true when joining an in-flight run (idempotent dispatch)
+	Queued bool // true when admitted to the waiting queue (capacity full)
 }
 
 // BeadService implements business logic on top of the store.

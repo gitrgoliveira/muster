@@ -74,6 +74,7 @@ func main() {
 	runTimeoutFlag := fs.Duration("run-timeout", runTimeoutDefault, "optional per-run timeout (e.g. 30m); 0 = no timeout (env: MUSTER_RUN_TIMEOUT)")
 	defaultPermModeFlag := fs.String("default-permission-mode", os.Getenv("MUSTER_DEFAULT_PERMISSION_MODE"), "default claude permission mode (acceptEdits, dontAsk, etc.)")
 	defaultVCSFlag := fs.String("default-vcs", os.Getenv("MUSTER_DEFAULT_VCS"), "default VCS backend for per-bead worktrees: git (default) or jj (env: MUSTER_DEFAULT_VCS)")
+	maxConcurrentFlag := fs.String("max-concurrent-dispatches", os.Getenv("MUSTER_MAX_CONCURRENT_DISPATCHES"), "maximum concurrent agent dispatches (default 4; env: MUSTER_MAX_CONCURRENT_DISPATCHES)")
 
 	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles the error
 
@@ -91,6 +92,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", vcsErr)
 		os.Exit(1)
 	}
+
+	// Validate --max-concurrent-dispatches; empty defaults to 4.
+	maxConcurrent, concErr := config.ParseMaxConcurrent(*maxConcurrentFlag)
+	if concErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", concErr)
+		os.Exit(1)
+	}
+	slog.Info("scheduler capacity", "maxConcurrent", maxConcurrent)
+	// TODO(M4 US1): pass maxConcurrent into orchestrator.New
 
 	// Validate addr format.
 	if _, _, err := net.SplitHostPort(*addr); err != nil {

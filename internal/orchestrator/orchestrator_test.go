@@ -841,3 +841,51 @@ func TestAsServiceDispatcher_NotNil(t *testing.T) {
 		t.Error("AsServiceDispatcher should not return nil")
 	}
 }
+
+// ── T009: DispatchResult — compile-only type definition check ─────────────────
+
+// TestDispatchResult_ZeroValueSane verifies the orchestrator-package
+// DispatchResult has sane zero values and the expected field set. It is a
+// compile-time guard: a missing or renamed field causes a build failure.
+func TestDispatchResult_ZeroValueSane(t *testing.T) {
+	var dr orchestrator.DispatchResult
+
+	if dr.Bead != nil {
+		t.Errorf("DispatchResult.Bead zero value: want nil, got %v", dr.Bead)
+	}
+	if dr.Joined {
+		t.Error("DispatchResult.Joined zero value: want false")
+	}
+	if dr.Queued {
+		t.Error("DispatchResult.Queued zero value: want false")
+	}
+
+	// Exercise all fields to confirm they compile.
+	_ = orchestrator.DispatchResult{Bead: nil, Joined: true, Queued: true}
+}
+
+// ── T008: Run struct M4 extensions — compile-only skeleton ───────────────────
+
+// TestRun_M4Fields_ZeroValueSane verifies that the M4 additions to Run have
+// sane zero values: Chain nil (single-step default), Quota.Known false (no
+// usage data yet), and Waiting false (not queued). This is a compile-time
+// guard — if the fields are removed or renamed the test fails to build.
+func TestRun_M4Fields_ZeroValueSane(t *testing.T) {
+	var r orchestrator.Run
+
+	// Chain nil means single-step M2 behaviour; never accidentally non-nil.
+	if r.Chain != nil {
+		t.Errorf("Run.Chain zero value: want nil, got %v", r.Chain)
+	}
+
+	// Quota.Known false means "no usage data" — the correct initial state before
+	// US5 wires the on-disk reader.
+	if r.Quota.Known {
+		t.Error("Run.Quota.Known zero value: want false")
+	}
+
+	// Waiting false means the run is not waiting in the scheduler queue.
+	if r.Waiting {
+		t.Error("Run.Waiting zero value: want false")
+	}
+}
