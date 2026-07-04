@@ -37,20 +37,37 @@ class AppErrorBoundary extends React.Component {
 }
 
 // ─── Toast system ─────────────────────────────────────────────────────────────
-// Returns { toasts, addToast, dismissToast }. addToast({msg, undoFn}) adds a
+// Returns { toasts, addToast, dismissToast }. addToast(msg, undoFn) adds a
 // 6-second auto-dismiss toast with an optional Undo action.
 
 function useToastSystem() {
   const [toasts, setToasts] = useStateA([]);
+  const timers = React.useRef({});
+
+  const clearTimer = (id) => {
+    if (timers.current[id]) {
+      clearTimeout(timers.current[id]);
+      delete timers.current[id];
+    }
+  };
+  const dismissToast = (id) => {
+    clearTimer(id);
+    setToasts(ts => ts.filter(t => t.id !== id));
+  };
   const addToast = (msg, undoFn) => {
     const id = Date.now() + Math.random();
     setToasts(ts => [...ts, { id, msg, undoFn }]);
-    setTimeout(() => {
-      setToasts(ts => ts.filter(t => t.id !== id));
-    }, 6000);
+    timers.current[id] = setTimeout(() => dismissToast(id), 6000);
     return id;
   };
-  const dismissToast = (id) => setToasts(ts => ts.filter(t => t.id !== id));
+
+  // Clear pending timers on unmount so a timeout never fires on an unmounted
+  // component (e.g. after the error boundary swaps out the tree).
+  useEffectA(() => () => {
+    Object.values(timers.current).forEach(clearTimeout);
+    timers.current = {};
+  }, []);
+
   return { toasts, addToast, dismissToast };
 }
 
