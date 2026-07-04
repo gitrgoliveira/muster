@@ -251,6 +251,12 @@ func (o *Orchestrator) WorktreeCount() int {
 	}
 	count := 0
 	for _, e := range entries {
+		// Explicitly skip symlinks so a symlink-to-directory can't be counted —
+		// this makes the "not a symlink" guarantee hold even on filesystems that
+		// report an unknown d_type (where DirEntry.IsDir alone could misfire).
+		if e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 		if e.IsDir() {
 			count++
 		}
