@@ -116,6 +116,11 @@ type Backend interface {
 
 // For returns the Backend for the given VCS. Returns an error if vcs is not
 // in the allow-list.
+//
+// The returned Backend has an EMPTY worktreesDir, so only Create (which takes
+// worktreesDir explicitly) is fully usable — this is the dispatch/Create path.
+// Callers that need Status/DiffSummary/Diff must instead construct a backend
+// with the worktrees root baked in via NewGitBackend/NewJJBackend.
 func For(v VCS) (Backend, error) {
 	switch v {
 	case VCSGit:

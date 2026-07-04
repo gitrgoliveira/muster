@@ -384,9 +384,9 @@ func (h *Handlers) Diff(w http.ResponseWriter, r *http.Request) {
 	// Validate the optional ?path= query parameter (FR-007).
 	rawPath := r.URL.Query().Get("path")
 
-	// safeRelPath lives in internal/wt (not exported as a method on handlers),
-	// so we call the package function directly via the wt import.
-	// An empty path is valid (whole-worktree diff).
+	// wt.SafeRelPath (exported, format-only validation) rejects absolute and
+	// non-local paths; the VCS backend enforces the worktree boundary when it
+	// resolves the path. An empty path is valid (whole-worktree diff).
 	safePath, err := wt.SafeRelPath(rawPath)
 	if err != nil {
 		render.WriteError(w, r, http.StatusBadRequest, "INVALID_PATH", err.Error())
