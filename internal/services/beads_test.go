@@ -428,6 +428,11 @@ func indexOf(s, sub string) int {
 }
 
 func TestMapWorktreeReadError(t *testing.T) {
+	// A REAL missing-binary error, wrapped the way the wt backend wraps exec
+	// failures. In modern Go *exec.Error unwraps to exec.ErrNotFound, so this
+	// must map to VCS_UNAVAILABLE (guards the round-2 exec.ErrNotFound branch).
+	realMissing := fmt.Errorf("wt: start: %w", exec.Command("muster-nonexistent-binary-xyz-abc").Run())
+
 	tests := []struct {
 		name     string
 		err      error
@@ -437,6 +442,7 @@ func TestMapWorktreeReadError(t *testing.T) {
 		{"vcs unavailable", wt.ErrVCSUnavailable, CodeVCSUnavailable},
 		{"vcs unavailable wrapped", fmt.Errorf("wt jj: %w", wt.ErrVCSUnavailable), CodeVCSUnavailable},
 		{"binary missing (exec.ErrNotFound)", fmt.Errorf("wt: start [git]: %w", exec.ErrNotFound), CodeVCSUnavailable},
+		{"real missing binary (*exec.Error)", realMissing, CodeVCSUnavailable},
 		{"generic error is internal", errors.New("boom"), CodeInternal},
 	}
 	for _, tc := range tests {

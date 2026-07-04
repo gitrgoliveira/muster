@@ -15,16 +15,22 @@ type AdapterInfo struct {
 	LoggedIn  bool   `json:"loggedIn"`
 }
 
+// VCSAvailability describes one VCS backend's availability at runtime.
+type VCSAvailability struct {
+	// Available is true when the VCS binary responds to `--version`.
+	Available bool `json:"available"`
+	// Version is the binary's version string (best-effort; empty when unavailable).
+	Version string `json:"version,omitempty"`
+}
+
 // VCSStatus describes the availability of VCS backends at runtime (M3 addition).
 type VCSStatus struct {
 	// DefaultVCS is the configured default VCS ("git" or "jj").
 	DefaultVCS string `json:"defaultVCS"`
-	// Git is true when the git binary is available on PATH.
-	Git bool `json:"git"`
-	// JJ is true when the jj binary is available on PATH.
-	JJ bool `json:"jj"`
-	// JJVersion is the jj version string (best-effort; empty when JJ is false).
-	JJVersion string `json:"jjVersion,omitempty"`
+	// Git is the git backend's availability.
+	Git VCSAvailability `json:"git"`
+	// JJ is the jj backend's availability.
+	JJ VCSAvailability `json:"jj"`
 }
 
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.

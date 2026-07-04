@@ -271,9 +271,8 @@ func TestOrchestratorStatus_M3_VCSFields(t *testing.T) {
 		SchemaVersion: 1,
 		VCS: health.VCSStatus{
 			DefaultVCS: "git",
-			Git:        true,
-			JJ:         false,
-			JJVersion:  "",
+			Git:        health.VCSAvailability{Available: true, Version: "git 2.40.0"},
+			JJ:         health.VCSAvailability{Available: false},
 		},
 		WorktreeCount: 3,
 	}
@@ -290,11 +289,11 @@ func TestOrchestratorStatus_M3_VCSFields(t *testing.T) {
 	if body.VCS.DefaultVCS != "git" {
 		t.Errorf("vcs.defaultVCS want git got %q", body.VCS.DefaultVCS)
 	}
-	if !body.VCS.Git {
-		t.Error("vcs.git want true")
+	if !body.VCS.Git.Available {
+		t.Error("vcs.git.available want true")
 	}
-	if body.VCS.JJ {
-		t.Error("vcs.jj want false")
+	if body.VCS.JJ.Available {
+		t.Error("vcs.jj.available want false")
 	}
 	if body.WorktreeCount != 3 {
 		t.Errorf("worktreeCount want 3 got %d", body.WorktreeCount)
@@ -308,9 +307,8 @@ func TestOrchestratorStatus_M3_JJAvailable(t *testing.T) {
 		SchemaVersion: 1,
 		VCS: health.VCSStatus{
 			DefaultVCS: "jj",
-			Git:        true,
-			JJ:         true,
-			JJVersion:  "jj 0.42.0",
+			Git:        health.VCSAvailability{Available: true},
+			JJ:         health.VCSAvailability{Available: true, Version: "jj 0.42.0"},
 		},
 	}
 	handler := health.OrchestratorStatusHandler(cfg)
@@ -324,11 +322,11 @@ func TestOrchestratorStatus_M3_JJAvailable(t *testing.T) {
 	if body.VCS.DefaultVCS != "jj" {
 		t.Errorf("vcs.defaultVCS want jj got %q", body.VCS.DefaultVCS)
 	}
-	if !body.VCS.JJ {
-		t.Error("vcs.jj want true")
+	if !body.VCS.JJ.Available {
+		t.Error("vcs.jj.available want true")
 	}
-	if body.VCS.JJVersion != "jj 0.42.0" {
-		t.Errorf("vcs.jjVersion want 'jj 0.42.0' got %q", body.VCS.JJVersion)
+	if body.VCS.JJ.Version != "jj 0.42.0" {
+		t.Errorf("vcs.jj.version want 'jj 0.42.0' got %q", body.VCS.JJ.Version)
 	}
 }
 
@@ -353,7 +351,7 @@ func TestOrchestratorStatus_M3_M2FieldsIntact(t *testing.T) {
 		// M3 additions.
 		VCS: health.VCSStatus{
 			DefaultVCS: "git",
-			Git:        true,
+			Git:        health.VCSAvailability{Available: true},
 		},
 		WorktreeCount: 2,
 	}

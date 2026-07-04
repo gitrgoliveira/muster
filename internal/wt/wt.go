@@ -136,6 +136,8 @@ func For(v VCS) (Backend, error) {
 type Availability struct {
 	// Git is true when `git --version` succeeds.
 	Git bool
+	// GitVer is the git version string (best-effort; empty when Git is false).
+	GitVer string
 	// JJ is true when `jj --version` succeeds.
 	JJ bool
 	// JJVer is the jj version string (best-effort; empty when JJ is false).
@@ -148,8 +150,8 @@ func Detect(ctx context.Context) Availability {
 	var a Availability
 
 	if out, err := exec.CommandContext(ctx, "git", "--version").Output(); err == nil {
-		_ = out // version string not used yet (US4/status DTO)
 		a.Git = true
+		a.GitVer = strings.TrimSpace(string(out))
 	}
 
 	if out, err := exec.CommandContext(ctx, "jj", "--version").Output(); err == nil {

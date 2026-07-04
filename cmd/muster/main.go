@@ -371,8 +371,8 @@ func main() {
 		// M3 additions.
 		VCS: health.VCSStatus{
 			DefaultVCS: defaultVCS,
-			Git:        vcsAvail.Git,
-			JJ:         vcsAvail.JJ,
+			Git:        health.VCSAvailability{Available: vcsAvail.Git, Version: vcsAvail.GitVer},
+			JJ:         health.VCSAvailability{Available: vcsAvail.JJ, Version: vcsAvail.JJVer},
 		},
 		WorktreeCounter: orc,
 	}
