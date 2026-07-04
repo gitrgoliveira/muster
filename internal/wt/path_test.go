@@ -1,6 +1,7 @@
 package wt
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -81,8 +82,10 @@ func TestSafeRelPath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("safeRelPath(%q): unexpected error: %v", tc.path, err)
 			}
-			if got != tc.wantOut {
-				t.Errorf("safeRelPath(%q) = %q, want %q", tc.path, got, tc.wantOut)
+			// safeRelPath returns OS-native separators via filepath.Rel, so
+			// normalize the "/"-authored expectation for cross-platform runs.
+			if got != filepath.FromSlash(tc.wantOut) {
+				t.Errorf("safeRelPath(%q) = %q, want %q", tc.path, got, filepath.FromSlash(tc.wantOut))
 			}
 		})
 	}
