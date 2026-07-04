@@ -6,6 +6,8 @@ A central hub that serves [beads](https://github.com/gastownhall/beads) issues o
 
 **M3 — Worktree & diff exposure:** the `/worktree` and `/diff` sub-routes on each bead expose the per-bead worktree's change summary and a git-format unified diff, respectively. `jj` ≥ 0.42 is supported as an alternative VCS backend via `--default-vcs=jj` (optional; `git` remains the default). Runtime dep: `jj` (optional, required only when `--default-vcs=jj`).
 
+**M4 — Dispatcher:** dispatch is now a capacity-gated FIFO **scheduler** (`--max-concurrent-dispatches`, default 4, runtime-adjustable via `PUT /api/v1/orchestrator/capacity`). `POST /beads/{id}/dispatch` is **idempotent** — a repeat for an in-flight bead returns the existing run (`joined:true`) instead of a 409. Beads can run a multi-step **plan→build→review chain** with operator-driven advance/loop-back (`POST /beads/{id}/steps/advance` and `.../loopback`; `/steps/{idx}` now accepts `idx>0`). The worktree **write-side** is live for both git and jj — `POST /beads/{id}/worktree/finalize`, `.../push`, and `DELETE /beads/{id}/worktree`. Best-effort token usage is captured per run from Claude Code's on-disk session record and surfaced on run status and a `run.quota` event.
+
 ## Quick start
 
 ```bash
@@ -27,6 +29,7 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `--run-timeout` | `MUSTER_RUN_TIMEOUT` | `0` (none) | Optional per-run wall-clock cap, e.g. `30m`. `0` = unbounded (M2). |
 | `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | — | Fallback claude autonomy (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`auto`) applied to **agent-mode** dispatches that omit `permissionMode`. `plan` is **not** valid here — it's implicit for plan-mode dispatches and rejected at startup as a default. muster never defaults autonomy silently (M2). |
 | `--default-vcs` | `MUSTER_DEFAULT_VCS` | `git` | VCS backend for per-bead worktrees: `git` or `jj`. `jj` requires `jj` ≥ 0.42 on PATH and a source repo that is already a jj workspace; plain git repos with `--default-vcs=jj` return an error at dispatch time (M3). |
+| `--max-concurrent-dispatches` | `MUSTER_MAX_CONCURRENT_DISPATCHES` | `4` | Maximum concurrently *active* agent runs (M4). Further dispatches are accepted and **queued FIFO**, then admitted automatically as slots free. Must be a positive integer (`≤0` fails fast at startup). Adjustable at runtime via `PUT /api/v1/orchestrator/capacity` — lowering it drains rather than kills running agents. (The push remote for `POST /beads/{id}/worktree/push` is a per-request `{"remote":"…"}` body field, default `origin`, not a flag.) |
 
 ## API
 
