@@ -79,7 +79,7 @@ var (
 // implementations exist: gitBackend (wraps internal/worktree) and jjBackend.
 //
 // Create, Status, DiffSummary, and Diff are implemented in M3.
-// Finalize, Push, and Remove return ErrNotImplemented in M3 (filled in M4).
+// Finalize, Push, and Remove are the write-side, implemented in M4.
 //
 // Every method takes a context.Context so exec.CommandContext subprocesses are
 // cancellation-aware.
@@ -104,13 +104,16 @@ type Backend interface {
 	// Returns ErrWorktreeNotFound when the worktree does not exist.
 	Diff(ctx context.Context, beadID, path string) (io.ReadCloser, error)
 
-	// Finalize commits the worktree's changes. Returns ErrNotImplemented in M3.
+	// Finalize commits the worktree's changes with msg; a no-change worktree is
+	// a no-op success (no commit). Implemented in M4 (git + jj).
 	Finalize(ctx context.Context, beadID, msg string) error
 
-	// Push pushes the worktree's branch upstream. Returns ErrNotImplemented in M3.
+	// Push pushes the worktree's branch (muster/<beadID>) upstream; failures are
+	// explicit errors, never silent. Implemented in M4 (git + jj).
 	Push(ctx context.Context, beadID string) error
 
-	// Remove tears down the per-bead worktree. Returns ErrNotImplemented in M3.
+	// Remove tears down the per-bead worktree; a later Status reports it absent.
+	// Implemented in M4 (git + jj).
 	Remove(ctx context.Context, beadID string) error
 }
 

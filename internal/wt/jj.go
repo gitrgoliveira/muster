@@ -44,8 +44,8 @@ func jjSrcRepoDir(wtPath string) (string, error) {
 	return srcRepo, nil
 }
 
-// jjBackend implements Backend using the jj VCS. Finalize, Push, and Remove
-// return ErrNotImplemented in M3 — the write-side is deferred to M4.
+// jjBackend implements Backend using the jj VCS. The write-side (Finalize,
+// Push, Remove) is implemented in M4 (was ErrNotImplemented in M3).
 //
 // The backend is jj-source-repos-only (FR-004a): Create probes `jj root` in
 // the source repo; if it is not jj-native it returns ErrVCSUnavailable
