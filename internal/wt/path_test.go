@@ -87,3 +87,33 @@ func TestSafeRelPath(t *testing.T) {
 		})
 	}
 }
+
+// TestSafeRelPath_ExportedRejectsLeadingDash verifies the exported SafeRelPath
+// (used by the /diff handler) rejects paths that would be read as a CLI option
+// by the git/jj backends — an argument-injection vector (e.g. ?path=--help).
+func TestSafeRelPath_ExportedRejectsLeadingDash(t *testing.T) {
+	cases := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"leading double-dash (--help)", "--help", true},
+		{"leading single-dash", "-rf", true},
+		{"dot-slash normalizes to leading dash", "./-x", true},
+		{"empty allowed", "", false},
+		{"normal file allowed", "file.go", false},
+		{"nested allowed", "a/b/c.go", false},
+		{"dash inside path allowed", "a/-b.go", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := SafeRelPath(tc.path)
+			if tc.wantErr && err == nil {
+				t.Errorf("SafeRelPath(%q): expected error, got nil", tc.path)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("SafeRelPath(%q): unexpected error: %v", tc.path, err)
+			}
+		})
+	}
+}

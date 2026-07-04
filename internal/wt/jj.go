@@ -208,7 +208,10 @@ func JJDiffAt(ctx context.Context, worktreesDir, beadID, path string) (io.ReadCl
 
 	var args []string
 	if path != "" {
-		args = []string{"diff", "--git", path}
+		// "--" terminates option parsing so a path like "-x"/"--help" can't be
+		// read as a jj flag (argument injection). SafeRelPath also rejects a
+		// leading "-" as defense in depth.
+		args = []string{"diff", "--git", "--", path}
 	} else {
 		args = []string{"diff", "--git"}
 	}

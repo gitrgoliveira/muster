@@ -23,7 +23,14 @@ func SafeRelPath(path string) (string, error) {
 	if !filepath.IsLocal(path) {
 		return "", errors.New("wt: path is not local (contains '..' or absolute component)")
 	}
-	return filepath.Clean(path), nil
+	cleaned := filepath.Clean(path)
+	// Reject a leading "-": the VCS backends pass the path as an argv element, so
+	// "--help"/"-x" could be read as an option (argument injection). git uses a
+	// "--" terminator and jj now does too, but reject here as defense in depth.
+	if strings.HasPrefix(cleaned, "-") {
+		return "", errors.New("wt: path must not start with '-'")
+	}
+	return cleaned, nil
 }
 
 // safeRelPath validates that path is a safe worktree-relative path: not
