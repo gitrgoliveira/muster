@@ -42,8 +42,9 @@ func SafeRelPath(path string) (string, error) {
 // It accepts an empty path (meaning "whole worktree") and returns it as-is.
 // For non-empty paths it:
 //   - Rejects absolute paths (filepath.IsAbs).
-//   - Rejects paths that are not local (filepath.IsLocal) — catches "..", ".",
-//     empty components, and OS-specific reserved names.
+//   - Rejects paths that are not local (filepath.IsLocal) — catches "..",
+//     empty components, and OS-specific reserved names. A "." / leading "./"
+//     is normalized away (allowed), not rejected.
 //   - Rejects paths that resolve (via filepath.Join + filepath.Clean) outside
 //     worktree after evaluation.
 //
