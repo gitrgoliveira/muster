@@ -67,6 +67,10 @@ func NewRouter(
 	// M3 additions: worktree and diff endpoints (US2).
 	r.Get("/api/v1/beads/{id}/worktree", h.Worktree)
 	r.Get("/api/v1/beads/{id}/diff", h.Diff)
+	// M4 additions: worktree write-side endpoints (US2).
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/worktree/finalize", h.FinalizeWorktree)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/worktree/push", h.PushWorktree)
+	r.Delete("/api/v1/beads/{id}/worktree", h.RemoveWorktree)
 
 	// Build the SPA file server.
 	subFS, err := fs.Sub(uiFS, "ui")

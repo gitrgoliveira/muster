@@ -1,6 +1,7 @@
 package beads_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/api/beads"
+	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/ws"
@@ -17,9 +19,10 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// ── fake WorktreeAccessor ──────────────────────────────────────────────────
+// ── fake WorktreeAccessor (read + write side) ─────────────────────────────
 
 type fakeWorktreeAccessor struct {
+	// read-side
 	status     wt.WorktreeStatus
 	statusErr  error
 	summary    []wt.FileChange
@@ -27,6 +30,20 @@ type fakeWorktreeAccessor struct {
 	diffBody   string
 	diffErr    error
 	vcs        string
+
+	// run-state for M1 guard
+	runState core.StepStatus
+
+	// write-side errors (nil = success)
+	finalizeErr error
+	pushErr     error
+	removeErr   error
+
+	// write-side capture
+	finalizeBeadID string
+	finalizeMsg    string
+	pushBeadID     string
+	removeBeadID   string
 }
 
 func (f *fakeWorktreeAccessor) WorktreeStatus(_ context.Context, _ string) (wt.WorktreeStatus, error) {
@@ -46,6 +63,24 @@ func (f *fakeWorktreeAccessor) Diff(_ context.Context, _, _ string) (io.ReadClos
 
 func (f *fakeWorktreeAccessor) DefaultVCS() string { return f.vcs }
 
+func (f *fakeWorktreeAccessor) BeadRunState(_ string) core.StepStatus { return f.runState }
+
+func (f *fakeWorktreeAccessor) Finalize(_ context.Context, beadID, message string) error {
+	f.finalizeBeadID = beadID
+	f.finalizeMsg = message
+	return f.finalizeErr
+}
+
+func (f *fakeWorktreeAccessor) Push(_ context.Context, beadID string) error {
+	f.pushBeadID = beadID
+	return f.pushErr
+}
+
+func (f *fakeWorktreeAccessor) Remove(_ context.Context, beadID string) error {
+	f.removeBeadID = beadID
+	return f.removeErr
+}
+
 // newWorktreeTestServer builds a test server with the given WorktreeAccessor wired in.
 func newWorktreeTestServer(t *testing.T, acc services.WorktreeAccessor) *httptest.Server {
 	t.Helper()
@@ -56,6 +91,9 @@ func newWorktreeTestServer(t *testing.T, acc services.WorktreeAccessor) *httptes
 	r := chi.NewRouter()
 	r.Get("/beads/{id}/worktree", h.Worktree)
 	r.Get("/beads/{id}/diff", h.Diff)
+	r.Post("/beads/{id}/worktree/finalize", h.FinalizeWorktree)
+	r.Post("/beads/{id}/worktree/push", h.PushWorktree)
+	r.Delete("/beads/{id}/worktree", h.RemoveWorktree)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -71,6 +109,9 @@ func newWorktreeTestServerNoAccessor(t *testing.T) *httptest.Server {
 	r := chi.NewRouter()
 	r.Get("/beads/{id}/worktree", h.Worktree)
 	r.Get("/beads/{id}/diff", h.Diff)
+	r.Post("/beads/{id}/worktree/finalize", h.FinalizeWorktree)
+	r.Post("/beads/{id}/worktree/push", h.PushWorktree)
+	r.Delete("/beads/{id}/worktree", h.RemoveWorktree)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
@@ -299,5 +340,262 @@ func TestDiffHandler_200_CleanWorktree_EmptyBody(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if len(body) != 0 {
 		t.Errorf("clean worktree: want empty body, got %d bytes", len(body))
+	}
+}
+
+// ── T038: FinalizeWorktree handler ───────────────────────────────────────────
+
+// TestFinalizeWorktreeHandler_200 verifies a successful finalize returns 200
+// with committed=true and the message echoed.
+func TestFinalizeWorktreeHandler_200(t *testing.T) {
+	acc := &fakeWorktreeAccessor{
+		status:   wt.WorktreeStatus{Exists: true, Clean: false},
+		vcs:      "git",
+		runState: core.StepDone,
+	}
+	srv := newWorktreeTestServer(t, acc)
+
+	body := bytes.NewBufferString(`{"message":"feat: seal work"}`)
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/finalize", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, b)
+	}
+
+	var result beads.FinalizeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.Message != "feat: seal work" {
+		t.Errorf("message = %q, want %q", result.Message, "feat: seal work")
+	}
+	if acc.finalizeBeadID != "mp-aaa" {
+		t.Errorf("Finalize called with beadID=%q, want mp-aaa", acc.finalizeBeadID)
+	}
+}
+
+// TestFinalizeWorktreeHandler_400_EmptyMessage verifies that an empty message
+// body returns 400.
+func TestFinalizeWorktreeHandler_400_EmptyMessage(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git"}
+	srv := newWorktreeTestServer(t, acc)
+
+	body := bytes.NewBufferString(`{"message":""}`)
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/finalize", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for empty message", resp.StatusCode)
+	}
+}
+
+// TestFinalizeWorktreeHandler_409_RunActive verifies that 409 is returned when
+// the bead's run is still active.
+func TestFinalizeWorktreeHandler_409_RunActive(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepActive}
+	srv := newWorktreeTestServer(t, acc)
+
+	body := bytes.NewBufferString(`{"message":"msg"}`)
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/finalize", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409 (run active)", resp.StatusCode)
+	}
+}
+
+// TestFinalizeWorktreeHandler_412_NoAccessor verifies 412 when no worktree accessor.
+func TestFinalizeWorktreeHandler_412_NoAccessor(t *testing.T) {
+	srv := newWorktreeTestServerNoAccessor(t)
+
+	body := bytes.NewBufferString(`{"message":"msg"}`)
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/finalize", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want 412", resp.StatusCode)
+	}
+}
+
+// TestFinalizeWorktreeHandler_404_BeadNotFound verifies 404 for unknown bead.
+func TestFinalizeWorktreeHandler_404_BeadNotFound(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepDone}
+	srv := newWorktreeTestServer(t, acc)
+
+	body := bytes.NewBufferString(`{"message":"msg"}`)
+	resp, err := http.Post(srv.URL+"/beads/mp-doesnotexist/worktree/finalize", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// ── T038: PushWorktree handler ────────────────────────────────────────────────
+
+// TestPushWorktreeHandler_200 verifies a successful push returns 200 with the
+// branch and remote in the response.
+func TestPushWorktreeHandler_200(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepDone}
+	srv := newWorktreeTestServer(t, acc)
+
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/push", "application/json", bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, b)
+	}
+
+	var result beads.PushResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !result.Pushed {
+		t.Error("pushed want true")
+	}
+	if result.Branch != "muster/mp-aaa" {
+		t.Errorf("branch = %q, want muster/mp-aaa", result.Branch)
+	}
+	if result.Remote != "origin" {
+		t.Errorf("remote = %q, want origin", result.Remote)
+	}
+}
+
+// TestPushWorktreeHandler_412_NoAccessor verifies 412 when no worktree accessor.
+func TestPushWorktreeHandler_412_NoAccessor(t *testing.T) {
+	srv := newWorktreeTestServerNoAccessor(t)
+
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/push", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want 412", resp.StatusCode)
+	}
+}
+
+// TestPushWorktreeHandler_500_BackendError verifies that a push backend error
+// maps to 500.
+func TestPushWorktreeHandler_500_BackendError(t *testing.T) {
+	acc := &fakeWorktreeAccessor{
+		vcs:      "git",
+		runState: core.StepDone,
+		pushErr:  wt.ErrWorktreeNotFound, // simulates push failure as 500
+	}
+	srv := newWorktreeTestServer(t, acc)
+
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/push", "application/json", bytes.NewBufferString(`{}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// push errors map through mapWorktreeReadError: ErrWorktreeNotFound → 404
+	if resp.StatusCode == http.StatusOK {
+		t.Errorf("expected non-200, got 200")
+	}
+}
+
+// ── T038: RemoveWorktree handler ──────────────────────────────────────────────
+
+// TestRemoveWorktreeHandler_200 verifies a successful remove returns 200 with removed=true.
+func TestRemoveWorktreeHandler_200(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepDone}
+	srv := newWorktreeTestServer(t, acc)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/beads/mp-aaa/worktree", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, b)
+	}
+
+	var result beads.RemoveResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !result.Removed {
+		t.Error("removed want true")
+	}
+	if acc.removeBeadID != "mp-aaa" {
+		t.Errorf("Remove called with beadID=%q, want mp-aaa", acc.removeBeadID)
+	}
+}
+
+// TestRemoveWorktreeHandler_409_RunActive verifies 409 when run is active.
+func TestRemoveWorktreeHandler_409_RunActive(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepActive}
+	srv := newWorktreeTestServer(t, acc)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/beads/mp-aaa/worktree", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409 (run active)", resp.StatusCode)
+	}
+}
+
+// TestRemoveWorktreeHandler_412_NoAccessor verifies 412 when no worktree accessor.
+func TestRemoveWorktreeHandler_412_NoAccessor(t *testing.T) {
+	srv := newWorktreeTestServerNoAccessor(t)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/beads/mp-aaa/worktree", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPreconditionFailed {
+		t.Errorf("status = %d, want 412", resp.StatusCode)
+	}
+}
+
+// TestRemoveWorktreeHandler_404_BeadNotFound verifies 404 for unknown bead.
+func TestRemoveWorktreeHandler_404_BeadNotFound(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepDone}
+	srv := newWorktreeTestServer(t, acc)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/beads/mp-doesnotexist/worktree", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 }

@@ -85,5 +85,69 @@ Format per decision: **Decision** / **Rationale** / **Alternatives considered**.
 
 *(Populated during implementation, before the dependent tasks — R6 jj write-side and R8 claude quota. Each entry: command run, real output/redacted sample, resulting pinned contract. Empty until the spike tasks run.)*
 
-- [ ] **R6 jj write-side** — pinned commands + output: _pending_
+- [x] **R6 jj write-side** — pinned commands + output:
+
+  **Environment**: jj 0.43.0, macOS, `JJ_CONFIG=/dev/null` (hermetic).
+
+  **No-op detection (Finalize precondition):**
+  ```
+  $ jj diff --summary   # run from workspace dir
+  # empty stdout + exit 0 = no changes → skip commit, return success
+  ```
+  Verified: creating a fresh workspace and running `jj diff --summary` produces
+  zero bytes of output when the working copy has no changes.
+
+  **Finalize (changes present):**
+  ```
+  $ jj describe -m "feat: my bead work"   # from workspace dir; sets WC revision description
+  $ jj new                                 # seals the revision; creates empty new WC child
+  ```
+  After `jj new`, `jj log` shows the described change as a committed parent with a
+  fresh empty working-copy child — equivalent to git's `git add -A && git commit -m`.
+
+  **Push** (two-step via git; no `jj git push` to avoid user-identity requirement):
+  ```
+  # Step 1 — create a jj bookmark pointing to the finalized commit (@- = parent of WC):
+  $ jj bookmark create "muster/<beadID>" --revision "@-"   # from workspace dir
+
+  # Step 2 — export jj bookmarks to git branches (mandatory; bookmark create does NOT
+  #            auto-export to git):
+  $ jj git export   # from workspace dir
+
+  # Step 3 — resolve srcrepo: workspace .jj/repo contains a relative path to the
+  #            shared jj repo (e.g. "../../../srcrepo/.jj/repo"); resolve it to an
+  #            absolute path by joining (filepath.Dir(wtPath+"/.jj") + "/"+content).
+  #            The git repo root is dirname(dirname(.jj/repo contents)).
+
+  # Step 4 — git push via the srcrepo's colocated .git:
+  $ git -C <srcrepo> push <remote> muster/<beadID>
+  ```
+  Confirmed: after `jj bookmark create` + `jj git export`, the git branch
+  `muster/bead-pushtest` appeared in `git -C srcrepo branch -v` and
+  `git push origin muster/bead-pushtest` succeeded with `* [new branch]`.
+
+  **Remove:**
+  ```
+  # Step 1 — deregister the workspace (run from workspace dir):
+  $ jj workspace forget "<beadID>"    # beadID = basename of the workspace directory
+  # exit 0; prints "Warning: The current workspace '<beadID>' no longer exists…"
+
+  # Step 2 — remove the directory:
+  os.RemoveAll(<wtPath>)
+  ```
+  Confirmed: `jj workspace list` from the srcrepo no longer shows the workspace after
+  `jj workspace forget`; the directory still exists until `os.RemoveAll`.
+
+  **Key observations:**
+  - The workspace dir's `.jj/repo` file contains the path to the shared jj repo
+    (relative to the workspace `.jj/` dir); resolving it gives the srcrepo path.
+  - `jj bookmark create` does NOT auto-export to git branches; `jj git export` is
+    required before `git push`.
+  - `jj git push --bookmark` requires a valid author/email in jj config and fails
+    with "Won't push commit … since it has no author and/or committer set" when
+    `JJ_CONFIG=/dev/null`. Using `git push` via the colocated `.git` avoids this.
+  - Workspace names match beadID (the basename of `worktreesDir/<beadID>`).
+  - `jj describe -m` + `jj new` is the finalize incantation (not `jj commit -m`,
+    which also works but would auto-create a new WC without a separate `jj new`).
+
 - [ ] **R8 claude on-disk quota** — pinned path + sample payload: _pending_

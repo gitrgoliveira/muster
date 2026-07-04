@@ -575,20 +575,24 @@ func TestJJBackend_Diff_NoWorktree(t *testing.T) {
 	}
 }
 
-// ── T022: Finalize/Push/Remove → ErrNotImplemented ──────────────────────────
+// ── T022→M4: Finalize/Push/Remove must NOT return ErrNotImplemented ─────────
 
+// TestJJBackend_WriteMethodsNotImplemented was the M3 stub check. In M4 the
+// real implementations replaced the stubs, so we verify that ErrNotImplemented
+// is no longer returned (the methods may return any other error for a missing
+// workspace — that is fine).
 func TestJJBackend_WriteMethodsNotImplemented(t *testing.T) {
 	b, _ := wt.For(wt.VCSJJ)
 	ctx := context.Background()
 
-	if err := b.Finalize(ctx, "bead", "msg"); err != wt.ErrNotImplemented {
-		t.Errorf("Finalize: want ErrNotImplemented, got %v", err)
+	if err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
+		t.Errorf("Finalize: M3 stub still in place (ErrNotImplemented), want real error")
 	}
-	if err := b.Push(ctx, "bead"); err != wt.ErrNotImplemented {
-		t.Errorf("Push: want ErrNotImplemented, got %v", err)
+	if err := b.Push(ctx, "bead"); err == wt.ErrNotImplemented {
+		t.Errorf("Push: M3 stub still in place (ErrNotImplemented), want real error")
 	}
-	if err := b.Remove(ctx, "bead"); err != wt.ErrNotImplemented {
-		t.Errorf("Remove: want ErrNotImplemented, got %v", err)
+	if err := b.Remove(ctx, "bead"); err == wt.ErrNotImplemented {
+		t.Errorf("Remove: M3 stub still in place (ErrNotImplemented), want real error")
 	}
 }
 

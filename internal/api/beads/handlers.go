@@ -415,6 +415,96 @@ type SendRequest struct {
 	Keys string `json:"keys"`
 }
 
+// ── M4 write-side worktree handlers ──────────────────────────────────────────
+
+// FinalizeRequest is the body for POST /beads/{id}/worktree/finalize.
+type FinalizeRequest struct {
+	Message string `json:"message"`
+}
+
+// FinalizeResponse is the JSON body returned by FinalizeWorktree.
+type FinalizeResponse struct {
+	// Committed is true when changes were committed; false for a no-op (clean worktree).
+	Committed bool   `json:"committed"`
+	Message   string `json:"message"`
+}
+
+// PushResponse is the JSON body returned by PushWorktree.
+type PushResponse struct {
+	Pushed bool   `json:"pushed"`
+	Branch string `json:"branch"`
+	Remote string `json:"remote"`
+}
+
+// RemoveResponse is the JSON body returned by RemoveWorktree.
+type RemoveResponse struct {
+	Removed bool `json:"removed"`
+}
+
+// FinalizeWorktree handles POST /beads/{id}/worktree/finalize.
+// Body: {"message":"<commit message>"}
+// Seals the working-copy changes. A no-change worktree is a no-op success.
+// Returns 409 when the bead's run is still active.
+func (h *Handlers) FinalizeWorktree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req FinalizeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "message is required")
+		return
+	}
+
+	if err := h.svc.FinalizeWorktree(r.Context(), id, req.Message); mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, FinalizeResponse{
+		Committed: true,
+		Message:   req.Message,
+	})
+}
+
+// PushWorktree handles POST /beads/{id}/worktree/push.
+// Pushes branch muster/<id> to the default remote (origin).
+func (h *Handlers) PushWorktree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	if err := h.svc.PushWorktree(r.Context(), id); mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, PushResponse{
+		Pushed: true,
+		Branch: wt.BranchName(id),
+		Remote: wt.ResolveRemote(""),
+	})
+}
+
+// RemoveWorktree handles DELETE /beads/{id}/worktree.
+// Deregisters and removes the per-bead worktree directory.
+// Returns 409 when the bead's run is still active.
+func (h *Handlers) RemoveWorktree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	if err := h.svc.RemoveWorktree(r.Context(), id); mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, RemoveResponse{Removed: true})
+}
+
 // Comment handles POST /beads/{id}/comments.
 func (h *Handlers) Comment(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")

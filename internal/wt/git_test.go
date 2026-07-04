@@ -681,18 +681,21 @@ func TestNewGitBackend_DiffEmptyWorktreesDir(t *testing.T) {
 	}
 }
 
+// TestGitBackend_WriteMethodsNotImplemented was the M3 stub assertion.
+// In M4 these are implemented; we now assert they return real errors
+// (not ErrNotImplemented) when called on a missing worktree.
 func TestGitBackend_WriteMethodsNotImplemented(t *testing.T) {
-	// Via NewGitBackend (has worktreesDir).
+	// Via NewGitBackend (has worktreesDir but no worktree exists for "bead").
 	b := wt.NewGitBackend(t.TempDir())
 	ctx := context.Background()
-	if err := b.Finalize(ctx, "bead", "msg"); err != wt.ErrNotImplemented {
-		t.Errorf("Finalize: want ErrNotImplemented, got %v", err)
+	if err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
+		t.Errorf("Finalize: M3 stub still in place (ErrNotImplemented), want real error")
 	}
-	if err := b.Push(ctx, "bead"); err != wt.ErrNotImplemented {
-		t.Errorf("Push: want ErrNotImplemented, got %v", err)
+	if err := b.Push(ctx, "bead"); err == wt.ErrNotImplemented {
+		t.Errorf("Push: M3 stub still in place (ErrNotImplemented), want real error")
 	}
-	if err := b.Remove(ctx, "bead"); err != wt.ErrNotImplemented {
-		t.Errorf("Remove: want ErrNotImplemented, got %v", err)
+	if err := b.Remove(ctx, "bead"); err == wt.ErrNotImplemented {
+		t.Errorf("Remove: M3 stub still in place (ErrNotImplemented), want real error")
 	}
 }
 

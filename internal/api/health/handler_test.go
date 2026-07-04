@@ -490,8 +490,8 @@ func TestOrchestratorStatus_M4_SchedulerFields(t *testing.T) {
 		Waiting:     []string{"bd-001", "bd-002"},
 	}
 	cfg := health.StatusConfig{
-		BeadsVersion:       "1.0.0",
-		SchemaVersion:      1,
+		BeadsVersion:         "1.0.0",
+		SchemaVersion:        1,
 		SchedulerSnapshotter: &fakeSchedulerSnapshotter{snap: snap},
 	}
 	handler := health.OrchestratorStatusHandler(cfg)

@@ -17,6 +17,33 @@ import (
 	"strings"
 )
 
+// jjSrcRepoDir resolves the shared jj source-repo directory for a given workspace.
+//
+// In a jj colocated repo, the workspace's .jj/repo file contains a relative path
+// to the shared repo's .jj/repo directory (e.g. "../../../srcrepo/.jj/repo").
+// Resolving that path and stripping the "/.jj/repo" suffix yields the srcrepo root,
+// where the colocated .git directory lives and where `git push` must run.
+//
+// This is intentionally a pure file-read — no jj invocation — so it works even
+// when jj is not installed (the workspace directory was created by one that was).
+func jjSrcRepoDir(wtPath string) (string, error) {
+	repoFile := filepath.Join(wtPath, ".jj", "repo")
+	raw, err := os.ReadFile(repoFile)
+	if err != nil {
+		return "", fmt.Errorf("wt jj: read .jj/repo in %q: %w", wtPath, err)
+	}
+	// The file contains a relative path from the workspace's .jj directory
+	// to the shared repo's .jj/repo directory, e.g. "../../../srcrepo/.jj/repo".
+	// Resolve it relative to the workspace's own .jj directory.
+	rel := strings.TrimSpace(string(raw))
+	// sharedJJRepoDir is the .jj/repo directory of the srcrepo.
+	sharedJJRepoDir := filepath.Clean(filepath.Join(wtPath, ".jj", rel))
+	// srcrepo root = sharedJJRepoDir/../../ (strip the .jj/repo suffix).
+	// filepath.Dir twice: .../srcrepo/.jj/repo → .../srcrepo/.jj → .../srcrepo
+	srcRepo := filepath.Dir(filepath.Dir(sharedJJRepoDir))
+	return srcRepo, nil
+}
+
 // jjBackend implements Backend using the jj VCS. Finalize, Push, and Remove
 // return ErrNotImplemented in M3 — the write-side is deferred to M4.
 //
@@ -102,19 +129,162 @@ func (j *jjBackend) Diff(ctx context.Context, beadID, path string) (io.ReadClose
 	return JJDiffAt(ctx, j.worktreesDir, beadID, path)
 }
 
-// Finalize returns ErrNotImplemented in M3.
-func (j *jjBackend) Finalize(_ context.Context, _, _ string) error {
-	return ErrNotImplemented
+// Finalize seals the working-copy changes with message and starts a new empty WC.
+//
+// Algorithm (pinned in research.md R6):
+//  1. Check `jj diff --summary` — empty output means no changes → no-op success.
+//  2. `jj describe -m <message>` to set the description on the current WC change.
+//  3. `jj new` to advance the WC past the now-sealed revision.
+func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) error {
+	wtPath := filepath.Join(j.worktreesDir, beadID)
+
+	// Verify workspace exists.
+	if _, err := os.Lstat(wtPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
+		}
+		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	}
+
+	// No-op detection: jj diff --summary empty → nothing to commit.
+	diffCmd := exec.CommandContext(ctx, "jj", "diff", "--summary")
+	diffCmd.Dir = wtPath
+	out, err := diffCmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt jj: diff --summary aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt jj: jj diff --summary in %q: %w\n%s", wtPath, err, out)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		// No changes — Finalize is a no-op (success).
+		return nil
+	}
+
+	// Seal: describe the WC change with the message.
+	descCmd := exec.CommandContext(ctx, "jj", "describe", "-m", message)
+	descCmd.Dir = wtPath
+	if out, err := descCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt jj: describe aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt jj: jj describe in %q: %w\n%s", wtPath, err, out)
+	}
+
+	// Advance past the sealed revision.
+	newCmd := exec.CommandContext(ctx, "jj", "new")
+	newCmd.Dir = wtPath
+	if out, err := newCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt jj: new aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt jj: jj new in %q: %w\n%s", wtPath, err, out)
+	}
+	return nil
 }
 
-// Push returns ErrNotImplemented in M3.
-func (j *jjBackend) Push(_ context.Context, _ string) error {
-	return ErrNotImplemented
+// Push pushes the bead's sealed revision to the default remote.
+//
+// Algorithm (pinned in research.md R6):
+//  1. Create a bookmark muster/<beadID> at the sealed parent revision (@-).
+//  2. Export jj bookmarks to git refs via `jj git export`.
+//  3. Resolve the shared srcrepo and push the branch via `git push origin <branch>`.
+//
+// jj's `jj git push --bookmark` is avoided because it requires a user identity
+// in the jj config (fails with no-author error when JJ_CONFIG=/dev/null or
+// in environments without jj user config). Doing the export+git push directly
+// sidesteps this requirement.
+func (j *jjBackend) Push(ctx context.Context, beadID string) error {
+	wtPath := filepath.Join(j.worktreesDir, beadID)
+
+	// Verify workspace exists.
+	if _, err := os.Lstat(wtPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
+		}
+		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	}
+
+	branch := BranchName(beadID)
+
+	// 1. Create jj bookmark at @- (the sealed revision, not the empty WC).
+	bmCmd := exec.CommandContext(ctx, "jj", "bookmark", "create", branch, "-r", "@-")
+	bmCmd.Dir = wtPath
+	if out, err := bmCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt jj: bookmark create aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt jj: jj bookmark create %q: %w\n%s", branch, err, out)
+	}
+
+	// 2. Export jj bookmarks to git refs so the branch is visible to git push.
+	exportCmd := exec.CommandContext(ctx, "jj", "git", "export")
+	exportCmd.Dir = wtPath
+	if out, err := exportCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt jj: git export aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt jj: jj git export: %w\n%s", err, out)
+	}
+
+	// 3. Resolve the shared srcrepo via the workspace's .jj/repo pointer.
+	srcRepo, err := jjSrcRepoDir(wtPath)
+	if err != nil {
+		return fmt.Errorf("wt jj: resolving srcrepo for push: %w", err)
+	}
+
+	// 4. Use `git push` from the srcrepo (colocated .git is there).
+	remote := ResolveRemote("")
+	pushCmd := exec.CommandContext(ctx, "git", "push", remote, branch)
+	pushCmd.Dir = srcRepo
+	if out, err := pushCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt jj: git push aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt jj: git push %s %s: %w\n%s", remote, branch, err, out)
+	}
+	return nil
 }
 
-// Remove returns ErrNotImplemented in M3.
-func (j *jjBackend) Remove(_ context.Context, _ string) error {
-	return ErrNotImplemented
+// Remove forgets the jj workspace and deletes its directory.
+//
+// Algorithm (pinned in research.md R6):
+//  1. Verify the workspace directory exists.
+//  2. Resolve the srcrepo via `jj root` (needed for `jj workspace forget`).
+//  3. Run `jj workspace forget <beadID>` from the srcrepo to deregister it.
+//  4. Remove the directory with os.RemoveAll.
+func (j *jjBackend) Remove(ctx context.Context, beadID string) error {
+	wtPath := filepath.Join(j.worktreesDir, beadID)
+
+	// Verify workspace exists.
+	if _, err := os.Lstat(wtPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
+		}
+		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	}
+
+	// Resolve srcrepo — `jj workspace forget` must run from the shared repo.
+	srcRepo, err := jjSrcRepoDir(wtPath)
+	if err != nil {
+		return fmt.Errorf("wt jj: resolving srcrepo for remove: %w", err)
+	}
+
+	// Forget the workspace: beadID is the workspace name (basename of wtPath).
+	forgetCmd := exec.CommandContext(ctx, "jj", "workspace", "forget", beadID)
+	forgetCmd.Dir = srcRepo
+	if out, err := forgetCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt jj: workspace forget aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt jj: jj workspace forget %q: %w\n%s", beadID, err, out)
+	}
+
+	// Remove the workspace directory.
+	if err := os.RemoveAll(wtPath); err != nil {
+		return fmt.Errorf("wt jj: remove workspace dir %q: %w", wtPath, err)
+	}
+	return nil
 }
 
 // ── Package-level helpers (bypass Backend interface) ──────────────────────

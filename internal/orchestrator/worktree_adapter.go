@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/wt"
 )
@@ -39,6 +40,31 @@ func (a *worktreeAccessorAdapter) Diff(ctx context.Context, beadID, path string)
 // DefaultVCS returns the string representation of the orchestrator's default VCS.
 func (a *worktreeAccessorAdapter) DefaultVCS() string {
 	return string(a.o.defaultVCS)
+}
+
+// Finalize delegates to the orchestrator's selected wt.Backend.
+func (a *worktreeAccessorAdapter) Finalize(ctx context.Context, beadID, message string) error {
+	return a.o.backend.Finalize(ctx, beadID, message)
+}
+
+// Push delegates to the orchestrator's selected wt.Backend.
+func (a *worktreeAccessorAdapter) Push(ctx context.Context, beadID string) error {
+	return a.o.backend.Push(ctx, beadID)
+}
+
+// Remove delegates to the orchestrator's selected wt.Backend.
+func (a *worktreeAccessorAdapter) Remove(ctx context.Context, beadID string) error {
+	return a.o.backend.Remove(ctx, beadID)
+}
+
+// BeadRunState returns the current run state for the given bead.
+// Returns an empty StepStatus (zero value) when no run record exists.
+func (a *worktreeAccessorAdapter) BeadRunState(beadID string) core.StepStatus {
+	run := a.o.GetRun(beadID)
+	if run == nil {
+		return ""
+	}
+	return run.State
 }
 
 // Verify worktreeAccessorAdapter implements services.WorktreeAccessor.

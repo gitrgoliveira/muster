@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"testing"
 
@@ -635,5 +636,425 @@ func TestMapWorktreeReadError(t *testing.T) {
 				t.Errorf("code = %q, want %q", se.Code, tc.wantCode)
 			}
 		})
+	}
+}
+
+// ── T036a/T037: FinalizeWorktree, PushWorktree, RemoveWorktree service methods
+
+// fakeWriteableWorktreeAccessor is a test double implementing WorktreeAccessor
+// with the write-side methods added in M4 T036a.
+type fakeWriteableWorktreeAccessor struct {
+	// read-side state
+	existingBeadID string
+	runState       core.StepStatus // BeadRunState result
+
+	// write-side capture
+	finalizeBeadID string
+	finalizeMsg    string
+	finalizeErr    error
+
+	pushBeadID string
+	pushErr    error
+
+	removeBeadID string
+	removeErr    error
+}
+
+func (f *fakeWriteableWorktreeAccessor) WorktreeStatus(_ context.Context, beadID string) (wt.WorktreeStatus, error) {
+	if beadID == f.existingBeadID {
+		return wt.WorktreeStatus{Exists: true, Clean: true}, nil
+	}
+	return wt.WorktreeStatus{}, wt.ErrWorktreeNotFound
+}
+func (f *fakeWriteableWorktreeAccessor) DiffSummary(_ context.Context, _ string) ([]wt.FileChange, error) {
+	return nil, nil
+}
+func (f *fakeWriteableWorktreeAccessor) Diff(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	return nil, nil
+}
+func (f *fakeWriteableWorktreeAccessor) DefaultVCS() string { return "git" }
+
+func (f *fakeWriteableWorktreeAccessor) BeadRunState(beadID string) core.StepStatus {
+	if beadID == f.existingBeadID {
+		return f.runState
+	}
+	return ""
+}
+
+func (f *fakeWriteableWorktreeAccessor) Finalize(_ context.Context, beadID, message string) error {
+	f.finalizeBeadID = beadID
+	f.finalizeMsg = message
+	return f.finalizeErr
+}
+
+func (f *fakeWriteableWorktreeAccessor) Push(_ context.Context, beadID string) error {
+	f.pushBeadID = beadID
+	return f.pushErr
+}
+
+func (f *fakeWriteableWorktreeAccessor) Remove(_ context.Context, beadID string) error {
+	f.removeBeadID = beadID
+	return f.removeErr
+}
+
+// Compile assertion: fakeWriteableWorktreeAccessor must satisfy WorktreeAccessor.
+var _ WorktreeAccessor = (*fakeWriteableWorktreeAccessor)(nil)
+
+// newSvcWithFakeWT returns a BeadService with a MemoryBackend, the given
+// worktreeAccessor, a pre-seeded bead, and a no-op publisher.
+func newSvcWithFakeWT(beadID string, wa WorktreeAccessor) *BeadService {
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: beadID, Title: "Test bead", Status: "open", IssueType: "task"},
+	})
+	svc := NewBeadService(backend, nil, func(ws.Frame) {})
+	return svc.WithWorktreeAccessor(wa)
+}
+
+// TestT037_FinalizeWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
+func TestT037_FinalizeWorktree_NoAccessor(t *testing.T) {
+	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
+	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_RunActive asserts CodeRunAlreadyActive when run is active.
+func TestT037_FinalizeWorktree_RunActive(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepActive,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_RunPending asserts CodeRunAlreadyActive when run is pending.
+func TestT037_FinalizeWorktree_RunPending(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepPending,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_TerminalState succeeds when run is in terminal state.
+func TestT037_FinalizeWorktree_TerminalState(t *testing.T) {
+	for _, state := range []core.StepStatus{core.StepDone, core.StepFailed, ""} {
+		t.Run(string(state)+"_or_none", func(t *testing.T) {
+			wa := &fakeWriteableWorktreeAccessor{
+				existingBeadID: "bd-1",
+				runState:       state,
+			}
+			svc := newSvcWithFakeWT("bd-1", wa)
+
+			if err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
+				t.Fatalf("expected success for state=%q, got %v", state, err)
+			}
+			if wa.finalizeBeadID != "bd-1" {
+				t.Errorf("Finalize not called with correct beadID: got %q", wa.finalizeBeadID)
+			}
+			if wa.finalizeMsg != "seal it" {
+				t.Errorf("Finalize not called with correct message: got %q", wa.finalizeMsg)
+			}
+		})
+	}
+}
+
+// TestT037_FinalizeWorktree_BackendError maps a backend error to CodeInternal.
+func TestT037_FinalizeWorktree_BackendError(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		finalizeErr:    errors.New("git commit failed"),
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeInternal {
+		t.Errorf("code want %q got %q", CodeInternal, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_VCSUnavailable maps ErrVCSUnavailable to CodeVCSUnavailable.
+func TestT037_FinalizeWorktree_VCSUnavailable(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		finalizeErr:    wt.ErrVCSUnavailable,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_NotFound when bead does not exist.
+func TestT037_FinalizeWorktree_NotFound(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{existingBeadID: "bd-other"}
+	// seed bead "bd-other", try finalize "bd-missing"
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: "bd-other", Title: "T", Status: "open", IssueType: "task"},
+	})
+	svc := NewBeadService(backend, nil, func(ws.Frame) {}).WithWorktreeAccessor(wa)
+
+	err := svc.FinalizeWorktree(context.Background(), "bd-missing", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeNotFound {
+		t.Errorf("code want %q got %q", CodeNotFound, se.Code)
+	}
+}
+
+// TestT037_PushWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
+func TestT037_PushWorktree_NoAccessor(t *testing.T) {
+	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
+	err := svc.PushWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_PushWorktree_Success verifies Push delegates to backend.
+func TestT037_PushWorktree_Success(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	if err := svc.PushWorktree(context.Background(), "bd-1"); err != nil {
+		t.Fatalf("PushWorktree: %v", err)
+	}
+	if wa.pushBeadID != "bd-1" {
+		t.Errorf("Push not called with correct beadID: got %q", wa.pushBeadID)
+	}
+}
+
+// TestT037_PushWorktree_BackendError maps a backend push error to CodeInternal.
+func TestT037_PushWorktree_BackendError(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		pushErr:        errors.New("authentication failed"),
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.PushWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeInternal {
+		t.Errorf("code want %q got %q", CodeInternal, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
+func TestT037_RemoveWorktree_NoAccessor(t *testing.T) {
+	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_RunActive asserts CodeRunAlreadyActive when run is active.
+func TestT037_RemoveWorktree_RunActive(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepActive,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_RunPending asserts CodeRunAlreadyActive when run is pending.
+func TestT037_RemoveWorktree_RunPending(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepPending,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_TerminalState succeeds when run is in terminal state.
+func TestT037_RemoveWorktree_TerminalState(t *testing.T) {
+	for _, state := range []core.StepStatus{core.StepDone, core.StepFailed, ""} {
+		t.Run(string(state)+"_or_none", func(t *testing.T) {
+			wa := &fakeWriteableWorktreeAccessor{
+				existingBeadID: "bd-1",
+				runState:       state,
+			}
+			svc := newSvcWithFakeWT("bd-1", wa)
+
+			if err := svc.RemoveWorktree(context.Background(), "bd-1"); err != nil {
+				t.Fatalf("expected success for state=%q, got %v", state, err)
+			}
+			if wa.removeBeadID != "bd-1" {
+				t.Errorf("Remove not called with correct beadID: got %q", wa.removeBeadID)
+			}
+		})
+	}
+}
+
+// TestT037_RemoveWorktree_BackendVCSUnavailable maps ErrVCSUnavailable properly.
+func TestT037_RemoveWorktree_BackendVCSUnavailable(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		removeErr:      wt.ErrVCSUnavailable,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// mustServiceError asserts err is a *ServiceError and returns it.
+func mustServiceError(t *testing.T, err error) *ServiceError {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se := &ServiceError{}
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *ServiceError, got %T: %v", err, err)
+	}
+	return se
+}
+
+// ── T040: WS event emission for worktree write-side ──────────────────────────
+
+// newSvcWithFakeWTAndPub returns a BeadService with the given WorktreeAccessor
+// and a pub function that captures emitted frames.
+func newSvcWithFakeWTAndPub(beadID string, wa WorktreeAccessor) (*BeadService, *[]ws.Frame) {
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: beadID, Title: "Test bead", Status: "open", IssueType: "task"},
+	})
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	svc := NewBeadServiceWithRepo(backend, nil, pub, "muster", true).
+		WithWorktreeAccessor(wa)
+	return svc, &frames
+}
+
+// TestT040_FinalizeWorktree_EmitsEvent verifies worktree.finalized is published
+// on successful Finalize.
+func TestT040_FinalizeWorktree_EmitsEvent(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
+		t.Fatalf("FinalizeWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Type != ws.EventWorktreeFinalized {
+		t.Errorf("frame type = %q, want %q", f.Type, ws.EventWorktreeFinalized)
+	}
+	if f.BeadID != "bd-1" {
+		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
+	}
+}
+
+// TestT040_PushWorktree_EmitsEvent verifies worktree.pushed is published on
+// successful Push.
+func TestT040_PushWorktree_EmitsEvent(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.PushWorktree(context.Background(), "bd-1"); err != nil {
+		t.Fatalf("PushWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Type != ws.EventWorktreePushed {
+		t.Errorf("frame type = %q, want %q", f.Type, ws.EventWorktreePushed)
+	}
+	if f.BeadID != "bd-1" {
+		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
+	}
+}
+
+// TestT040_RemoveWorktree_EmitsEvent verifies worktree.removed is published on
+// successful Remove.
+func TestT040_RemoveWorktree_EmitsEvent(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.RemoveWorktree(context.Background(), "bd-1"); err != nil {
+		t.Fatalf("RemoveWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Type != ws.EventWorktreeRemoved {
+		t.Errorf("frame type = %q, want %q", f.Type, ws.EventWorktreeRemoved)
+	}
+	if f.BeadID != "bd-1" {
+		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
+	}
+}
+
+// TestT040_FinalizeWorktree_NoEventOnError verifies no WS event on failure.
+func TestT040_FinalizeWorktree_NoEventOnError(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		finalizeErr:    errors.New("git commit failed"),
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(*frames) != 0 {
+		t.Errorf("expected no WS frames on error, got %d", len(*frames))
 	}
 }

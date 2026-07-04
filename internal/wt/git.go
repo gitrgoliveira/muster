@@ -29,13 +29,23 @@ import (
 // and the service layer when worktreesDir comes from config.
 type gitBackend struct {
 	worktreesDir string
+	// pushRemote is the git remote name used by Push. Defaults to "origin" when
+	// empty (resolved by ResolveRemote). Configurable via NewGitBackendWithRemote.
+	pushRemote string
 }
 
 // NewGitBackend returns a git Backend with worktreesDir baked in. The resulting
 // backend's Status/DiffSummary/Diff methods resolve paths from worktreesDir
 // without an extra parameter. Use this from the orchestrator after reading config.
+// Push uses the default "origin" remote.
 func NewGitBackend(worktreesDir string) Backend {
 	return &gitBackend{worktreesDir: worktreesDir}
+}
+
+// NewGitBackendWithRemote is like NewGitBackend but also sets the push remote.
+// An empty remote falls back to "origin" (same as NewGitBackend).
+func NewGitBackendWithRemote(worktreesDir, pushRemote string) Backend {
+	return &gitBackend{worktreesDir: worktreesDir, pushRemote: pushRemote}
 }
 
 // Create ensures the per-bead git worktree exists by delegating to
@@ -76,19 +86,191 @@ func (g *gitBackend) Diff(ctx context.Context, beadID, path string) (io.ReadClos
 	return GitDiffAt(ctx, g.worktreesDir, beadID, path)
 }
 
-// Finalize returns ErrNotImplemented in M3.
-func (g *gitBackend) Finalize(_ context.Context, _, _ string) error {
-	return ErrNotImplemented
+// Finalize commits all changes in the bead's worktree with the given message.
+// If the worktree has no changes (git status --porcelain is empty), this is a
+// no-op and returns success immediately — no commit is created (FR-010).
+// On non-empty changes: git add -A + git commit -m <message>.
+// Requires the backend was constructed with NewGitBackend(worktreesDir).
+func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) error {
+	if g.worktreesDir == "" {
+		return fmt.Errorf("wt git: Finalize requires worktreesDir — use NewGitBackend")
+	}
+	path := filepath.Join(g.worktreesDir, beadID)
+
+	// Verify the worktree exists.
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrWorktreeNotFound
+		}
+		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return ErrWorktreeNotFound
+	}
+
+	// Check for changes using `git status --porcelain`.
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = path
+	out, err := statusCmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: finalize status aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git status in %q: %w\n%s", path, err, out)
+	}
+
+	// No changes — no-op success.
+	if strings.TrimSpace(string(out)) == "" {
+		return nil
+	}
+
+	// Stage all changes.
+	addCmd := exec.CommandContext(ctx, "git", "add", "-A")
+	addCmd.Dir = path
+	if addOut, err := addCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: finalize add aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git add -A in %q: %w\n%s", path, err, addOut)
+	}
+
+	// Commit with the provided message.
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
+	commitCmd.Dir = path
+	if commitOut, err := commitCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: finalize commit aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git commit in %q: %w\n%s", path, err, commitOut)
+	}
+
+	return nil
 }
 
-// Push returns ErrNotImplemented in M3.
-func (g *gitBackend) Push(_ context.Context, _ string) error {
-	return ErrNotImplemented
+// Push pushes the bead's branch (muster/<beadID>) to the remote. The remote
+// defaults to "origin" (configurable via the remote parameter stored in the
+// backend's pushRemote field, which defaults to "origin" if empty).
+// A non-zero git exit (no remote, auth failure, rejected) returns an explicit
+// typed error — never silent success (FR-007).
+// Requires the backend was constructed with NewGitBackend(worktreesDir).
+func (g *gitBackend) Push(ctx context.Context, beadID string) error {
+	if g.worktreesDir == "" {
+		return fmt.Errorf("wt git: Push requires worktreesDir — use NewGitBackend")
+	}
+	path := filepath.Join(g.worktreesDir, beadID)
+
+	// Verify the worktree exists.
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrWorktreeNotFound
+		}
+		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return ErrWorktreeNotFound
+	}
+
+	remote := ResolveRemote(g.pushRemote)
+	branch := BranchName(beadID)
+
+	cmd := exec.CommandContext(ctx, "git", "push", remote, branch)
+	cmd.Dir = path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: push aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git push %s %s in %q: %w\n%s", remote, branch, path, err, out)
+	}
+	return nil
 }
 
-// Remove returns ErrNotImplemented in M3.
-func (g *gitBackend) Remove(_ context.Context, _ string) error {
-	return ErrNotImplemented
+// Remove tears down the per-bead git worktree. It runs
+// `git worktree remove <path>` (which handles the git metadata cleanup) and
+// then `git worktree prune` to remove stale refs. After Remove, a subsequent
+// Status call will report the worktree as absent.
+// Requires the backend was constructed with NewGitBackend(worktreesDir).
+func (g *gitBackend) Remove(ctx context.Context, beadID string) error {
+	if g.worktreesDir == "" {
+		return fmt.Errorf("wt git: Remove requires worktreesDir — use NewGitBackend")
+	}
+	path := filepath.Join(g.worktreesDir, beadID)
+
+	// Verify the worktree exists.
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrWorktreeNotFound
+		}
+		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return ErrWorktreeNotFound
+	}
+
+	// `git worktree remove` needs to run from within any git-associated directory.
+	// Running it with the worktree path as an argument from the worktree itself is
+	// valid; git resolves paths relative to the main repo.
+	removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", path)
+	removeCmd.Dir = path
+	if removeOut, err := removeCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: remove aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git worktree remove %q: %w\n%s", path, err, removeOut)
+	}
+
+	// Prune stale worktree refs from the main repo's metadata.
+	// We need to run this from somewhere with access to the git repo; since the
+	// worktree is now removed, find the main repo via the git-common-dir. We run
+	// prune from the srcRepo by resolving it from the common dir.
+	// Best-effort: prune failure is non-fatal (stale refs are cosmetic).
+	if mainRepo := gitMainRepoDir(ctx, path); mainRepo != "" {
+		pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune")
+		pruneCmd.Dir = mainRepo
+		_ = pruneCmd.Run() // best-effort
+	}
+
+	return nil
+}
+
+// gitMainRepoDir returns the path to the main repository (where .git lives)
+// given a worktree path. It reads the worktree's .git file (which contains the
+// gitdir pointing back to the main repo's worktrees/<name> directory). Returns
+// empty string on any error (used for best-effort prune only).
+func gitMainRepoDir(ctx context.Context, wtPath string) string {
+	// git rev-parse --git-common-dir returns the common git directory
+	// (e.g. /path/to/main/.git) from within any worktree.
+	// Note: this is called after the worktree directory is already gone, so we
+	// pass the path but it may fail — in which case we just skip the prune.
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
+	cmd.Dir = filepath.Dir(wtPath) // run from parent dir since wtPath is removed
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if commonDir == "" {
+		return ""
+	}
+	// commonDir is .git itself or a path inside it; go up to the repo root.
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(filepath.Dir(wtPath), commonDir)
+	}
+	// Walk up from .git to find the repo root.
+	for {
+		parent := filepath.Dir(commonDir)
+		if parent == commonDir {
+			break
+		}
+		if filepath.Base(commonDir) == ".git" {
+			return parent
+		}
+		commonDir = parent
+	}
+	return ""
 }
 
 // ── Package-level helpers (bypass Backend interface) ──────────────────────

@@ -50,8 +50,8 @@ const (
 	CodeVCSUnavailable   = "VCS_UNAVAILABLE"    // 412 — VCS binary absent or wrong VCS type
 
 	// M4 dispatcher codes (additive).
-	CodeStepOutOfRange  = "STEP_OUT_OF_RANGE"  // 422 — step index outside [0, chainLen)
-	CodeInvalidCapacity = "INVALID_CAPACITY"   // 400 — scheduler capacity ≤0
+	CodeStepOutOfRange  = "STEP_OUT_OF_RANGE" // 422 — step index outside [0, chainLen)
+	CodeInvalidCapacity = "INVALID_CAPACITY"  // 400 — scheduler capacity ≤0
 )
 
 // ServiceError wraps a validation or state error with a code understood by
@@ -692,8 +692,8 @@ type WorktreeDTO struct {
 	Files  []wt.FileChange `json:"files"`
 }
 
-// WorktreeAccessor is the interface BeadService uses to query the VCS backend.
-// The real implementation wraps the orchestrator's wt.Backend.
+// WorktreeAccessor is the interface BeadService uses to query and mutate the
+// VCS backend. The real implementation wraps the orchestrator's wt.Backend.
 // Defined here (not in orchestrator) to avoid import cycles.
 type WorktreeAccessor interface {
 	// WorktreeStatus returns the status of the per-bead worktree.
@@ -706,6 +706,20 @@ type WorktreeAccessor interface {
 	Diff(ctx context.Context, beadID, path string) (io.ReadCloser, error)
 	// DefaultVCS returns the VCS label (e.g. "git") for the DTO vcs field.
 	DefaultVCS() string
+
+	// Finalize seals the current working-copy changes with message.
+	// A no-change worktree succeeds as a no-op (idempotent).
+	Finalize(ctx context.Context, beadID, message string) error
+	// Push pushes branch muster/<beadID> to the default remote.
+	Push(ctx context.Context, beadID string) error
+	// Remove deregisters and deletes the per-bead worktree directory.
+	Remove(ctx context.Context, beadID string) error
+
+	// BeadRunState returns the current run state for the given bead.
+	// Returns an empty string when no run record exists (never dispatched or
+	// already evicted). The service M1 guard uses this to refuse Finalize/Remove
+	// when a run is still active (StepActive or StepPending).
+	BeadRunState(beadID string) core.StepStatus
 }
 
 // GetAttach returns attachment info for a running step.
@@ -809,6 +823,97 @@ func (svc *BeadService) Diff(ctx context.Context, id, path string) (io.ReadClose
 		return nil, mapWorktreeReadError(err, id, "diff")
 	}
 	return rc, nil
+}
+
+// ── Write-side worktree methods (M4 US2) ─────────────────────────────────────
+
+// checkRunNotActive returns CodeRunAlreadyActive when the bead's current run is
+// in a non-terminal state (StepActive or StepPending). Push is permitted at any
+// run state (the agent may have finished but the worktree is still dirty).
+// Finalize and Remove must wait for a terminal state to avoid racing the agent.
+func (svc *BeadService) checkRunNotActive(id string) error {
+	if svc.wtAccessor == nil {
+		return nil // no accessor = no run state; caller handles the nil accessor check
+	}
+	state := svc.wtAccessor.BeadRunState(id)
+	if state == core.StepActive || state == core.StepPending {
+		return &ServiceError{
+			Code:    CodeRunAlreadyActive,
+			Message: "cannot finalize/remove worktree while a run is active (state=" + string(state) + ")",
+		}
+	}
+	return nil
+}
+
+// FinalizeWorktree seals the per-bead worktree's working-copy changes with
+// message. A no-change worktree succeeds as a no-op (idempotent).
+//
+// M1 guard: returns CodeRunAlreadyActive when the bead's run is StepActive or
+// StepPending. Terminal states (StepDone, StepFailed, or absent) are allowed.
+func (svc *BeadService) FinalizeWorktree(ctx context.Context, id, message string) error {
+	if svc.wtAccessor == nil {
+		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return err
+	}
+	// M1 run-state guard.
+	if err := svc.checkRunNotActive(id); err != nil {
+		return err
+	}
+	if err := svc.wtAccessor.Finalize(ctx, id, message); err != nil {
+		return mapWorktreeReadError(err, id, "finalize")
+	}
+	if svc.publish != nil {
+		svc.publish(ws.Frame{Type: ws.EventWorktreeFinalized, BeadID: id})
+	}
+	return nil
+}
+
+// PushWorktree pushes branch muster/<beadID> to the default remote.
+// Push is permitted regardless of the current run state (the run may be finished
+// but the branch not yet pushed). Push failures map to CodeInternal.
+func (svc *BeadService) PushWorktree(ctx context.Context, id string) error {
+	if svc.wtAccessor == nil {
+		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return err
+	}
+	if err := svc.wtAccessor.Push(ctx, id); err != nil {
+		return mapWorktreeReadError(err, id, "push")
+	}
+	if svc.publish != nil {
+		svc.publish(ws.Frame{Type: ws.EventWorktreePushed, BeadID: id})
+	}
+	return nil
+}
+
+// RemoveWorktree deregisters and deletes the per-bead worktree directory.
+//
+// M1 guard: same as FinalizeWorktree — returns CodeRunAlreadyActive when the
+// bead's run is StepActive or StepPending.
+func (svc *BeadService) RemoveWorktree(ctx context.Context, id string) error {
+	if svc.wtAccessor == nil {
+		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return err
+	}
+	// M1 run-state guard.
+	if err := svc.checkRunNotActive(id); err != nil {
+		return err
+	}
+	if err := svc.wtAccessor.Remove(ctx, id); err != nil {
+		return mapWorktreeReadError(err, id, "remove")
+	}
+	if svc.publish != nil {
+		svc.publish(ws.Frame{Type: ws.EventWorktreeRemoved, BeadID: id})
+	}
+	return nil
 }
 
 // AddComment appends a comment via the CLI.
