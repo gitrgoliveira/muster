@@ -149,23 +149,21 @@ func TestRecoverSessions_InvalidBeadIDKilled(t *testing.T) {
 // TestRecoverSessions_MalformedIndicesKilled is the M4 T053 rewrite of the
 // former TestRecoverSessions_UnsupportedIndicesKilled.
 //
-// New boundary (M4 US4 T053a): only genuinely malformed/negative indices are
-// killed. A session with StepIdx ≥ 0 is now re-registered (not killed) so a
-// live multi-step agent survives a muster restart.  Negative StepIdx and
-// negative Loop remain kill-on-sight (they cannot be real muster sessions).
-//
-// Also: non-zero Loop is still killed — muster currently creates only Loop=0
-// sessions; a non-zero Loop is either malformed or from a future schema this
-// binary cannot handle.
+// New boundary (M4 US4 T053a): only genuinely malformed/*negative* indices are
+// killed. A session with StepIdx ≥ 0 AND Loop ≥ 0 is re-registered (not killed)
+// so a live multi-step / looped agent survives a muster restart. Negative
+// StepIdx or negative Loop remain kill-on-sight (they cannot be produced by a
+// real muster session name).
 func TestRecoverSessions_MalformedIndicesKilled(t *testing.T) {
-	// Only malformed (negative) values are killed; positive StepIdx is now
-	// re-registered (tested separately in TestRecoverSessions_NonzeroStepIdx).
+	// Only malformed (negative) values are killed; a non-negative StepIdx or
+	// Loop is re-registered (see TestRecoverSessions_NonzeroStepIdx and
+	// TestRecoverSessions_NonzeroLoop).
 	cases := []struct {
 		name    string
 		session tmux.Session
 	}{
 		{"negative step", tmux.Session{Name: "muster/mp-abc/-1/0", BeadID: "mp-abc", StepIdx: -1, Loop: 0}},
-		{"nonzero loop", tmux.Session{Name: "muster/mp-abc/0/2", BeadID: "mp-abc", StepIdx: 0, Loop: 2}},
+		{"negative loop", tmux.Session{Name: "muster/mp-abc/0/-1", BeadID: "mp-abc", StepIdx: 0, Loop: -1}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,6 +234,42 @@ func TestRecoverSessions_NonzeroStepIdx(t *testing.T) {
 	}
 	if run.StepIdx != 2 {
 		t.Errorf("recovered run StepIdx want 2 got %d", run.StepIdx)
+	}
+}
+
+// TestRecoverSessions_NonzeroLoop verifies that a session with a non-negative
+// Loop (a looped step) is re-registered rather than killed — symmetric with
+// StepIdx (M4 US4 T053a; resolves the prior Loop!=0 kill limitation). The Loop
+// counter is preserved on the recovered run.
+func TestRecoverSessions_NonzeroLoop(t *testing.T) {
+	transport := &controlledTransport{
+		fakeTransport: fakeTransport{
+			deadDead: false,
+			listReturns: []tmux.Session{
+				{Name: "muster/mp-abc/1/3", BeadID: "mp-abc", StepIdx: 1, Loop: 3, StartedAt: time.Now()},
+			},
+		},
+	}
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     adapter.NewRegistry(),
+		Transport:    transport,
+		RepoMap:      orchestrator.RepoMap{},
+		WorktreesDir: t.TempDir(),
+	})
+
+	o.RecoverSessions(context.Background())
+
+	run := o.GetRun("mp-abc")
+	if run == nil {
+		t.Fatal("session with non-negative Loop must be re-registered, not killed")
+	}
+	if transport.killCalled.Load() {
+		t.Error("Kill must NOT be called for a non-negative Loop session")
+	}
+	if run.Loop != 3 {
+		t.Errorf("recovered run Loop want 3 got %d", run.Loop)
 	}
 }
 

@@ -80,10 +80,12 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	// is re-dispatched (which re-supplies the chain); this is the safe, honest
 	// consequence of chain-unknown-at-recovery (see research.md R9).
 	//
-	// Loop remains kill-on-sight at any non-zero value: muster currently creates
-	// only Loop=0 sessions; a non-zero Loop is either malformed or from a future
-	// schema this binary cannot handle.
-	if sess.StepIdx < 0 || sess.Loop != 0 {
+	// Loop is treated symmetrically with StepIdx: a non-negative Loop is a valid
+	// (if currently rare — muster resets Loop to 0 on loop-back) session-name
+	// component and is re-registered so a live agent survives a restart, rather
+	// than being killed. Only genuinely malformed *negative* indices are killed
+	// (they cannot be produced by a real muster session name).
+	if sess.StepIdx < 0 || sess.Loop < 0 {
 		slog.Warn("recovery: killing session with malformed step/loop indices",
 			"session", sessionName, "beadID", beadID, "stepIdx", sess.StepIdx, "loop", sess.Loop)
 		_ = o.transport.Kill(sessionName)
