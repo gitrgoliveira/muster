@@ -121,24 +121,32 @@ func parseStepIdx(w http.ResponseWriter, r *http.Request, idxStr string) (idx in
 	return n, true
 }
 
+// cleanJSONDecodeMsg strips Go's raw `json: unknown field "X"` decoder error
+// down to `unknown field: X`, shared by decodeJSON and any handler that
+// decodes an optional body itself (e.g. PushWorktree, which must tolerate
+// io.EOF and so cannot use decodeJSON directly).
+func cleanJSONDecodeMsg(err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "unknown field") {
+		const prefix = `json: unknown field "`
+		if idx := strings.Index(msg, prefix); idx >= 0 {
+			rest := msg[idx+len(prefix):]
+			if end := strings.Index(rest, `"`); end >= 0 {
+				field := rest[:end]
+				msg = "unknown field: " + field
+			}
+		}
+	}
+	return msg
+}
+
 // decodeJSON decodes the request body with DisallowUnknownFields. On error,
 // it writes the appropriate error response and returns false.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "unknown field") {
-			const prefix = `json: unknown field "`
-			if idx := strings.Index(msg, prefix); idx >= 0 {
-				rest := msg[idx+len(prefix):]
-				if end := strings.Index(rest, `"`); end >= 0 {
-					field := rest[:end]
-					msg = "unknown field: " + field
-				}
-			}
-		}
-		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, msg)
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, cleanJSONDecodeMsg(err))
 		return false
 	}
 	return true
@@ -541,18 +549,7 @@ func (h *Handlers) PushWorktree(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		msg := err.Error()
-		if strings.Contains(msg, "unknown field") {
-			const prefix = `json: unknown field "`
-			if idx := strings.Index(msg, prefix); idx >= 0 {
-				rest := msg[idx+len(prefix):]
-				if end := strings.Index(rest, `"`); end >= 0 {
-					field := rest[:end]
-					msg = "unknown field: " + field
-				}
-			}
-		}
-		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, msg)
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, cleanJSONDecodeMsg(err))
 		return
 	}
 
