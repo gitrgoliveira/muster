@@ -179,4 +179,4 @@
 
 ## Task Count
 
-57 distinct task IDs across phases (T001–T010, T011–T022, T030–T040, T041–T047, T048–T053, T059–T063, T070–T075; numbering gaps T023–29 and T054–58 are intentional per-phase headroom). Test tasks precede their implementations throughout (TDD).
+60 distinct task IDs across phases (T001–T010, T011–T022, T030–T040, T041–T047, T048–T053, T059–T063, T070–T075, plus the review-added lettered tasks T036a/T043a/T043b; numbering gaps T023–29 and T054–58 are intentional per-phase headroom). Test tasks precede their implementations throughout (TDD).

@@ -39,6 +39,10 @@ func NewOrchestratorHandler(sched SchedulerSnapshotter) *OrchestratorHandler {
 	return &OrchestratorHandler{sched: sched}
 }
 
+// codeInvalidCapacity is the error code returned when a capacity value is
+// non-positive (defined once so the two return paths can't drift).
+const codeInvalidCapacity = "INVALID_CAPACITY"
+
 // SetCapacity handles PUT /api/v1/orchestrator/capacity.
 //
 // Request body: {"capacity": N}  (N must be > 0)
@@ -55,11 +59,11 @@ func (h *OrchestratorHandler) SetCapacity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if body.Capacity <= 0 {
-		render.WriteError(w, r, http.StatusBadRequest, "INVALID_CAPACITY", "capacity must be > 0")
+		render.WriteError(w, r, http.StatusBadRequest, codeInvalidCapacity, "capacity must be > 0")
 		return
 	}
 	if err := h.sched.SetCapacity(body.Capacity); err != nil {
-		render.WriteError(w, r, http.StatusBadRequest, "INVALID_CAPACITY", err.Error())
+		render.WriteError(w, r, http.StatusBadRequest, codeInvalidCapacity, err.Error())
 		return
 	}
 	snap := h.sched.SchedulerSnapshot()

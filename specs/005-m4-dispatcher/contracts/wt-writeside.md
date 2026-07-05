@@ -1,10 +1,10 @@
 # Contract — `wt.Backend` write-side (M4)
 
-Fills the three methods M3 declared and stubbed with `ErrNotImplemented`. **No interface change** — the M3 signatures are honored verbatim, so no caller changes (M3 designed for this). Both git and jj implement all three. Each behavior is TDD'd with a fake-on-`$PATH` unit test **and** a skip-gated real-binary integration test.
+Fills the three methods M3 declared and stubbed with `ErrNotImplemented`. Two signatures are refined vs. M3's placeholders (review rounds): `Finalize` returns `(committed bool, error)` so a clean-worktree no-op is reported (FR-010), and `Push` takes a `remote` parameter so the per-request `{remote}` body is honored (default `origin`). `Remove` is unchanged. Both git and jj implement all three. Each behavior is TDD'd with a fake-on-`$PATH` unit test **and** a skip-gated real-binary integration test.
 
 ```go
-Finalize(ctx context.Context, beadID, message string) error
-Push(ctx context.Context, beadID string) error   // remote resolved from config (default origin)
+Finalize(ctx context.Context, beadID, message string) (committed bool, err error)
+Push(ctx context.Context, beadID, remote string) error   // remote "" resolves to origin
 Remove(ctx context.Context, beadID string) error
 ```
 

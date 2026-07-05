@@ -85,4 +85,4 @@ make test          # go test -race ./...  (fakes for git/jj/claude; real-binary 
 make cover-check   # per-package gates, incl. any new M4 package
 make lint
 ```
-All M0–M3 suites remain green (SC-007/SC-008); the only migrated tests are the two duplicate-dispatch cases, now asserting the idempotent 200+join contract.
+All M0–M3 suites remain green (SC-007/SC-008); the intentionally migrated prior-milestone tests are enumerated in [plan.md](plan.md)'s Complexity Tracking (the 409→200 duplicate-dispatch pair, `TestQuotaSource_None`, the recovery-indices test, and the `parseStepIdx` expectation).
