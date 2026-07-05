@@ -114,7 +114,9 @@ type StatusConfig struct {
 
 	// M4 additions (additive — all M0–M3 fields unchanged).
 	// SchedulerSnapshotter provides live scheduler state for the status response.
-	// May be nil; scheduler fields are omitted (zero-valued) when nil.
+	// May be nil; the scheduler fields (capacity, activeCount, waiting) are
+	// always present in the response (none are omitempty) — when nil they carry
+	// zero/empty values (capacity 0, activeCount 0, waiting []), not omitted.
 	SchedulerSnapshotter SchedulerSnapshotter
 
 	// RunLister provides per-run summaries (stepIdx, chainLen) for T047.
