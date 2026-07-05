@@ -226,15 +226,18 @@ func (g *gitBackend) Remove(ctx context.Context, beadID string) error {
 		return fmt.Errorf("wt git: git worktree remove %q: %w\n%s", path, err, removeOut)
 	}
 
-	// Prune stale worktree refs from the main repo's metadata. Run from
-	// filepath.Dir(path): `git rev-parse --git-common-dir` succeeds from a
-	// sibling git worktree's parent, so prune runs in the same context. If the
-	// parent has no git context (e.g. worktreesDir is outside any repo) this
-	// exits non-zero and we ignore it — stale refs are cosmetic.
-	pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune")
-	pruneCmd.Dir = filepath.Dir(path)
-	_ = pruneCmd.Run() // best-effort: stale refs are cosmetic; fails harmlessly when the parent dir has no git context
-
+	// No `git worktree prune` is needed here. `git worktree remove` (used
+	// without --force on a complete, clean worktree) already deletes the main
+	// repo's .git/worktrees/<name> admin entry on success, and the failure
+	// branch above returns early — so a prune could only ever run after a
+	// SUCCESSFUL remove, with nothing left to prune.
+	//
+	// (internal/worktree.cleanupFailedCreate does run prune, but only because it
+	// falls back to os.RemoveAll for a HALF-created worktree whose admin entry
+	// `git worktree remove` couldn't drop — a different situation from this
+	// complete-worktree removal. The earlier prune-from-filepath.Dir(path) here
+	// ran in worktreesDir, which is not a git context, so it was a silent no-op:
+	// Copilot PR #7 / tri-review 5.)
 	return nil
 }
 

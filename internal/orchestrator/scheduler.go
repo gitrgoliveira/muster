@@ -18,7 +18,11 @@ type SchedulerSnapshot struct {
 }
 
 // scheduler is a capacity-gated FIFO queue embedded in the Orchestrator.
-// All methods must be called with the orchestrator's mu held (write lock).
+// Most methods mutate shared state and MUST be called with the orchestrator's
+// mu held (write lock) — see each method's own doc comment for its exact
+// contract. Two deliberate exceptions: snapshot() only reads and accepts a read
+// OR write lock, and setCapacity() acquires the write lock internally (so it
+// MUST be called WITHOUT the lock already held).
 type scheduler struct {
 	capacity int
 	active   map[string]struct{} // bead IDs currently running
