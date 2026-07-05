@@ -7,7 +7,7 @@ All routes under `/api/v1`. **Additive** except the one documented change to `PO
 ### `POST /beads/{id}/dispatch`
 - **New behavior on in-flight duplicate**: returns **200 OK** with the existing run and `"joined": true` (was **409 Conflict** / `ErrRunAlreadyActive` in M2). First dispatch of an idle bead is unchanged (launches a run; may be `"queued": true` if at capacity).
 - Request body unchanged, plus **optional** additive field `chain` (ordered step list) to override the default chain.
-- Response (additive fields): `{ "bead": {...}, "joined": false, "queued": false }`.
+- Response: the bead object at the **top level** (the handler embeds `*core.Bead` directly — same shape M2 returned), with two additive top-level fields `joined` and `queued`: `{ "<bead fields…>", "joined": false, "queued": false }`. (Not nested under a `bead` key.)
 - **Migration note**: M2 tests `TestDispatch_409_RunAlreadyActive` / `TestDispatch_409_DuplicateRun` are rewritten to assert this idempotent contract (Constitution V versioned migration; see plan Complexity Tracking).
 
 ## New — Scheduler / capacity

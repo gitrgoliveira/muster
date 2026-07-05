@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -626,6 +627,22 @@ func TestOrchestratorStatus_M4_SchedulerFields(t *testing.T) {
 	}
 	if len(body.Waiting) != 2 || body.Waiting[0] != "bd-001" {
 		t.Errorf("waiting want [bd-001 bd-002] got %v", body.Waiting)
+	}
+}
+
+// TestOrchestratorStatus_NoSnapshotter_WaitingIsEmptyArray is the regression for
+// the Copilot finding: with no SchedulerSnapshotter wired, `waiting` must
+// serialize as [] (not null), consistent with `runs`.
+func TestOrchestratorStatus_NoSnapshotter_WaitingIsEmptyArray(t *testing.T) {
+	cfg := health.StatusConfig{BeadsVersion: "1.0.0", SchemaVersion: 1} // no snapshotter
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	raw, _ := io.ReadAll(w.Result().Body)
+	if !strings.Contains(string(raw), `"waiting":[]`) || strings.Contains(string(raw), `"waiting":null`) {
+		t.Errorf("waiting must serialize as [] not null; got: %s", raw)
 	}
 }
 

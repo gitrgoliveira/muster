@@ -151,10 +151,15 @@ func OrchestratorStatusHandler(cfg StatusConfig) http.HandlerFunc {
 			worktreeCount = cfg.WorktreeCounter.WorktreeCount()
 		}
 
-		// M4: read live scheduler state.
-		var schedSnap SchedulerSnapshotDTO
+		// M4: read live scheduler state. Waiting defaults to a non-nil empty
+		// slice so it marshals as [] (not null) when no snapshotter is wired,
+		// consistent with runs below.
+		schedSnap := SchedulerSnapshotDTO{Waiting: []string{}}
 		if cfg.SchedulerSnapshotter != nil {
 			schedSnap = cfg.SchedulerSnapshotter.SchedulerSnapshot()
+			if schedSnap.Waiting == nil {
+				schedSnap.Waiting = []string{}
+			}
 		}
 
 		// T047: read per-run summaries (stepIdx, chainLen).
