@@ -44,6 +44,9 @@ case "$1" in
             add)
                 echo "Created workspace in \"$3\""
                 ;;
+            forget)
+                echo "Forgot workspace $3"
+                ;;
             *)
                 echo "workspace: unknown subcommand $2" >&2
                 exit 1

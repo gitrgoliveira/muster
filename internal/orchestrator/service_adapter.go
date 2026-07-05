@@ -129,13 +129,11 @@ func (a *stepAdvancerAdapter) LoopBack(_ context.Context, beadID string, toIdx i
 }
 
 // mapStepError translates orchestrator step errors into typed *services.ServiceError.
+// Advance and LoopBack only ever return ErrStepOutOfRange-wrapped errors, so the
+// mapping is straightforward: match that sentinel or fall back to CodeInternal.
 func mapStepError(err error) error {
 	if err == nil {
 		return nil
-	}
-	var se *services.ServiceError
-	if errors.As(err, &se) {
-		return se
 	}
 	if errors.Is(err, ErrStepOutOfRange) {
 		return &services.ServiceError{Code: services.CodeStepOutOfRange, Message: err.Error()}

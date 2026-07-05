@@ -101,12 +101,6 @@ type Run struct {
 	// Mutable under o.mu (set in finishRun once the session exits).
 	Quota QuotaUsage
 
-	// Waiting is true while the run is queued in the scheduler waiting for
-	// a free capacity slot (State==StepPending). Flipped to false when the
-	// run is admitted and the agent session is actually launched.
-	// Mutable under o.mu.
-	Waiting bool
-
 	// pendingAdvance is true while an Advance/LoopBack is in progress for this
 	// run. When true, finishRun skips eviction and instead relaunches the run
 	// at the already-updated StepIdx (the target step) under the same beadID
@@ -1169,7 +1163,7 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// Evict this run from the registry after the retention window so a
 	// long-lived server doesn't accumulate an entry per bead ever dispatched.
 	// INTERLOCK (T043b): if pendingAdvance is set, Advance/LoopBack already
-	// set pendingAdvanceNextIdx and is waiting for this finishRun to do the
+	// updated run.StepIdx and is waiting for this finishRun to do the
 	// Kill+pipe.Close (above) before relaunching the next step. Spawn
 	// relaunchNextStep on a new goroutine so this watcher goroutine can exit
 	// promptly. relaunchNextStep will schedule eviction on its own if

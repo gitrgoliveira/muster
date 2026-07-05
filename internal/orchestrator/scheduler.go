@@ -39,7 +39,6 @@ func (s *scheduler) admitOrEnqueue(run *Run) (queued bool) {
 		s.active[run.BeadID] = struct{}{}
 		return false
 	}
-	run.Waiting = true
 	s.waiting = append(s.waiting, run)
 	return true
 }
@@ -54,7 +53,6 @@ func (s *scheduler) onRunEnd(beadID string) *Run {
 	}
 	next := s.waiting[0]
 	s.waiting = s.waiting[1:]
-	next.Waiting = false
 	s.active[next.BeadID] = struct{}{}
 	return next
 }
@@ -89,7 +87,6 @@ func (s *scheduler) setCapacity(mu *sync.RWMutex, n int) ([]*Run, error) {
 	for len(s.waiting) > 0 && len(s.active) < s.capacity {
 		next := s.waiting[0]
 		s.waiting = s.waiting[1:]
-		next.Waiting = false
 		s.active[next.BeadID] = struct{}{}
 		admitted = append(admitted, next)
 	}

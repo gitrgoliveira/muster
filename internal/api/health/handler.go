@@ -43,12 +43,14 @@ func NewOrchestratorHandler(sched SchedulerSnapshotter) *OrchestratorHandler {
 //
 // Request body: {"capacity": N}  (N must be > 0)
 // Response 200: SchedulerSnapshotDTO
-// Response 400: JSON error with code INVALID_CAPACITY
+// Response 400: JSON error with code INVALID_CAPACITY or INVALID_REQUEST (unknown fields)
 func (h *OrchestratorHandler) SetCapacity(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Capacity int `json:"capacity"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
 		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "invalid JSON body")
 		return
 	}

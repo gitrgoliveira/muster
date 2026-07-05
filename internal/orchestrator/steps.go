@@ -34,9 +34,10 @@ func (o *Orchestrator) resolveChain(req DispatchRequest) *StepChain {
 }
 
 // Advance moves the step pointer forward by 1 for the live run keyed by beadID.
-// It marks the run with pendingAdvance and pendingAdvanceNextIdx, then cancels
-// the run's watcher goroutine. finishRun (called from watchRun) detects the
-// pending advance and calls relaunchNextStep instead of evicting.
+// It marks the run with pendingAdvance and updates run.StepIdx to the target
+// index under the lock, then cancels the run's watcher goroutine. finishRun
+// (called from watchRun) detects the pending advance and calls relaunchNextStep
+// instead of evicting.
 //
 // Returns ErrStepOutOfRange if:
 //   - No run exists for beadID.
@@ -117,9 +118,9 @@ func (o *Orchestrator) Advance(beadID string) error {
 }
 
 // LoopBack moves the step pointer back to toIdx for the live run keyed by beadID.
-// It marks the run with pendingAdvance and pendingAdvanceNextIdx, then cancels
-// the run's watcher goroutine. finishRun detects the pending advance and calls
-// relaunchNextStep instead of evicting.
+// It marks the run with pendingAdvance and updates run.StepIdx to the target
+// index under the lock, then cancels the run's watcher goroutine. finishRun
+// detects the pending advance and calls relaunchNextStep instead of evicting.
 //
 // Returns ErrStepOutOfRange if:
 //   - No run exists for beadID.

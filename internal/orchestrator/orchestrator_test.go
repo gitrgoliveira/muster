@@ -1125,9 +1125,9 @@ func TestDispatch_FreshAfterTerminal(t *testing.T) {
 // ── T008: Run struct M4 extensions — compile-only skeleton ───────────────────
 
 // TestRun_M4Fields_ZeroValueSane verifies that the M4 additions to Run have
-// sane zero values: Chain nil (single-step default), Quota.Known false (no
-// usage data yet), and Waiting false (not queued). This is a compile-time
-// guard — if the fields are removed or renamed the test fails to build.
+// sane zero values: Chain nil (single-step default) and Quota.Known false (no
+// usage data yet). This is a compile-time guard — if the fields are removed or
+// renamed the test fails to build.
 func TestRun_M4Fields_ZeroValueSane(t *testing.T) {
 	var r orchestrator.Run
 
@@ -1140,11 +1140,6 @@ func TestRun_M4Fields_ZeroValueSane(t *testing.T) {
 	// US5 wires the on-disk reader.
 	if r.Quota.Known {
 		t.Error("Run.Quota.Known zero value: want false")
-	}
-
-	// Waiting false means the run is not waiting in the scheduler queue.
-	if r.Waiting {
-		t.Error("Run.Waiting zero value: want false")
 	}
 }
 

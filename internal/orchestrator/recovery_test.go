@@ -164,6 +164,8 @@ func TestRecoverSessions_MalformedIndicesKilled(t *testing.T) {
 	}{
 		{"negative step", tmux.Session{Name: "muster/mp-abc/-1/0", BeadID: "mp-abc", StepIdx: -1, Loop: 0}},
 		{"negative loop", tmux.Session{Name: "muster/mp-abc/0/-1", BeadID: "mp-abc", StepIdx: 0, Loop: -1}},
+		// Upper-bound sanity check (tri-review #12): StepIdx > 4096 is malformed.
+		{"step above upper bound", tmux.Session{Name: "muster/mp-abc/4097/0", BeadID: "mp-abc", StepIdx: 4097, Loop: 0}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

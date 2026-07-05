@@ -588,6 +588,35 @@ func TestSetCapacityHandler_InvalidCapacity(t *testing.T) {
 	}
 }
 
+func TestSetCapacityHandler_UnknownField_Returns400(t *testing.T) {
+	fake := &fakeCapacitySetter{}
+	h := health.NewOrchestratorHandler(fake)
+
+	// Sends an unknown field — DisallowUnknownFields should reject this.
+	body := `{"capacity":3,"unknown_field":"oops"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("unknown field: want 400 got %d", res.StatusCode)
+	}
+	// Verify error code is CodeInvalidRequest (envelope: {"error":{"code":"..."}}).
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error.Code != "INVALID_REQUEST" {
+		t.Errorf("unknown field: want code INVALID_REQUEST got %q", errBody.Error.Code)
+	}
+}
+
 // ── T021: M4 scheduler fields in status DTO ────────────────────────────────────
 
 type fakeSchedulerSnapshotter struct {

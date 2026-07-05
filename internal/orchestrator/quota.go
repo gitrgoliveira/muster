@@ -119,6 +119,11 @@ func parseQuotaFromJSONL(path string) QuotaUsage {
 		found = true
 	}
 
+	// Degrade to unknown on any scan error (e.g. line exceeding buffer).
+	// Best-effort must never report partial/wrong numbers.
+	if err := scanner.Err(); err != nil {
+		return QuotaUsage{}
+	}
 	if !found {
 		return QuotaUsage{}
 	}

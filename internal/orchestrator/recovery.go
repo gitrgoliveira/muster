@@ -85,7 +85,12 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	// component and is re-registered so a live agent survives a restart, rather
 	// than being killed. Only genuinely malformed *negative* indices are killed
 	// (they cannot be produced by a real muster session name).
-	if sess.StepIdx < 0 || sess.Loop < 0 {
+	//
+	// Upper sanity bound: StepIdx > 4096 is rejected as malformed (no real chain
+	// has more than a few thousand steps; this prevents absurdly large values from
+	// a tampered session name from wedging the recovered run).
+	const maxRecoveryStepIdx = 4096
+	if sess.StepIdx < 0 || sess.Loop < 0 || sess.StepIdx > maxRecoveryStepIdx {
 		slog.Warn("recovery: killing session with malformed step/loop indices",
 			"session", sessionName, "beadID", beadID, "stepIdx", sess.StepIdx, "loop", sess.Loop)
 		_ = o.transport.Kill(sessionName)

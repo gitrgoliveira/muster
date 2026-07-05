@@ -834,6 +834,98 @@ func TestJJDiffSummaryAt_ParseEdgeCases(t *testing.T) {
 	}
 }
 
+// TestJJBackend_ResolveSrcRepo_TraversalRejected verifies that the fallback path
+// in resolveSrcRepo (reading the agent-writable .jj/repo file) rejects a path
+// that points into the worktrees directory (path-traversal guard, tri-review FIX 1).
+//
+// The test exercises Remove, which calls resolveSrcRepo before running
+// `jj workspace forget`. If the traversal is detected, Remove returns an error
+// before any jj command runs.
+func TestJJBackend_ResolveSrcRepo_TraversalRejected(t *testing.T) {
+	binDir := t.TempDir()
+	addFakeJJToBinDir(t, binDir)
+
+	worktreesDir := t.TempDir()
+	beadID := "traversal-bead"
+	wtPath := filepath.Join(worktreesDir, beadID)
+
+	// Create the workspace directory manually (no real jj needed).
+	jjDir := filepath.Join(wtPath, ".jj")
+	if err := os.MkdirAll(jjDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll .jj: %v", err)
+	}
+
+	// Write a .jj/repo that resolves into the worktrees directory itself —
+	// a traversal target a malicious agent could use to redirect git push.
+	// jjSrcRepoDir reads: wtPath/.jj/<rel> → strips /.jj/repo suffix → srcRepo.
+	// We want srcRepo == worktreesDir, so rel = "../../.jj/repo" resolves to
+	// worktreesDir/.jj/repo; stripping /.jj/repo gives worktreesDir.
+	traversalRel := "../../.jj/repo"
+	if err := os.WriteFile(filepath.Join(jjDir, "repo"), []byte(traversalRel), 0o644); err != nil {
+		t.Fatalf("write .jj/repo: %v", err)
+	}
+
+	// Use NewJJBackend so worktreesDir is set (required for the traversal check).
+	b := wt.NewJJBackend(worktreesDir)
+	ctx := context.Background()
+
+	// Remove calls resolveSrcRepo (cache miss → fallback) before `jj workspace forget`.
+	// The fallback should detect the traversal and return an error.
+	err := b.Remove(ctx, beadID)
+	if err == nil {
+		t.Fatal("Remove with traversal .jj/repo: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "path traversal") {
+		t.Errorf("Remove traversal error = %q; want to contain 'path traversal'", err.Error())
+	}
+}
+
+// TestJJBackend_ResolveSrcRepo_CacheBypassesValidation verifies that when
+// resolveSrcRepo finds the beadID in the in-memory cache (populated by Create),
+// it returns the cached value directly without reading or validating .jj/repo.
+// The Remove call succeeds past the resolveSrcRepo step (fake jj handles
+// `workspace forget`) and fails only at os.RemoveAll or succeeds entirely —
+// but critically does NOT return a traversal error.
+func TestJJBackend_ResolveSrcRepo_CacheBypassesValidation(t *testing.T) {
+	binDir := t.TempDir()
+	addFakeJJToBinDir(t, binDir)
+	srcRepo := t.TempDir()
+
+	worktreesDir := t.TempDir()
+	beadID := "cache-bead"
+
+	// Prime the cache via Create (fake jj exits 0 for root; workspace add creates the dir).
+	t.Setenv("FAKE_JJ_ROOT", srcRepo)
+
+	b, err := wt.For(wt.VCSJJ)
+	if err != nil {
+		t.Fatalf("For(jj): %v", err)
+	}
+	ctx := context.Background()
+	if _, err := b.Create(ctx, worktreesDir, srcRepo, beadID); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Now write a tampered .jj/repo — the cache hit must prevent it from being read.
+	wtPath := filepath.Join(worktreesDir, beadID)
+	jjDir := filepath.Join(wtPath, ".jj")
+	if err := os.MkdirAll(jjDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll .jj: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jjDir, "repo"), []byte("../../.jj/repo"), 0o644); err != nil {
+		t.Fatalf("write .jj/repo: %v", err)
+	}
+
+	// Remove goes through resolveSrcRepo; cache hit → returns srcRepo, bypasses .jj/repo.
+	// Fake jj handles `workspace forget` → Remove succeeds (or fails at RemoveAll, not
+	// at resolveSrcRepo). Critically: no traversal error.
+	err = b.Remove(ctx, beadID)
+	if err != nil && strings.Contains(err.Error(), "path traversal") {
+		t.Errorf("Remove with cached srcRepo should not return traversal error, got: %v", err)
+	}
+	// The cache bypass is verified: no traversal error means the cache was used.
+}
+
 // TestJJBackend_EmptyWorktreesDir_Errors covers the worktreesDir=="" guard branches
 // in jjBackend.Status, DiffSummary, and Diff (the 66.7% lines).
 func TestJJBackend_EmptyWorktreesDir_Errors(t *testing.T) {

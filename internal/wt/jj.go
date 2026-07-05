@@ -123,11 +123,34 @@ func (j *jjBackend) Create(ctx context.Context, worktreesDir, srcRepo, beadID st
 // cache (populated by Create) first — this is the security-preferred path that
 // avoids reading the agent-writable .jj/repo file. Falls back to jjSrcRepoDir
 // only when no cached entry exists (e.g. backend was reconstructed).
+//
+// Fallback security: after jjSrcRepoDir resolves a path from the agent-writable
+// .jj/repo file, we validate that the result is absolute, has no remaining ".."
+// segments after filepath.Clean, and is NOT inside the worktrees directory
+// (a workspace is never a source repo). Any violation returns an error to
+// prevent path-traversal attacks through a tampered .jj/repo.
 func (j *jjBackend) resolveSrcRepo(beadID, wtPath string) (string, error) {
 	if v, ok := j.srcRepos.Load(beadID); ok {
 		return v.(string), nil
 	}
-	return jjSrcRepoDir(wtPath)
+	// Fallback: read the agent-writable .jj/repo file.
+	srcRepo, err := jjSrcRepoDir(wtPath)
+	if err != nil {
+		return "", err
+	}
+	// Validate the resolved path: must be absolute and free of traversal components.
+	cleaned := filepath.Clean(srcRepo)
+	if !filepath.IsAbs(cleaned) || cleaned != srcRepo {
+		return "", fmt.Errorf("wt jj: resolved srcRepo %q failed validation (possible path traversal)", srcRepo)
+	}
+	// Must not be under the worktrees directory (a workspace is not a source repo).
+	if j.worktreesDir != "" {
+		wtDir := filepath.Clean(j.worktreesDir)
+		if strings.HasPrefix(cleaned+string(filepath.Separator), wtDir+string(filepath.Separator)) || cleaned == wtDir {
+			return "", fmt.Errorf("wt jj: resolved srcRepo %q failed validation (possible path traversal)", srcRepo)
+		}
+	}
+	return cleaned, nil
 }
 
 // Status returns the worktree's state. Requires NewJJBackend(worktreesDir).

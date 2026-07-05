@@ -265,6 +265,39 @@ func touchLater(t *testing.T, path string) {
 	}
 }
 
+// TestReadSessionQuota_LineExceedsBuffer verifies that parseQuotaFromJSONL
+// returns Known:false (not partial data) when the JSONL file contains a line
+// longer than the 4 MiB scanner buffer. This guards against reporting
+// incorrect totals from truncated reads (tri-review FIX 5).
+func TestReadSessionQuota_LineExceedsBuffer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge-line.jsonl")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Write a valid assistant turn first (so found=true before the oversize line).
+	validLine := `{"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}}}` + "\n"
+	if _, err := f.WriteString(validLine); err != nil {
+		t.Fatalf("write valid line: %v", err)
+	}
+	// Write a line larger than 4 MiB (4*1024*1024 + 1 bytes) to exceed the buffer.
+	bigLine := `{"type":"assistant","x":"` + string(make([]byte, 4*1024*1024+1)) + `"}` + "\n"
+	if _, err := f.WriteString(bigLine); err != nil {
+		t.Fatalf("write big line: %v", err)
+	}
+	f.Close()
+
+	got := orchestrator.ReadSessionQuota(dir)
+
+	// Must degrade to Known:false — never report partial data.
+	if got.Known {
+		t.Errorf("ReadSessionQuota huge line: want Known=false (scan error), got Known=true (tokens=%d/%d)",
+			got.InputTokens, got.OutputTokens)
+	}
+}
+
 // ── T063: quota captured at run end, run.quota event emitted ─────────────────
 //
 // These tests verify that when a run finishes the orchestrator:
