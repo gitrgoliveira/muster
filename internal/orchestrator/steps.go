@@ -34,8 +34,9 @@ func (o *Orchestrator) resolveChain(req DispatchRequest) *StepChain {
 }
 
 // Advance moves the step pointer forward by 1 for the live run keyed by beadID.
-// It marks the run with pendingAdvance and updates run.StepIdx to the target
-// index under the lock, then cancels the run's watcher goroutine. finishRun
+// It marks the run with pendingAdvance and records pendingTargetIdx under the
+// lock — StepIdx is NOT mutated here; relaunchNextStep applies it after finishRun
+// tears down the old session — then cancels the run's watcher goroutine. finishRun
 // (called from watchRun) detects the pending advance and calls relaunchNextStep
 // instead of evicting.
 //
@@ -115,9 +116,10 @@ func (o *Orchestrator) Advance(beadID string) error {
 }
 
 // LoopBack moves the step pointer back to toIdx for the live run keyed by beadID.
-// It marks the run with pendingAdvance and updates run.StepIdx to the target
-// index under the lock, then cancels the run's watcher goroutine. finishRun
-// detects the pending advance and calls relaunchNextStep instead of evicting.
+// It marks the run with pendingAdvance and records pendingTargetIdx under the
+// lock — StepIdx is NOT mutated here; relaunchNextStep applies it after finishRun
+// tears down the current session — then cancels the run's watcher goroutine.
+// finishRun detects the pending advance and calls relaunchNextStep instead of evicting.
 //
 // Returns ErrStepOutOfRange if:
 //   - No run exists for beadID.
@@ -197,7 +199,15 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 	// slow launch never reads run.StepIdx/Loop that a concurrent Advance could
 	// rewrite (tri-review 2 HIGH).
 	nextIdx := run.pendingTargetIdx
-	nextLoop := 0 // loop-back and advance both start the target step at loop 0
+	// A LOOP-BACK (target earlier than the current step) re-runs a step that has
+	// already executed, so bump the loop counter to give the new agent a UNIQUE
+	// session name (muster/<bead>/<step>/<loop+1>) — otherwise a repeated
+	// loop-back to the same step would collide with the prior session name if a
+	// Kill ever failed (tri-review 4). An ADVANCE moves to a fresh step, loop 0.
+	nextLoop := 0
+	if nextIdx < run.StepIdx {
+		nextLoop = run.Loop + 1
+	}
 	run.StepIdx = nextIdx
 	run.Loop = nextLoop
 
@@ -210,6 +220,8 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 	// doLaunch setting run.cancel, run.cancel is nil, and if pendingAdvance were
 	// already false a concurrent Advance would pass its guards, capture the nil
 	// cancel (a no-op), and corrupt the transition (tri-review 3 HIGH #1).
+	// State is guaranteed StepActive here (finishRun skips the state flip while
+	// pendingAdvance is true); this write is defensive, not load-bearing.
 	run.State = core.StepActive
 	run.Session = ""
 	run.Pane = ""
@@ -225,7 +237,9 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 		stepPM = run.PermissionMode
 	}
 
-	// Build a synthetic DispatchRequest carrying the same identity.
+	// Build a synthetic DispatchRequest carrying the same identity. Chain is
+	// omitted: doLaunch never reads req.Chain (only Dispatch's resolveChain does),
+	// and the chain already lives on run.Chain (tri-review 4 — dead field).
 	req := DispatchRequest{
 		BeadID:         run.BeadID,
 		BeadTitle:      run.BeadTitle,
@@ -233,7 +247,6 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 		Agent:          run.Agent,
 		Mode:           run.Mode,
 		PermissionMode: stepPM,
-		Chain:          run.Chain,
 	}
 
 	_, err := o.doLaunch(context.Background(), run, req, stepPM, nextIdx, nextLoop)

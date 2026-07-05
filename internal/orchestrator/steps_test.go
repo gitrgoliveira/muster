@@ -670,3 +670,70 @@ func TestAdvance_NoOnCompleteOnIntermediateStep(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestLoopBack_IncrementsLoopForUniqueSession is the regression for tri-review-4
+// #1: looping back to an earlier step re-runs it with an incremented Loop
+// counter, giving the new agent a unique session name (muster/<bead>/<step>/1)
+// rather than colliding with the step's first execution (.../0).
+func TestLoopBack_IncrementsLoopForUniqueSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	transport := &fakeTransport{deadDead: false}
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+	})
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	if _, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-loop", BeadTitle: "loop", Agent: core.AgentClaude,
+		Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits, Chain: &chain,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if err := o.Advance("mp-loop"); err != nil { // → step 1
+		t.Fatalf("Advance: %v", err)
+	}
+	// Wait for the advance to FULLY settle: StepIdx=1 AND a fresh session set by
+	// doLaunch (Session is set atomically with clearing pendingAdvance, so a
+	// non-empty Session means the transition is complete and LoopBack won't hit
+	// the "transition in progress" guard).
+	waitFor(t, func() bool {
+		r := o.GetRun("mp-loop")
+		return r != nil && r.StepIdx == 1 && r.Session != ""
+	})
+
+	if err := o.LoopBack("mp-loop", 0); err != nil { // back to step 0
+		t.Fatalf("LoopBack: %v", err)
+	}
+	// The looped-back step 0 must re-run at Loop 1 (unique session name).
+	waitFor(t, func() bool {
+		r := o.GetRun("mp-loop")
+		return r != nil && r.StepIdx == 0 && r.Loop == 1 && r.Session != ""
+	})
+}
+
+// waitFor polls cond up to 3s, failing the test if it never becomes true.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not met within 3s")
+}

@@ -34,15 +34,39 @@ func newScheduler(capacity int) *scheduler {
 	}
 }
 
-// admitOrEnqueue either admits the run (returns false) or enqueues it (returns
-// true). Must be called with the orchestrator's write lock held.
-func (s *scheduler) admitOrEnqueue(run *Run) (queued bool) {
+// admitOrEnqueue admits the run (returns queued=false) when a slot is free, or
+// appends it to the FIFO queue (queued=true) and returns its 0-based position.
+// Must be called with the orchestrator's write lock held.
+func (s *scheduler) admitOrEnqueue(run *Run) (queued bool, pos int) {
 	if len(s.active) < s.capacity {
 		s.active[run.BeadID] = struct{}{}
-		return false
+		return false, 0
 	}
+	pos = len(s.waiting) // 0-based index this run will occupy after append
 	s.waiting = append(s.waiting, run)
-	return true
+	return true, pos
+}
+
+// evictAndPopWaiter is the launch-failure cleanup shared by Dispatch's deferred
+// error path and launchAdmittedRun's error path (tri-review 4 DRY). Under the
+// lock it removes `run` from the registry (only if it is still the current entry
+// for its bead — a later dispatch may have replaced it), pops the next FIFO
+// waiter via onRunEnd, and flips that waiter to StepActive. Returns the waiter to
+// launch (nil if the queue was empty), which the caller MUST `go
+// launchAdmittedRun` outside the lock — otherwise the waiter's capacity slot leaks.
+func (o *Orchestrator) evictAndPopWaiter(run *Run) *Run {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	cur, ok := o.runs[run.BeadID]
+	if !ok || cur != run {
+		return nil
+	}
+	delete(o.runs, run.BeadID)
+	next := o.sched.onRunEnd(run.BeadID)
+	if next != nil {
+		next.State = core.StepActive
+	}
+	return next
 }
 
 // onRunEnd removes the finished bead from the active set and pops the next

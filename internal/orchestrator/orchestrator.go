@@ -658,7 +658,9 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		StartedAt:      time.Now(),
 		Chain:          resolvedChain,
 	}
-	queued := o.sched.admitOrEnqueue(reserved)
+	// admitOrEnqueue returns the 0-based FIFO position when queued, so Dispatch
+	// need not reach into scheduler internals (tri-review 4).
+	queued, waitingPos := o.sched.admitOrEnqueue(reserved)
 	if !queued {
 		// Admitted: flip state to active now.
 		reserved.State = core.StepActive
@@ -667,12 +669,6 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 	// Capture StepIdx/Loop under the lock to pass to doLaunch (a concurrent
 	// Advance could write them once this run is active — tri-review 2 HIGH).
 	launchStepIdx, launchLoop := reserved.StepIdx, reserved.Loop
-
-	// Capture the waiting position for the queued event (0-based FIFO index).
-	var waitingPos int
-	if queued {
-		waitingPos = len(o.sched.waiting) - 1 // this run is last in the queue
-	}
 	o.mu.Unlock()
 
 	// If queued, emit dispatch.queued WS event and return immediately.
@@ -708,18 +704,8 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		// waiter (promoting it to active). We MUST launch that waiter, else it is
 		// stranded in o.runs as a phantom StepPending run and its capacity slot
 		// leaks forever (tri-review 2 CRIT — sibling of the launchAdmittedRun
-		// error path). Capture and launch outside the lock.
-		o.mu.Lock()
-		var nextRun *Run
-		if cur, ok := o.runs[req.BeadID]; ok && cur == reserved {
-			delete(o.runs, req.BeadID)
-			nextRun = o.sched.onRunEnd(req.BeadID)
-			if nextRun != nil {
-				nextRun.State = core.StepActive
-			}
-		}
-		o.mu.Unlock()
-		if nextRun != nil {
+		// error path). evictAndPopWaiter handles the removal + waiter pop.
+		if nextRun := o.evictAndPopWaiter(reserved); nextRun != nil {
 			go o.launchAdmittedRun(nextRun)
 		}
 	}()
@@ -949,18 +935,8 @@ func (o *Orchestrator) launchAdmittedRun(run *Run) {
 		// pops the next FIFO waiter and promotes it to active — we MUST launch it,
 		// otherwise it is stranded in o.runs as a phantom StepPending run and the
 		// capacity slot is permanently consumed (tri-review #2). Mirror the
-		// admit-and-launch pattern used by relaunchNextStep.
-		o.mu.Lock()
-		var nextRun *Run
-		if cur, ok := o.runs[run.BeadID]; ok && cur == run {
-			delete(o.runs, run.BeadID)
-			nextRun = o.sched.onRunEnd(run.BeadID)
-			if nextRun != nil {
-				nextRun.State = core.StepActive
-			}
-		}
-		o.mu.Unlock()
-		if nextRun != nil {
+		// admit-and-launch pattern shared with Dispatch's error path.
+		if nextRun := o.evictAndPopWaiter(run); nextRun != nil {
 			go o.launchAdmittedRun(nextRun)
 		}
 	}

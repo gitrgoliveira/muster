@@ -69,8 +69,10 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	}
 
 	// Security: the step/loop indices are parsed from the user-controllable
-	// session name. Negative values and non-zero Loop are treated as malformed
-	// (not real muster runs) and are killed to prevent DoS wedging.
+	// session name. Only genuinely malformed values — a NEGATIVE StepIdx or Loop,
+	// or an absurdly large StepIdx (see the upper bound below) — are treated as
+	// not-real-muster-runs and killed to prevent DoS wedging. Non-negative
+	// StepIdx/Loop are re-registered (details below).
 	//
 	// M4 T053a relaxed guard: a non-negative StepIdx (≥0) is now accepted and
 	// re-registered so that a live multi-step build/review agent (StepIdx 1, 2,
@@ -81,10 +83,10 @@ func (o *Orchestrator) recoverSession(sess tmux.Session) {
 	// consequence of chain-unknown-at-recovery (see research.md R9).
 	//
 	// Loop is treated symmetrically with StepIdx: a non-negative Loop is a valid
-	// (if currently rare — muster resets Loop to 0 on loop-back) session-name
-	// component and is re-registered so a live agent survives a restart, rather
-	// than being killed. Only genuinely malformed *negative* indices are killed
-	// (they cannot be produced by a real muster session name).
+	// session-name component (muster increments Loop on each loop-back, so Loop>0
+	// is a re-executed step) and is re-registered so a live agent survives a
+	// restart, rather than being killed. Only genuinely malformed *negative*
+	// indices are killed (they cannot be produced by a real muster session name).
 	//
 	// Upper sanity bound: StepIdx > 4096 is rejected as malformed (no real chain
 	// has more than a few thousand steps; this prevents absurdly large values from
