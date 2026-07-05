@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/orchestrator"
 	"github.com/gitrgoliveira/muster/internal/tmux"
+	"github.com/gitrgoliveira/muster/internal/ws"
 )
 
 // ── T041: chain resolution ────────────────────────────────────────────────────
@@ -723,6 +725,169 @@ func TestLoopBack_IncrementsLoopForUniqueSession(t *testing.T) {
 		r := o.GetRun("mp-loop")
 		return r != nil && r.StepIdx == 0 && r.Loop == 1 && r.Session != ""
 	})
+}
+
+// ── Tri-review 6 Fix 1: launching-sentinel blocks Advance/LoopBack during launch window ──
+
+// TestAdvance_DuringDispatchLaunchWindow is an end-to-end test for Fix 1
+// (tri-review 6): Spawn is blocked on a channel, simulating the doLaunch window
+// between admitOrEnqueue (which sets the launching sentinel) and Spawn returning
+// (after which doLaunch clears it). Advance during that window must be rejected;
+// after Spawn unblocks the run launches at step 0 (the advance was NOT applied).
+func TestAdvance_DuringDispatchLaunchWindow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	// spawnBlock gates Spawn so we can call Advance while the launch is mid-flight.
+	spawnBlock := make(chan struct{}, 1)
+	transport := &fakeTransport{deadDead: false}
+	transport.spawnHook = func() { <-spawnBlock }
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+	})
+	t.Cleanup(func() {
+		select {
+		case spawnBlock <- struct{}{}: // unblock if still waiting
+		default:
+		}
+		transport.forceDead.Store(true)
+	})
+
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+
+	// Dispatch in a goroutine — it will block inside Spawn.
+	dispatchDone := make(chan error, 1)
+	go func() {
+		_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+			BeadID: "mp-lwtest", BeadTitle: "lw", Agent: core.AgentClaude,
+			Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits, Chain: &chain,
+		})
+		dispatchDone <- err
+	}()
+
+	// Wait until the run is registered as StepActive (sentinel set, cancel nil).
+	waitFor(t, func() bool {
+		r := o.GetRun("mp-lwtest")
+		return r != nil && r.State == core.StepActive
+	})
+
+	// Advance while Spawn is still blocked — must be rejected by the sentinel.
+	advErr := o.Advance("mp-lwtest")
+	if !errors.Is(advErr, orchestrator.ErrStepOutOfRange) {
+		t.Errorf("Advance during launch window: want ErrStepOutOfRange, got %v", advErr)
+	}
+	if advErr != nil && !strings.Contains(advErr.Error(), "transition in progress") {
+		t.Errorf("error message want 'transition in progress', got %q", advErr.Error())
+	}
+
+	// Unblock Spawn and wait for Dispatch to complete.
+	spawnBlock <- struct{}{}
+	if err := <-dispatchDone; err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// The run must have launched at step 0 — Advance was rejected.
+	r := o.GetRun("mp-lwtest")
+	if r == nil {
+		t.Fatal("GetRun returned nil after dispatch")
+	}
+	if r.StepIdx != 0 {
+		t.Errorf("StepIdx want 0 (advance rejected during window), got %d", r.StepIdx)
+	}
+}
+
+// ── Fix 2: relaunchNextStep error path emits run.failed ─────────────────────
+
+// TestRelaunchNextStep_EmitsRunFailed verifies that when an Advance triggers
+// relaunchNextStep and the subsequent doLaunch fails (simulated by setting
+// spawnErr after step 0 launches), a run.failed frame is published (Fix 2,
+// Copilot round 5). Without Fix 2, the failure path was silent — the client
+// saw step.advanced but never learned the relaunch failed.
+func TestRelaunchNextStep_EmitsRunFailed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	var pubMu sync.Mutex
+	var frames []ws.Frame
+	publish := func(f ws.Frame) {
+		pubMu.Lock()
+		frames = append(frames, f)
+		pubMu.Unlock()
+	}
+
+	transport := &fakeTransport{deadDead: false}
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+		Publish:         publish,
+	})
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	if _, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-rfail", BeadTitle: "rfail", Agent: core.AgentClaude,
+		Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits, Chain: &chain,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Arm the failure for the NEXT spawn (step 1 relaunch).
+	transport.spawnErr = errors.New("simulated step-1 spawn failure")
+
+	// Advance triggers relaunchNextStep; step 1's doLaunch will fail.
+	if err := o.Advance("mp-rfail"); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+
+	// Wait for run.failed frame.
+	var runFailed *ws.Frame
+	waitFor(t, func() bool {
+		pubMu.Lock()
+		defer pubMu.Unlock()
+		for i := range frames {
+			if frames[i].Type == ws.EventRunFailed && frames[i].BeadID == "mp-rfail" {
+				cp := frames[i]
+				runFailed = &cp
+				return true
+			}
+		}
+		return false
+	})
+
+	if runFailed == nil {
+		t.Fatal("run.failed not emitted after relaunchNextStep failure")
+	}
+	if runFailed.Reason == "" {
+		t.Error("run.failed frame must carry a non-empty Reason (err.Error())")
+	}
+	// The run must be StepFailed.
+	if run := o.GetRun("mp-rfail"); run != nil && run.State != core.StepFailed {
+		t.Errorf("run state want StepFailed after relaunch failure, got %q", run.State)
+	}
 }
 
 // waitFor polls cond up to 3s, failing the test if it never becomes true.

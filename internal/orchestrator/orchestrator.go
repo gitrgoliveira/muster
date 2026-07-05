@@ -685,6 +685,9 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 	if !queued {
 		// Admitted: flip state to active now.
 		reserved.State = core.StepActive
+		// launching sentinel: blocks Advance/LoopBack until doLaunch arms run.cancel,
+		// closing the nil-cancel window between here and doLaunch:861 (tri-review 6).
+		reserved.pendingAdvance = true
 	}
 	o.registerRun(reserved)
 	// Capture StepIdx/Loop under the lock to pass to doLaunch (a concurrent
@@ -856,8 +859,10 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	// Clear the transition flag here — NOT in relaunchNextStep — so a step
 	// transition reads as in-flight (pendingAdvance true) for the entire window
 	// from Advance until the new session's cancel exists, closing the nil-cancel
-	// race (tri-review 3 HIGH #1). No-op for the initial dispatch / admitted
-	// paths where pendingAdvance is already false.
+	// race (tri-review 3 HIGH #1). Also clears the launching sentinel set by ALL
+	// admit paths (Dispatch, finishRun, evictAndPopWaiter, setCapacity,
+	// relaunchNextStep), closing the nil-cancel window for Advance/LoopBack
+	// between the State=StepActive flip and this point (tri-review 6).
 	run.pendingAdvance = false
 	o.mu.Unlock()
 
@@ -952,6 +957,16 @@ func (o *Orchestrator) launchAdmittedRun(run *Run) {
 	if err != nil {
 		slog.Error("launchAdmittedRun: failed to launch admitted queued run",
 			"bead", run.BeadID, "err", err)
+		// Emit run.failed so subscribers know this run will not produce output.
+		// dispatch.admitted was emitted before doLaunch; this closes the loop.
+		if o.publish != nil {
+			o.publish(ws.Frame{
+				Type:    ws.EventRunFailed,
+				BeadID:  run.BeadID,
+				StepIdx: intPtr(stepIdx),
+				Reason:  err.Error(),
+			})
+		}
 		// Remove from the registry and scheduler active set on failure. onRunEnd
 		// pops the next FIFO waiter and promotes it to active — we MUST launch it,
 		// otherwise it is stranded in o.runs as a phantom StepPending run and the
@@ -1106,6 +1121,9 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		nextRun = o.sched.onRunEnd(run.BeadID)
 		if nextRun != nil {
 			nextRun.State = core.StepActive
+			// launching sentinel: blocks Advance/LoopBack until doLaunch arms
+			// run.cancel, closing the nil-cancel window (tri-review 6).
+			nextRun.pendingAdvance = true
 		}
 	}
 	o.mu.Unlock()

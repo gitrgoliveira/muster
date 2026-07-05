@@ -65,6 +65,9 @@ func (o *Orchestrator) evictAndPopWaiter(run *Run) *Run {
 	next := o.sched.onRunEnd(run.BeadID)
 	if next != nil {
 		next.State = core.StepActive
+		// launching sentinel: blocks Advance/LoopBack until doLaunch arms
+		// run.cancel, closing the nil-cancel window (tri-review 6).
+		next.pendingAdvance = true
 	}
 	return next
 }
@@ -119,6 +122,9 @@ func (s *scheduler) setCapacity(mu *sync.RWMutex, n int) ([]*Run, error) {
 		s.waiting = s.waiting[1:]
 		s.active[next.BeadID] = struct{}{}
 		next.State = core.StepActive
+		// launching sentinel: blocks Advance/LoopBack until doLaunch arms
+		// run.cancel, closing the nil-cancel window (tri-review 6).
+		next.pendingAdvance = true
 		admitted = append(admitted, next)
 	}
 	return admitted, nil

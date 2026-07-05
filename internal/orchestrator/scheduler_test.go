@@ -16,6 +16,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -423,6 +424,103 @@ func TestScheduler_T022_WS_Events(t *testing.T) {
 
 	if admittedCount.Load() == 0 {
 		t.Error("dispatch.admitted event not emitted for mp-evt2 after first run ended")
+	}
+}
+
+// ── Fix 2 (Copilot round 5): run.failed emitted on async launch failure paths ──
+
+// TestLaunchAdmittedRun_EmitsRunFailed verifies that when a queued run is
+// admitted (dispatch.admitted emitted) but doLaunch subsequently fails (simulated
+// via the spawnHook causing an error after admission), a run.failed frame is
+// published with the correct BeadID and a non-empty Reason (err.Error()). Without
+// Fix 2, the async failure path emitted nothing — a client that saw
+// dispatch.admitted never learned the launch failed.
+func TestLaunchAdmittedRun_EmitsRunFailed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	var mu sync.Mutex
+	var frames []ws.Frame
+	publish := func(f ws.Frame) {
+		mu.Lock()
+		frames = append(frames, f)
+		mu.Unlock()
+	}
+
+	// The transport succeeds for the first (active) run, then fails for the
+	// second (admitted from queue): spawnHook arms spawnErr once the first
+	// Spawn has happened, so the admitted waiter's doLaunch hits the error
+	// path inside launchAdmittedRun.
+	transport := &fakeTransport{deadDead: false}
+	var spawnMu sync.Mutex
+	spawnN := 0
+	transport.spawnHook = func() {
+		spawnMu.Lock()
+		spawnN++
+		if spawnN >= 2 {
+			transport.spawnErr = errors.New("simulated spawn failure for admitted run")
+		}
+		spawnMu.Unlock()
+	}
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+		MaxConcurrent:   1,
+		Publish:         publish,
+	})
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	// First dispatch fills the slot (succeeds).
+	if _, err := o.Dispatch(context.Background(), dispatchReq("mp-ok1")); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	// Second dispatch queues (will fail when admitted).
+	res, err := o.Dispatch(context.Background(), dispatchReq("mp-fail1"))
+	if err != nil || !res.Queued {
+		t.Fatalf("second dispatch should be queued: err=%v res=%+v", err, res)
+	}
+
+	// Drain the first run so the second is admitted and its doLaunch runs.
+	transport.forceDead.Store(true)
+
+	// Wait for run.failed frame for mp-fail1.
+	var runFailed *ws.Frame
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		for i := range frames {
+			if frames[i].Type == ws.EventRunFailed && frames[i].BeadID == "mp-fail1" {
+				cp := frames[i]
+				runFailed = &cp
+			}
+		}
+		mu.Unlock()
+		if runFailed != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if runFailed == nil {
+		mu.Lock()
+		allTypes := make([]string, len(frames))
+		for i, f := range frames {
+			allTypes[i] = string(f.Type)
+		}
+		mu.Unlock()
+		t.Fatalf("run.failed not emitted for mp-fail1 after launchAdmittedRun failure; got frames: %v", allTypes)
+	}
+	if runFailed.Reason == "" {
+		t.Error("run.failed frame must carry a non-empty Reason (err.Error())")
 	}
 }
 

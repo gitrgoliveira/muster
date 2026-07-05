@@ -28,6 +28,9 @@ import (
 //
 // This is intentionally a pure file-read — no jj invocation — so it works even
 // when jj is not installed (the workspace directory was created by one that was).
+//
+// It always returns a filepath.Clean-ed path (Dir of a Clean path), and absolute
+// whenever wtPath is absolute.
 func jjSrcRepoDir(wtPath string) (string, error) {
 	repoFile := filepath.Join(wtPath, ".jj", "repo")
 	raw, err := os.ReadFile(repoFile)
@@ -44,6 +47,23 @@ func jjSrcRepoDir(wtPath string) (string, error) {
 	// filepath.Dir twice: .../srcrepo/.jj/repo → .../srcrepo/.jj → .../srcrepo
 	srcRepo := filepath.Dir(filepath.Dir(sharedJJRepoDir))
 	return srcRepo, nil
+}
+
+// checkJJWorkspaceDir verifies the workspace directory exists and is a
+// directory, returning ErrWorktreeNotFound (wrapped with the bead ID) for
+// absent or non-directory paths. jj sibling of git.go's checkWorktreeDir.
+func checkJJWorkspaceDir(wtPath, beadID string) error {
+	info, err := os.Lstat(wtPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
+		}
+		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
+	}
+	return nil
 }
 
 // jjBackend implements Backend using the jj VCS. The write-side (Finalize,
@@ -168,9 +188,12 @@ func (j *jjBackend) resolveSrcRepo(beadID, wtPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Validate the resolved path: must be absolute and free of traversal components.
+	// Validate the resolved path: must be absolute. A non-absolute result would
+	// indicate a bug in jjSrcRepoDir (which always returns a Clean, absolute path
+	// when wtPath is absolute). The real defences are the not-under-worktreesDir
+	// check and the allow-list below.
 	cleaned := filepath.Clean(srcRepo)
-	if !filepath.IsAbs(cleaned) || cleaned != srcRepo {
+	if !filepath.IsAbs(cleaned) {
 		return "", fmt.Errorf("wt jj: resolved srcRepo %q failed validation (possible path traversal)", srcRepo)
 	}
 	// Must not be under the worktrees directory (a workspace is not a source repo).
@@ -225,12 +248,9 @@ func (j *jjBackend) Diff(ctx context.Context, beadID, path string) (io.ReadClose
 func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) (bool, error) {
 	wtPath := filepath.Join(j.worktreesDir, beadID)
 
-	// Verify workspace exists.
-	if _, err := os.Lstat(wtPath); err != nil {
-		if os.IsNotExist(err) {
-			return false, fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
-		}
-		return false, fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	// Verify workspace exists and is a directory.
+	if err := checkJJWorkspaceDir(wtPath, beadID); err != nil {
+		return false, err
 	}
 
 	// No-op detection: jj diff --summary empty → nothing to commit.
@@ -291,12 +311,9 @@ func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) (bool,
 func (j *jjBackend) Push(ctx context.Context, beadID, remote string) error {
 	wtPath := filepath.Join(j.worktreesDir, beadID)
 
-	// Verify workspace exists.
-	if _, err := os.Lstat(wtPath); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
-		}
-		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	// Verify workspace exists and is a directory.
+	if err := checkJJWorkspaceDir(wtPath, beadID); err != nil {
+		return err
 	}
 
 	branch := BranchName(beadID)
@@ -363,12 +380,9 @@ func (j *jjBackend) Push(ctx context.Context, beadID, remote string) error {
 func (j *jjBackend) Remove(ctx context.Context, beadID string) error {
 	wtPath := filepath.Join(j.worktreesDir, beadID)
 
-	// Verify workspace exists.
-	if _, err := os.Lstat(wtPath); err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
-		}
-		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+	// Verify workspace exists and is a directory.
+	if err := checkJJWorkspaceDir(wtPath, beadID); err != nil {
+		return err
 	}
 
 	// Resolve srcrepo via cache (preferred) or .jj/repo fallback (see FIX 4).

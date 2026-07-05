@@ -921,6 +921,13 @@ func (svc *BeadService) FinalizeWorktree(ctx context.Context, id, message string
 	if svc.wtAccessor == nil {
 		return false, &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
 	}
+	// Reject NUL bytes in the commit message: git commit -m treats NUL as a
+	// message terminator, producing a silently truncated commit. Do NOT use
+	// validateField here — that rejects newlines, and multiline commit messages
+	// are legitimate.
+	if strings.ContainsRune(message, 0) {
+		return false, &ServiceError{Code: CodeInvalidRequest, Message: "message must not contain NUL bytes"}
+	}
 	// Verify the bead exists.
 	if _, err := svc.GetBead(ctx, id); err != nil {
 		return false, err
@@ -963,7 +970,10 @@ func (svc *BeadService) PushWorktree(ctx context.Context, id, remote string) err
 	if _, err := svc.GetBead(ctx, id); err != nil {
 		return err
 	}
-	if err := svc.wtAccessor.Push(ctx, id, remote); err != nil {
+	// Pass resolvedRemote (not raw remote) so the backend, WS frame, and HTTP
+	// response all use the same value. The backend's own ResolveRemote is an
+	// idempotent revalidation (defense-in-depth for direct backend callers).
+	if err := svc.wtAccessor.Push(ctx, id, resolvedRemote); err != nil {
 		return mapWorktreeReadError(err, id, "push")
 	}
 	if svc.publish != nil {

@@ -59,6 +59,11 @@ type fakeTransport struct {
 	spawnCount atomic.Int32
 	spawnDelay time.Duration // optional: widen the dispatch race window
 
+	// spawnHook is called inside Spawn before returning, while the launch goroutine
+	// is still inside doLaunch. Used by Fix-1 (tri-review 6) tests to block Spawn
+	// so Advance can be called during the launch window (nil-cancel race).
+	spawnHook func()
+
 	// forceDead is a test hook: when set, DeadStatus reports the pane as dead
 	// regardless of deadDead. Tests that recover a *live* session (deadDead
 	// false) use t.Cleanup to flip this so the background watchRun goroutine
@@ -101,6 +106,9 @@ func (f *fakeTransport) Spawn(name, cwd string, env, argv []string) (*tmux.Sessi
 	f.spawnCount.Add(1)
 	if f.spawnDelay > 0 {
 		time.Sleep(f.spawnDelay)
+	}
+	if f.spawnHook != nil {
+		f.spawnHook()
 	}
 	if f.spawnErr != nil {
 		return nil, f.spawnErr

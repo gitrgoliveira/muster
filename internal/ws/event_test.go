@@ -38,6 +38,7 @@ func TestEventTypeConstants_NoDuplicates(t *testing.T) {
 		{"EventWorktreePushed", ws.EventWorktreePushed},
 		{"EventWorktreeRemoved", ws.EventWorktreeRemoved},
 		{"EventRunQuota", ws.EventRunQuota},
+		{"EventRunFailed", ws.EventRunFailed},
 	}
 
 	seen := make(map[ws.EventType]string, len(all))
@@ -65,6 +66,7 @@ func TestEventTypeConstants_Values(t *testing.T) {
 		{"worktree.pushed", ws.EventWorktreePushed, "worktree.pushed"},
 		{"worktree.removed", ws.EventWorktreeRemoved, "worktree.removed"},
 		{"run.quota", ws.EventRunQuota, "run.quota"},
+		{"run.failed", ws.EventRunFailed, "run.failed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

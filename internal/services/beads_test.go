@@ -860,6 +860,46 @@ func TestT037_FinalizeWorktree_NotFound(t *testing.T) {
 	}
 }
 
+// ── FIX D: NUL byte in commit message → CodeInvalidRequest (not CodeInternal) ──
+
+// TestT037_FinalizeWorktree_NULMessage verifies that a message containing a NUL
+// byte returns CodeInvalidRequest before the accessor is called.
+func TestT037_FinalizeWorktree_NULMessage(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "bad\x00msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeInvalidRequest {
+		t.Errorf("code want %q got %q", CodeInvalidRequest, se.Code)
+	}
+	// The accessor must NOT have been called.
+	if wa.finalizeBeadID != "" {
+		t.Errorf("accessor Finalize was called despite NUL in message (beadID=%q)", wa.finalizeBeadID)
+	}
+}
+
+// TestT037_FinalizeWorktree_MultilineMessage verifies that a multiline commit
+// message (legitimate) reaches the accessor without being rejected.
+func TestT037_FinalizeWorktree_MultilineMessage(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	msg := "subject line\n\nbody paragraph"
+	if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", msg); err != nil {
+		t.Fatalf("FinalizeWorktree(multiline): unexpected error: %v", err)
+	}
+	if wa.finalizeMsg != msg {
+		t.Errorf("accessor received message %q, want %q", wa.finalizeMsg, msg)
+	}
+}
+
 // TestT037_PushWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
 func TestT037_PushWorktree_NoAccessor(t *testing.T) {
 	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)

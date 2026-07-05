@@ -1126,3 +1126,73 @@ func TestJJBackend_AllowList_NilAllowsAll(t *testing.T) {
 		t.Errorf("Remove with nil allow-list should not return allow-list error, got: %v", err)
 	}
 }
+
+// ── FIX A: checkJJWorkspaceDir — file-not-dir guard ─────────────────────────
+
+// TestJJBackend_Finalize_FileNotDir verifies that Finalize returns
+// ErrWorktreeNotFound when the workspace path exists but is a regular file,
+// not a directory. This tests the IsDir() check added by checkJJWorkspaceDir.
+func TestJJBackend_Finalize_FileNotDir(t *testing.T) {
+	worktreesDir := t.TempDir()
+	beadID := "jj-finalize-filenotdir"
+
+	// Plant a plain file at the workspace path instead of a directory.
+	if err := os.WriteFile(filepath.Join(worktreesDir, beadID), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	b := wt.NewJJBackend(worktreesDir)
+	ctx := context.Background()
+
+	_, err := b.Finalize(ctx, beadID, "msg")
+	if err == nil {
+		t.Fatal("Finalize(file instead of dir): expected error, got nil")
+	}
+	if !errors.Is(err, wt.ErrWorktreeNotFound) {
+		t.Errorf("Finalize(file instead of dir): want ErrWorktreeNotFound, got %v", err)
+	}
+}
+
+// TestJJBackend_Push_FileNotDir verifies that Push returns ErrWorktreeNotFound
+// when the workspace path exists but is a regular file, not a directory.
+func TestJJBackend_Push_FileNotDir(t *testing.T) {
+	worktreesDir := t.TempDir()
+	beadID := "jj-push-filenotdir"
+
+	if err := os.WriteFile(filepath.Join(worktreesDir, beadID), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	b := wt.NewJJBackend(worktreesDir)
+	ctx := context.Background()
+
+	err := b.Push(ctx, beadID, "")
+	if err == nil {
+		t.Fatal("Push(file instead of dir): expected error, got nil")
+	}
+	if !errors.Is(err, wt.ErrWorktreeNotFound) {
+		t.Errorf("Push(file instead of dir): want ErrWorktreeNotFound, got %v", err)
+	}
+}
+
+// TestJJBackend_Remove_FileNotDir verifies that Remove returns ErrWorktreeNotFound
+// when the workspace path exists but is a regular file, not a directory.
+func TestJJBackend_Remove_FileNotDir(t *testing.T) {
+	worktreesDir := t.TempDir()
+	beadID := "jj-remove-filenotdir"
+
+	if err := os.WriteFile(filepath.Join(worktreesDir, beadID), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	b := wt.NewJJBackend(worktreesDir)
+	ctx := context.Background()
+
+	err := b.Remove(ctx, beadID)
+	if err == nil {
+		t.Fatal("Remove(file instead of dir): expected error, got nil")
+	}
+	if !errors.Is(err, wt.ErrWorktreeNotFound) {
+		t.Errorf("Remove(file instead of dir): want ErrWorktreeNotFound, got %v", err)
+	}
+}

@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/core"
@@ -177,6 +179,70 @@ func TestResolvePermMode_Plan(t *testing.T) {
 	// Plan-mode dispatch is unaffected — plan mode ignores the default entirely.
 	if _, err := o.resolvePermMode(core.ModePlan, ""); err != nil {
 		t.Errorf("plan mode with plan default should still resolve: %v", err)
+	}
+}
+
+// ── Fix 1 (tri-review 6): launching sentinel — Advance/LoopBack blocked in launch window ──
+
+// TestAdvance_LaunchingSentinel verifies that Advance is rejected when a run is
+// in the launch window: State=StepActive, pendingAdvance=true (the launching
+// sentinel set by admitOrEnqueue), cancel=nil. Without Fix 1, the nil cancel
+// would be silently no-oped and Advance would return nil, dropping the advance.
+func TestAdvance_LaunchingSentinel(t *testing.T) {
+	o := New(Config{RepoMap: RepoMap{"mp": "/tmp/repo"}})
+
+	chain := StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	// Simulate the mid-launch window: StepActive + pendingAdvance=true + cancel=nil.
+	// This is the state set by admitOrEnqueue (Fix 1 target, tri-review 6).
+	run := &Run{
+		BeadID:         "mp-sentinel",
+		State:          core.StepActive,
+		pendingAdvance: true, // launching sentinel: blocks Advance/LoopBack until doLaunch arms cancel
+		Chain:          &chain,
+		// cancel is nil — doLaunch has not run yet
+	}
+	o.mu.Lock()
+	o.registerRun(run)
+	o.mu.Unlock()
+
+	err := o.Advance("mp-sentinel")
+	if !errors.Is(err, ErrStepOutOfRange) {
+		t.Errorf("Advance during launch window: want ErrStepOutOfRange, got %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "transition in progress") {
+		t.Errorf("error message want 'transition in progress', got %q", err.Error())
+	}
+}
+
+// TestLoopBack_LaunchingSentinel is the LoopBack twin of TestAdvance_LaunchingSentinel.
+func TestLoopBack_LaunchingSentinel(t *testing.T) {
+	o := New(Config{RepoMap: RepoMap{"mp": "/tmp/repo"}})
+
+	chain := StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	// Run at step 1 with the launching sentinel set (tri-review 6).
+	run := &Run{
+		BeadID:         "mp-lbsentinel",
+		State:          core.StepActive,
+		StepIdx:        1, // at step 1 so LoopBack(0) would otherwise be valid
+		pendingAdvance: true,
+		Chain:          &chain,
+	}
+	o.mu.Lock()
+	o.registerRun(run)
+	o.mu.Unlock()
+
+	err := o.LoopBack("mp-lbsentinel", 0)
+	if !errors.Is(err, ErrStepOutOfRange) {
+		t.Errorf("LoopBack during launch window: want ErrStepOutOfRange, got %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "transition in progress") {
+		t.Errorf("error message want 'transition in progress', got %q", err.Error())
 	}
 }
 

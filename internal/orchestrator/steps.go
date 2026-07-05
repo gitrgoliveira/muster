@@ -70,9 +70,13 @@ func (o *Orchestrator) Advance(beadID string) error {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: bead %q is already at the last step (%d)", ErrStepOutOfRange, beadID, cur)
 	}
-	// Re-entrancy guard: a transition is already in flight (finishRun has not
-	// yet run relaunchNextStep). A second Advance would advance StepIdx again
-	// before the first relaunch, skipping a step (tri-review #5).
+	// Re-entrancy guard: covers two windows where concurrent Advance is unsafe:
+	//   1. A prior transition is in flight (finishRun has not yet run
+	//      relaunchNextStep). A second Advance would advance StepIdx again
+	//      before the first relaunch, skipping a step (tri-review #5).
+	//   2. The run was just admitted but doLaunch has not yet armed run.cancel;
+	//      calling cancel() would be a silent no-op (tri-review 6).
+	// Both windows set pendingAdvance=true (admission sites for the latter).
 	if run.pendingAdvance {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: bead %q already has a step transition in progress", ErrStepOutOfRange, beadID)
@@ -152,7 +156,7 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 	// No separate "toIdx >= len(chain)" check needed: the invariant StepIdx <
 	// len(chain) (upheld by Advance) plus toIdx < StepIdx implies toIdx is in
 	// range (tri-review #8, dead code removed).
-	// Re-entrancy guard (tri-review #5), same as Advance.
+	// Re-entrancy guard: same two-window coverage as Advance (tri-review #5, #6).
 	if run.pendingAdvance {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: bead %q already has a step transition in progress", ErrStepOutOfRange, beadID)
@@ -260,8 +264,21 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 		nextRun := o.sched.onRunEnd(run.BeadID)
 		if nextRun != nil {
 			nextRun.State = core.StepActive
+			// launching sentinel: blocks Advance/LoopBack until doLaunch arms
+			// run.cancel, closing the nil-cancel window (tri-review 6).
+			nextRun.pendingAdvance = true
 		}
 		o.mu.Unlock()
+		// Emit run.failed so subscribers know this step transition did not complete.
+		// step.advanced/step.loopedback was emitted before doLaunch; this closes the loop.
+		if o.publish != nil {
+			o.publish(ws.Frame{
+				Type:    ws.EventRunFailed,
+				BeadID:  run.BeadID,
+				StepIdx: intPtr(nextIdx),
+				Reason:  err.Error(),
+			})
+		}
 		if nextRun != nil {
 			go o.launchAdmittedRun(nextRun)
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/ws"
+	"github.com/gitrgoliveira/muster/internal/wt"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -765,4 +767,78 @@ func TestLoopBack_400_OutOfRange(t *testing.T) {
 	resp := doPost(t, srv, "/beads/mp-aaa/steps/loopback", map[string]interface{}{"toIdx": 5})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Equal(t, services.CodeStepOutOfRange, errorCode(t, resp))
+}
+
+// ── FIX D: NUL byte in finalize message → 400 INVALID_REQUEST ───────────────
+
+// newTestServerWithWorktreeAccessor creates a test server wired with a WorktreeAccessor.
+// Routes: POST /beads/{id}/worktree/finalize, POST /beads/{id}/worktree/push,
+// DELETE /beads/{id}/worktree.
+func newTestServerWithWorktreeAccessor(t *testing.T, wa services.WorktreeAccessor) *httptest.Server {
+	t.Helper()
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	pub := services.Publisher(func(f ws.Frame) {})
+	svc := services.NewBeadService(backend, nil, pub).WithWorktreeAccessor(wa)
+	h := beads.NewHandlers(svc)
+	r := chi.NewRouter()
+	r.Post("/beads/{id}/worktree/finalize", h.FinalizeWorktree)
+	r.Post("/beads/{id}/worktree/push", h.PushWorktree)
+	r.Delete("/beads/{id}/worktree", h.RemoveWorktree)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fakeHandlerWorktreeAccessor is a full WorktreeAccessor implementation for
+// handler tests. Finalize returns (true, nil) by default.
+type fakeHandlerWorktreeAccessor struct {
+	finalizeErr error
+}
+
+func (f *fakeHandlerWorktreeAccessor) WorktreeStatus(_ context.Context, _ string) (wt.WorktreeStatus, error) {
+	return wt.WorktreeStatus{Exists: true, Clean: true}, nil
+}
+func (f *fakeHandlerWorktreeAccessor) DiffSummary(_ context.Context, _ string) ([]wt.FileChange, error) {
+	return nil, nil
+}
+func (f *fakeHandlerWorktreeAccessor) Diff(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (f *fakeHandlerWorktreeAccessor) DefaultVCS() string { return "git" }
+func (f *fakeHandlerWorktreeAccessor) BeadRunState(_ string) core.StepStatus {
+	return core.StepDone
+}
+func (f *fakeHandlerWorktreeAccessor) Finalize(_ context.Context, _, _ string) (bool, error) {
+	if f.finalizeErr != nil {
+		return false, f.finalizeErr
+	}
+	return true, nil
+}
+func (f *fakeHandlerWorktreeAccessor) Push(_ context.Context, _, _ string) error { return nil }
+func (f *fakeHandlerWorktreeAccessor) Remove(_ context.Context, _ string) error  { return nil }
+
+var _ services.WorktreeAccessor = (*fakeHandlerWorktreeAccessor)(nil)
+
+// TestFinalizeWorktree_400_NULInMessage verifies that POST /beads/{id}/worktree/finalize
+// with a NUL byte in the message body returns 400 INVALID_REQUEST.
+func TestFinalizeWorktree_400_NULInMessage(t *testing.T) {
+	wa := &fakeHandlerWorktreeAccessor{}
+	srv := newTestServerWithWorktreeAccessor(t, wa)
+
+	// mp-aaa is in SeedIssues.
+	body := map[string]string{"message": "bad\x00msg"}
+	resp := doPost(t, srv, "/beads/mp-aaa/worktree/finalize", body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+// TestFinalizeWorktree_200_MultilineMessage verifies that a multiline commit
+// message succeeds (guards against someone later "hardening" with validateField).
+func TestFinalizeWorktree_200_MultilineMessage(t *testing.T) {
+	wa := &fakeHandlerWorktreeAccessor{}
+	srv := newTestServerWithWorktreeAccessor(t, wa)
+
+	body := map[string]string{"message": "subject line\n\nbody paragraph"}
+	resp := doPost(t, srv, "/beads/mp-aaa/worktree/finalize", body)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }

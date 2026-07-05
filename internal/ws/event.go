@@ -19,14 +19,37 @@ const (
 	EventTmuxClosed EventType = "tmux.session.closed" // session ended
 
 	// M4 additions (additive; M0–M3 events unchanged).
-	EventDispatchQueued    EventType = "dispatch.queued"    // bead enqueued waiting for scheduler capacity
-	EventDispatchAdmitted  EventType = "dispatch.admitted"  // bead admitted from queue and run started
-	EventStepAdvanced      EventType = "step.advanced"      // operator advanced the chain to the next step
-	EventStepLoopedBack    EventType = "step.loopedback"    // operator looped the chain back to a prior step
+	EventDispatchQueued EventType = "dispatch.queued" // bead enqueued waiting for scheduler capacity
+
+	// EventDispatchAdmitted signals that the bead's queued run has been ADMITTED
+	// from the scheduler queue and its async launch is STARTING. It does NOT
+	// guarantee the launch succeeded — a subsequent run.failed event reports any
+	// async launch failure.
+	EventDispatchAdmitted EventType = "dispatch.admitted"
+
+	// EventStepAdvanced signals that the operator's Advance request was ACCEPTED
+	// and the next step's async launch is STARTING. It does NOT guarantee the
+	// relaunch succeeded — a subsequent run.failed event reports any failure.
+	EventStepAdvanced EventType = "step.advanced"
+
+	// EventStepLoopedBack signals that the operator's LoopBack request was ACCEPTED
+	// and the targeted step's async relaunch is STARTING. It does NOT guarantee
+	// the relaunch succeeded — a subsequent run.failed event reports any failure.
+	EventStepLoopedBack EventType = "step.loopedback"
+
 	EventWorktreeFinalized EventType = "worktree.finalized" // agent worktree committed (finalize complete)
 	EventWorktreePushed    EventType = "worktree.pushed"    // agent worktree branch pushed to remote
 	EventWorktreeRemoved   EventType = "worktree.removed"   // agent worktree directory removed
 	EventRunQuota          EventType = "run.quota"          // token/cost quota captured at run end
+
+	// EventRunFailed is emitted when an accepted run fails to LAUNCH asynchronously
+	// (queued-run admission launch failure, or step-transition relaunch failure).
+	// It is distinct from tmux.session.closed, which reports a session that
+	// launched successfully and then exited. Clients that observed the preceding
+	// dispatch.admitted / step.advanced / step.loopedback event (signalling the
+	// transition/admission was ACCEPTED and launch was starting) should use this
+	// event to learn that the launch ultimately failed.
+	EventRunFailed EventType = "run.failed"
 )
 
 // Frame is the server-to-client event envelope. Each event type populates a
@@ -85,6 +108,10 @@ type Frame struct {
 	// M4 US5: run.quota — best-effort token/cost record captured at run end.
 	// Non-nil only on run.quota frames; nil on all other frame types.
 	Quota *QuotaPayload `json:"quota,omitempty"`
+
+	// run.failed — human-readable reason the launch failed (err.Error()).
+	// Non-empty only on run.failed frames; omitted on all other frame types.
+	Reason string `json:"reason,omitempty"`
 }
 
 // QuotaPayload is the run.quota event body.
