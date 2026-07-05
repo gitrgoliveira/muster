@@ -16,6 +16,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -422,5 +423,55 @@ func TestScheduler_T022_WS_Events(t *testing.T) {
 
 	if admittedCount.Load() == 0 {
 		t.Error("dispatch.admitted event not emitted for mp-evt2 after first run ended")
+	}
+}
+
+// TestSetCapacity_AdmittedRunsAreActive is the regression for Copilot #361:
+// when SetCapacity admits a queued waiter, its State must flip to StepActive
+// under the lock (before the async launch), so a concurrent idempotent Dispatch
+// joins it as active rather than wrongly reporting Queued:true.
+func TestSetCapacity_AdmittedRunsAreActive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	transport := &fakeTransport{deadDead: false}
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+		MaxConcurrent:   1,
+	})
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	// A fills the single slot; B queues (StepPending).
+	if _, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-a", Agent: core.AgentClaude, Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits,
+	}); err != nil {
+		t.Fatalf("dispatch A: %v", err)
+	}
+	res, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-b", Agent: core.AgentClaude, Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits,
+	})
+	if err != nil || !res.Queued {
+		t.Fatalf("dispatch B: want queued, got res=%+v err=%v", res, err)
+	}
+	if run := o.GetRun("mp-b"); run == nil || run.State != core.StepPending {
+		t.Fatalf("B should be StepPending while queued, got %v", run)
+	}
+
+	// Raise capacity → B is admitted. Its State must already be StepActive on
+	// return (flipped under the lock), not StepPending.
+	if err := o.SetCapacity(2); err != nil {
+		t.Fatalf("SetCapacity: %v", err)
+	}
+	if run := o.GetRun("mp-b"); run == nil || run.State != core.StepActive {
+		t.Errorf("admitted run must be StepActive after SetCapacity (Copilot #361), got %v", run)
 	}
 }

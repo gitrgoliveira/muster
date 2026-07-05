@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"errors"
 	"sync"
+
+	"github.com/gitrgoliveira/muster/internal/core"
 )
 
 // ErrInvalidCapacity is returned when capacity is set to a non-positive value.
@@ -82,12 +84,17 @@ func (s *scheduler) setCapacity(mu *sync.RWMutex, n int) ([]*Run, error) {
 	mu.Lock()
 	defer mu.Unlock()
 	s.capacity = n
-	// Admit waiters up to the new capacity.
+	// Admit waiters up to the new capacity. Flip State to StepActive under the
+	// lock (before launching outside it), mirroring the onRunEnd/Dispatch admit
+	// paths — otherwise an admitted-but-not-yet-launched run reads as StepPending
+	// and a concurrent idempotent Dispatch would wrongly report it Queued
+	// (Copilot #361).
 	var admitted []*Run
 	for len(s.waiting) > 0 && len(s.active) < s.capacity {
 		next := s.waiting[0]
 		s.waiting = s.waiting[1:]
 		s.active[next.BeadID] = struct{}{}
+		next.State = core.StepActive
 		admitted = append(admitted, next)
 	}
 	return admitted, nil

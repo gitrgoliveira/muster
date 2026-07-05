@@ -65,9 +65,9 @@ func (o *Orchestrator) Advance(beadID string) error {
 		return fmt.Errorf("%w: bead %q has no chain (single-step)", ErrStepOutOfRange, beadID)
 	}
 	chain := *run.Chain
-	if run.StepIdx+1 >= len(chain) {
+	if cur := run.StepIdx; cur+1 >= len(chain) {
 		o.mu.Unlock()
-		return fmt.Errorf("%w: bead %q is already at the last step (%d)", ErrStepOutOfRange, beadID, run.StepIdx)
+		return fmt.Errorf("%w: bead %q is already at the last step (%d)", ErrStepOutOfRange, beadID, cur)
 	}
 	// Re-entrancy guard: a transition is already in flight (finishRun has not
 	// yet run relaunchNextStep). A second Advance would advance StepIdx again
@@ -79,19 +79,16 @@ func (o *Orchestrator) Advance(beadID string) error {
 
 	nextIdx := run.StepIdx + 1
 	chainLen := len(chain)
-	// Set the interlock flag AND advance StepIdx now (synchronously) under
-	// the lock, so subsequent Advance/LoopBack calls see the new index and the
-	// pendingAdvance guard immediately. relaunchNextStep reads run.StepIdx.
-	// Clear Session so observers can tell that the old session is gone and the
-	// new one is not yet established (avoids seeing stale step-0 session
-	// name while StepIdx is already 1).
+	// Record the target index ONLY; do NOT mutate StepIdx/Loop/Session here.
+	// The current step's agent is still running: finishRun (triggered by the
+	// cancel below) must kill the OLD session using the still-valid run.Session
+	// and emit tmux.session.closed with the OLD run.StepIdx. relaunchNextStep
+	// applies the target (sets StepIdx=pendingTargetIdx, clears Session) only
+	// AFTER finishRun has cleaned up. Mutating them here orphaned the old tmux
+	// session (Kill("")) and reported the wrong closed-event step (Copilot
+	// #355/#357). pendingAdvance alone guards against a concurrent double-advance.
 	run.pendingAdvance = true
-	run.StepIdx = nextIdx
-	run.Loop = 0     // reset loop counter for the new step
-	run.Session = "" // clear now so GetRun observers don't see stale step-0 name
-	// while StepIdx is already nextIdx. Safe: all reads of
-	// run.Session now go through o.mu.RLock() (finishRun,
-	// watchRun DeadStatus poll).
+	run.pendingTargetIdx = nextIdx
 
 	// Capture cancel before releasing the lock. The cancel func itself is
 	// immutable after launch (set once in doLaunch, never cleared); calling
@@ -146,9 +143,9 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: bead %q has no chain (single-step)", ErrStepOutOfRange, beadID)
 	}
-	if toIdx >= run.StepIdx {
+	if cur := run.StepIdx; toIdx >= cur {
 		o.mu.Unlock()
-		return fmt.Errorf("%w: toIdx %d must be < current stepIdx %d", ErrStepOutOfRange, toIdx, run.StepIdx)
+		return fmt.Errorf("%w: toIdx %d must be < current stepIdx %d", ErrStepOutOfRange, toIdx, cur)
 	}
 	// No separate "toIdx >= len(chain)" check needed: the invariant StepIdx <
 	// len(chain) (upheld by Advance) plus toIdx < StepIdx implies toIdx is in
@@ -160,12 +157,11 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 	}
 	chainLen := len(*run.Chain)
 
-	// Set the interlock flag AND update StepIdx synchronously (same rationale as
-	// Advance). Clear Session for the same reason as Advance (see above).
+	// Record the target index ONLY; do NOT mutate StepIdx/Loop/Session here
+	// (same rationale as Advance — finishRun must clean up the OLD session/step
+	// first; relaunchNextStep applies the target afterward). Copilot #355/#357.
 	run.pendingAdvance = true
-	run.StepIdx = toIdx
-	run.Loop = 0     // reset loop counter for the new step
-	run.Session = "" // clear now; safe because all readers use o.mu.RLock()
+	run.pendingTargetIdx = toIdx
 	cancel := run.cancel
 	o.mu.Unlock()
 
@@ -195,21 +191,22 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 // watcher goroutine can exit promptly.
 func (o *Orchestrator) relaunchNextStep(run *Run) {
 	o.mu.Lock()
-	// StepIdx is already the target index (Advance/LoopBack set it synchronously),
-	// so it IS the next step to launch (tri-review #6: no separate field needed).
-	// Capture StepIdx/Loop under the lock to pass to doLaunch — reading them
-	// unlocked during the slow launch would race a concurrent Advance that
-	// arrives after we clear pendingAdvance below (tri-review 2 HIGH).
-	nextIdx := run.StepIdx
-	nextLoop := run.Loop
+	// Apply the target index NOW (finishRun has already killed the OLD session
+	// and emitted the closed event with the OLD StepIdx — Copilot #355/#357).
+	// Capture the values under the lock to pass to doLaunch, so the unlocked
+	// slow launch never reads run.StepIdx/Loop that a concurrent Advance could
+	// rewrite (tri-review 2 HIGH).
+	nextIdx := run.pendingTargetIdx
+	nextLoop := 0 // loop-back and advance both start the target step at loop 0
+	run.StepIdx = nextIdx
+	run.Loop = nextLoop
 
 	// Clear the interlock flag and reset session-local fields so doLaunch
-	// can set fresh ones.
+	// can set fresh ones. finishRun already killed the old session, closed the
+	// pipe, and returned, so no concurrent reader holds Session/Pane/pipe/cancel.
 	run.State = core.StepActive // semantic pre-set; doLaunch will confirm
 	run.pendingAdvance = false
-	// Session already cleared by Advance/LoopBack and not re-set since; Pane/
-	// pipe/cancel are immutable after launch — finishRun already read them
-	// (Kill/pipe.Close) and returned, so no concurrent reader holds them.
+	run.Session = ""
 	run.Pane = ""
 	run.pipe = nil
 	run.cancel = nil

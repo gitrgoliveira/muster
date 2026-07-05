@@ -16,6 +16,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/adapter/claude"
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/orchestrator"
+	"github.com/gitrgoliveira/muster/internal/tmux"
 )
 
 // ── T041: chain resolution ────────────────────────────────────────────────────
@@ -544,4 +545,68 @@ func TestAdvance_WhileWatcherFinishing(t *testing.T) {
 	// Either step 0 or step 1 should be the live state (no stale eviction).
 	// The important property tested by -race is no data race, not the exact
 	// end state (which is timing-dependent).
+}
+
+// TestAdvance_KillsOldSession is the regression for Copilot #355/#357: on a step
+// transition, finishRun must kill the OLD step's tmux session (by its real name)
+// before relaunchNextStep starts the next step — otherwise the old agent is
+// orphaned and two agents run on the same worktree. Before the fix, Advance
+// cleared run.Session, so finishRun called Kill("") and the old session leaked.
+func TestAdvance_KillsOldSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	transport := &fakeTransport{deadDead: false} // step-0 agent stays alive until Advance cancels it
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+	})
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	if _, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-kill", BeadTitle: "kill", Agent: core.AgentClaude,
+		Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits, Chain: &chain,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	oldSession := tmux.SessionName("mp-kill", 0, 0) // muster/mp-kill/0/0
+	if err := o.Advance("mp-kill"); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+
+	// Poll until finishRun has killed the old session by its real name.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var killedOld, killedEmpty bool
+		for _, n := range transport.killed() {
+			if n == oldSession {
+				killedOld = true
+			}
+			if n == "" {
+				killedEmpty = true
+			}
+		}
+		if killedEmpty {
+			t.Fatalf("finishRun killed an empty session name — old session orphaned (Copilot #355)")
+		}
+		if killedOld {
+			return // old session torn down correctly
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("old session %q was never killed on advance; killed=%v", oldSession, transport.killed())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

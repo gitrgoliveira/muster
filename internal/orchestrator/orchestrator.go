@@ -102,10 +102,16 @@ type Run struct {
 	Quota QuotaUsage
 
 	// pendingAdvance is true while an Advance/LoopBack is in progress for this
-	// run. When true, finishRun skips eviction and instead relaunches the run
-	// at the already-updated StepIdx (the target step) under the same beadID
-	// key. Mutable under o.mu.
+	// run. When true, finishRun skips eviction and instead relaunches the run at
+	// pendingTargetIdx (see below) under the same beadID key. Mutable under o.mu.
 	pendingAdvance bool
+
+	// pendingTargetIdx is the step index the run will move to once the current
+	// step's session is finished. Advance/LoopBack set it WITHOUT mutating
+	// StepIdx/Session, so finishRun can still kill the OLD session and report the
+	// OLD step; relaunchNextStep applies it (StepIdx = pendingTargetIdx) after
+	// cleanup. Valid only while pendingAdvance is true. Mutable under o.mu.
+	pendingTargetIdx int
 }
 
 // DispatchRequest carries the inputs for Orchestrator.Dispatch.

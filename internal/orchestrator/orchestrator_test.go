@@ -50,6 +50,12 @@ type fakeTransport struct {
 	pipeCalled  atomic.Bool
 	listReturns []tmux.Session
 
+	// killedNames records every session name passed to Kill (under killMu), so
+	// tests can assert the OLD session is torn down on a step transition rather
+	// than an empty/wrong name (Copilot #355 regression).
+	killMu      sync.Mutex
+	killedNames []string
+
 	spawnCount atomic.Int32
 	spawnDelay time.Duration // optional: widen the dispatch race window
 
@@ -63,7 +69,18 @@ type fakeTransport struct {
 }
 
 func (f *fakeTransport) Detect() (string, error) { return "3.6b", nil }
-func (f *fakeTransport) Kill(name string) error  { f.killCalled.Store(true); return nil }
+func (f *fakeTransport) Kill(name string) error {
+	f.killCalled.Store(true)
+	f.killMu.Lock()
+	f.killedNames = append(f.killedNames, name)
+	f.killMu.Unlock()
+	return nil
+}
+func (f *fakeTransport) killed() []string {
+	f.killMu.Lock()
+	defer f.killMu.Unlock()
+	return append([]string(nil), f.killedNames...)
+}
 func (f *fakeTransport) Attach(name string) (string, error) {
 	return "tmux attach -t " + name, nil
 }
