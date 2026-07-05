@@ -610,3 +610,63 @@ func TestAdvance_KillsOldSession(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestAdvance_NoOnCompleteOnIntermediateStep is the regression for tri-review-3
+// #3: advancing between steps must NOT fire OnComplete (which records a bead
+// outcome) — an advance is a transition, not a completion. OnComplete fires
+// only when the run actually terminates.
+func TestAdvance_NoOnCompleteOnIntermediateStep(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	transport := &fakeTransport{deadDead: false} // steps stay alive until advanced/cancelled
+
+	var completeMu sync.Mutex
+	var completes []int // exitCodes passed to OnComplete
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+		OnComplete: func(_ string, exitCode int, _ bool) {
+			completeMu.Lock()
+			completes = append(completes, exitCode)
+			completeMu.Unlock()
+		},
+	})
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	if _, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-oc", BeadTitle: "oc", Agent: core.AgentClaude,
+		Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits, Chain: &chain,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	// Advance from step 0 to step 1. This cancels step 0's session — a
+	// TRANSITION, not a completion, so OnComplete must NOT be called for it.
+	if err := o.Advance("mp-oc"); err != nil {
+		t.Fatalf("Advance: %v", err)
+	}
+
+	// Give the transition time to run finishRun→relaunch. OnComplete must still
+	// not have fired (step 0 advanced, step 1 is running).
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		completeMu.Lock()
+		n := len(completes)
+		completeMu.Unlock()
+		if n != 0 {
+			t.Fatalf("OnComplete fired %d time(s) on an intermediate advance (tri-review-3 #3)", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

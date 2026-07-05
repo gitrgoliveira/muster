@@ -60,8 +60,8 @@ var ErrVCSUnavailable = errors.New("VCS binary unavailable")
 //     BeadDesc, Agent, Mode, PermissionMode, Worktree, StartedAt, Chain. Safe to
 //     read without o.mu.
 //   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt, Quota,
-//     Waiting, pendingAdvance, and — since M4's Advance/LoopBack/relaunchNextStep
-//     — StepIdx, Loop, Session, Pane, cancel, pipe. In M2 the latter group was
+//     pendingAdvance, pendingTargetIdx, and — since M4's Advance/LoopBack/
+//     relaunchNextStep — StepIdx, Loop, Session, Pane, cancel, pipe. In M2 the latter group was
 //     "immutable after launch," but the multi-step chain now rewrites them under
 //     the write lock, so readers (finishRun, doLaunch) MUST snapshot them under
 //     o.mu.RLock() rather than reading the live fields (tri-review 2 HIGH).
@@ -732,11 +732,10 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 	return DispatchResult{Bead: bead}, nil
 }
 
-// doLaunch performs the slow IO work for an admitted run: adapter detect,
+// doLaunch performs the slow launch I/O for a run OUTSIDE o.mu: adapter detect,
 // worktree ensure, prompt write, adapter invoke, tmux spawn, watcher start.
-// Must NOT be called with o.mu held.
-// doLaunch performs the slow launch I/O (Detect/Create/Invoke/Spawn) OUTSIDE
-// o.mu. stepIdx/loop are passed in (captured by the caller under the lock)
+// Must NOT be called with o.mu held. stepIdx/loop are passed in (captured by the
+// caller under the lock)
 // rather than read from run.StepIdx/run.Loop here: a concurrent Advance/LoopBack
 // writes those fields under the write lock, and reading them unlocked during
 // this ~seconds-long path is a data race that would also pick the wrong prompt
@@ -846,6 +845,13 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	run.Pane = sess.Pane
 	run.State = core.StepActive
 	run.cancel = runCancel
+	// The new step's watcher is now armed (run.cancel set, go watchRun below).
+	// Clear the transition flag here — NOT in relaunchNextStep — so a step
+	// transition reads as in-flight (pendingAdvance true) for the entire window
+	// from Advance until the new session's cancel exists, closing the nil-cancel
+	// race (tri-review 3 HIGH #1). No-op for the initial dispatch / admitted
+	// paths where pendingAdvance is already false.
+	run.pendingAdvance = false
 	o.mu.Unlock()
 
 	// Start pipe + exit watcher goroutine.
@@ -1083,12 +1089,23 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// would free the scheduler capacity slot and potentially admit a waiter for
 	// a different bead, leaving the advancing bead un-counted. The slot stays
 	// occupied for the duration of the next step.
+	// Capture pendingAdvance under the lock. When set, this is a STEP TRANSITION,
+	// not a completion: the current step's session was cancelled by Advance/
+	// LoopBack so the next step can start. During a transition finishRun must do
+	// NOTHING observable — it must NOT flip State (leave it StepActive so a
+	// concurrent Dispatch still joins as in-flight — tri-review 3 HIGH #2), NOT
+	// free the scheduler slot, NOT record completion/quota (tri-review 3 MED #3).
+	// It only tears down the OLD session (Kill+pipe.Close already done above),
+	// emits the closed event, and relaunches. pendingAdvance stays true until the
+	// next step's doLaunch sets run.cancel — closing the window where a concurrent
+	// Advance could slip past the guards with a nil cancel (tri-review 3 HIGH #1).
 	o.mu.Lock()
-	run.State = state
-	run.ExitCode = exitCode
-	run.EndedAt = time.Now()
+	pending := run.pendingAdvance
 	var nextRun *Run
-	if !run.pendingAdvance {
+	if !pending {
+		run.State = state
+		run.ExitCode = exitCode
+		run.EndedAt = time.Now()
 		nextRun = o.sched.onRunEnd(run.BeadID)
 		if nextRun != nil {
 			nextRun.State = core.StepActive
@@ -1101,8 +1118,9 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		go o.launchAdmittedRun(nextRun)
 	}
 
-	// Emit tmux.session.closed. Use the local snapshot of session name
-	// (captured under the read lock above) for the same race-safety reason.
+	// Emit tmux.session.closed for the step whose session just ended. Use the
+	// local snapshots of session name + stepIdx (captured under the read lock
+	// above) so this reflects the OLD step, not one a concurrent Advance moved to.
 	if o.publish != nil {
 		ec := exitCode
 		o.publish(ws.Frame{
@@ -1112,6 +1130,15 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 			Session:  session,
 			ExitCode: &ec,
 		})
+	}
+
+	// STEP TRANSITION: skip completion/quota/eviction — just relaunch the next
+	// step. State stays StepActive and pendingAdvance stays true (cleared by
+	// doLaunch once the next watcher is up), so the bead reads as in-flight to
+	// any concurrent Advance (rejected) or Dispatch (joins) throughout.
+	if pending {
+		go o.relaunchNextStep(run)
+		return
 	}
 
 	// Record completion on the bead (FR-013 / SC-007). M2 limitation: review is
@@ -1166,22 +1193,10 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		})
 	}
 
-	// Evict this run from the registry after the retention window so a
-	// long-lived server doesn't accumulate an entry per bead ever dispatched.
-	// INTERLOCK (T043b): if pendingAdvance is set, Advance/LoopBack already
-	// updated run.StepIdx and is waiting for this finishRun to do the
-	// Kill+pipe.Close (above) before relaunching the next step. Spawn
-	// relaunchNextStep on a new goroutine so this watcher goroutine can exit
-	// promptly. relaunchNextStep will schedule eviction on its own if
-	// doLaunch fails; on success the next step's finishRun will do so.
-	o.mu.RLock()
-	pending := run.pendingAdvance
-	o.mu.RUnlock()
-	if pending {
-		go o.relaunchNextStep(run)
-	} else {
-		o.scheduleRunEviction(run)
-	}
+	// Normal completion (the transition path returned early above). Evict this
+	// run from the registry after the retention window so a long-lived server
+	// doesn't accumulate an entry per bead ever dispatched.
+	o.scheduleRunEviction(run)
 }
 
 // buildPrompt assembles the bead title and description into a prompt string.

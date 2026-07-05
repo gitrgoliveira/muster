@@ -102,11 +102,14 @@ func (a *stepAdvancerAdapter) Advance(_ context.Context, beadID string) (stepIdx
 	if err := a.o.Advance(beadID); err != nil {
 		return 0, 0, mapStepError(err)
 	}
-	// Read back the new stepIdx and chainLen under the lock.
+	// Report the TARGET stepIdx (the step being advanced to). run.StepIdx is not
+	// advanced until relaunchNextStep applies it after the old session is torn
+	// down (the transition is async), so read run.pendingTargetIdx — set by
+	// Advance under the lock and stable while pendingAdvance holds.
 	a.o.mu.RLock()
 	run, ok := a.o.runs[beadID]
 	if ok && run.Chain != nil {
-		stepIdx = run.StepIdx
+		stepIdx = run.pendingTargetIdx
 		chainLen = len(*run.Chain)
 	}
 	a.o.mu.RUnlock()

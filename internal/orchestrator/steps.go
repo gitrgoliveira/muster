@@ -201,11 +201,16 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 	run.StepIdx = nextIdx
 	run.Loop = nextLoop
 
-	// Clear the interlock flag and reset session-local fields so doLaunch
-	// can set fresh ones. finishRun already killed the old session, closed the
-	// pipe, and returned, so no concurrent reader holds Session/Pane/pipe/cancel.
-	run.State = core.StepActive // semantic pre-set; doLaunch will confirm
-	run.pendingAdvance = false
+	// Reset session-local fields so doLaunch can set fresh ones. finishRun
+	// already killed the old session, closed the pipe, and returned, so no
+	// concurrent reader holds Session/Pane/pipe/cancel.
+	//
+	// pendingAdvance is deliberately LEFT TRUE here (cleared by doLaunch once the
+	// new watcher is up, or in the error path below): between this unlock and
+	// doLaunch setting run.cancel, run.cancel is nil, and if pendingAdvance were
+	// already false a concurrent Advance would pass its guards, capture the nil
+	// cancel (a no-op), and corrupt the transition (tri-review 3 HIGH #1).
+	run.State = core.StepActive
 	run.Session = ""
 	run.Pane = ""
 	run.pipe = nil
@@ -233,10 +238,11 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 
 	_, err := o.doLaunch(context.Background(), run, req, stepPM, nextIdx, nextLoop)
 	if err != nil {
-		// doLaunch failed; mark the run as failed, free the scheduler slot
-		// (finishRun skipped onRunEnd because pendingAdvance was true), and
-		// evict normally.
+		// doLaunch failed; clear the transition flag (the next step never
+		// started), mark the run failed, free the scheduler slot (finishRun
+		// skipped onRunEnd because pendingAdvance was true), and evict.
 		o.mu.Lock()
+		run.pendingAdvance = false
 		run.State = core.StepFailed
 		nextRun := o.sched.onRunEnd(run.BeadID)
 		if nextRun != nil {
