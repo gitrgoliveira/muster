@@ -1168,6 +1168,169 @@ func TestRun_M4Fields_ZeroValueSane(t *testing.T) {
 	}
 }
 
+// ── Chain step-0 permission-mode bug (Copilot PR #7 / FR-012a / US3) ─────────
+
+// TestDispatch_ChainDrivesStep0PermissionMode verifies that when a multi-step
+// chain is supplied, step 0 launches with chain[0].PermissionMode (not the
+// top-level/default pm). Specifically: if the chain overrides the per-step
+// mode, the run must reflect chain[0]'s mode, not req.PermissionMode.
+func TestDispatch_ChainDrivesStep0PermissionMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	o, _ := newOrchestratorForTest(t, repoPath)
+
+	chain := orchestrator.StepChain{
+		{Name: "step0", PermissionMode: core.PermAcceptEdits},
+		{Name: "step1", PermissionMode: core.PermDontAsk},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-cpm0",
+		BeadTitle:      "Chain drives step 0 pm",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermDontAsk, // top-level is dontAsk, but chain[0] is acceptEdits
+		Chain:          &chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	run := o.GetRun("mp-cpm0")
+	if run == nil {
+		t.Fatal("GetRun returned nil")
+	}
+	// The run's PermissionMode must come from chain[0], not from req.PermissionMode.
+	if run.PermissionMode != core.PermAcceptEdits {
+		t.Errorf("run.PermissionMode: want acceptEdits (chain[0]) got %q (top-level was dontAsk)", run.PermissionMode)
+	}
+}
+
+// TestDispatch_ChainOnly_NoTopLevelPermMode_Succeeds is the (a) regression:
+// dispatching with req.PermissionMode="" (omitted, no default configured) and
+// a valid chain must SUCCEED, not return ErrNoPermissionMode.
+func TestDispatch_ChainOnly_NoTopLevelPermMode_Succeeds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+		// No DefaultPermMode — previously this would cause ErrNoPermissionMode
+		// for a chain dispatch that omits the top-level permissionMode.
+	})
+
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermAcceptEdits},
+		{Name: "build", PermissionMode: core.PermDontAsk},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-noplm",
+		BeadTitle:      "No top-level pm",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // omitted — chain provides per-step pms
+		Chain:          &chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch with chain and no top-level permissionMode: %v (want success)", err)
+	}
+	if errors.Is(err, orchestrator.ErrNoPermissionMode) {
+		t.Fatal("chain dispatch must not return ErrNoPermissionMode when chain provides per-step pms")
+	}
+}
+
+// TestDispatch_ChainStep0_PlanMode verifies the quickstart's canonical plan →
+// build chain: chain[0] has PermissionMode=core.PermPlan under Mode=ModeAgent.
+// Previously resolvePermMode would reject PermPlan for a non-plan Mode; now the
+// chain path bypasses resolvePermMode so step 0 can legitimately use "plan".
+func TestDispatch_ChainStep0_PlanMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+	})
+
+	// Quickstart's canonical plan→build chain: step 0 uses "plan" under
+	// ModeAgent.  resolvePermMode would reject this, so the fix must NOT
+	// route chain pms through resolvePermMode.
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-planstep",
+		BeadTitle:      "Plan then build",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // chain provides the step pm; top-level omitted
+		Chain:          &chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch with chain[0].PermissionMode=plan under ModeAgent: %v (want success)", err)
+	}
+
+	run := o.GetRun("mp-planstep")
+	if run == nil {
+		t.Fatal("GetRun returned nil")
+	}
+	if run.PermissionMode != core.PermPlan {
+		t.Errorf("run.PermissionMode: want plan (chain[0]) got %q", run.PermissionMode)
+	}
+}
+
+// TestDispatch_ChainStep0_EmptyPermMode_Rejected verifies that Dispatch returns
+// an error wrapping ErrNoPermissionMode when chain[0].PermissionMode is empty.
+// The service layer also validates this, but Dispatch is a public entry point
+// and must guard independently (FR-021: no silent defaults for autonomy).
+func TestDispatch_ChainStep0_EmptyPermMode_Rejected(t *testing.T) {
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": t.TempDir()},
+		WorktreesDir: t.TempDir(),
+	})
+
+	chain := orchestrator.StepChain{
+		{Name: "step0", PermissionMode: ""}, // empty — must be rejected
+		{Name: "step1", PermissionMode: core.PermAcceptEdits},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-emptypm",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // also empty; neither provides a valid mode
+		Chain:          &chain,
+	})
+	if err == nil {
+		t.Fatal("want error for chain with empty step-0 permissionMode, got nil")
+	}
+	if !errors.Is(err, orchestrator.ErrNoPermissionMode) {
+		t.Errorf("want error wrapping ErrNoPermissionMode, got %v", err)
+	}
+}
+
 // TestDispatch_ErrorPath_DrainsWaiters is the regression for tri-review-2 CRIT:
 // when an admitted run's doLaunch fails while other dispatches are queued behind
 // it (capacity 1), the Dispatch error path must launch the next FIFO waiter

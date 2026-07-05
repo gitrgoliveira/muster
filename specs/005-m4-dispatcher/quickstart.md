@@ -33,7 +33,11 @@ Racing two identical dispatches yields exactly one run (both observe the same ru
 ## 3. Multi-step plan→build→review chain (US3)
 
 ```bash
-# Dispatch with an explicit chain (or rely on the configured default chain).
+# Dispatch with an explicit chain. The `chain` field is how a run becomes
+# multi-step in M4: omit it and the run is single-step (step 0 only), so
+# /steps/advance returns STEP_OUT_OF_RANGE. A server-configured default chain
+# (Config.DefaultChain) exists in the orchestrator but is not wired to a startup
+# flag in M4 — supply `chain` per dispatch.
 curl -XPOST localhost:7766/api/v1/beads/mp-a/dispatch -d '{
   "chain":[
     {"name":"plan","permissionMode":"plan"},

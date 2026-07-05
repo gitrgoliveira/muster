@@ -628,10 +628,47 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		}
 	}
 
-	// Resolve permission mode.
-	pm, err := o.resolvePermMode(req.Mode, req.PermissionMode)
-	if err != nil {
-		return DispatchResult{}, err
+	// Resolve the step chain for this dispatch. M2 single-step behaviour
+	// (nil Chain) is preserved when no chain is supplied in the request and
+	// no default chain is configured. resolveChain only reads req.Chain and
+	// the immutable o.defaultChain (set once in New(), never mutated), so it
+	// is safe to call outside o.mu.
+	resolvedChain := o.resolveChain(req)
+
+	// Resolve the permission mode for the step that launches first (step 0).
+	//
+	// For a multi-step chain, the per-step mode comes directly from
+	// chain[0].PermissionMode — matching how relaunchNextStep drives steps 1+
+	// from (*run.Chain)[nextIdx].PermissionMode (RAW, not via resolvePermMode).
+	// The top-level req.PermissionMode / configured default is the single-step
+	// (no-chain) path only.
+	//
+	// resolvePermMode is deliberately NOT used for the chain case: it rejects
+	// PermPlan for a non-plan Mode, but a chain legitimately carries per-step
+	// "plan" profiles (the quickstart's canonical plan→build chain has
+	// chain[0].PermissionMode=plan under ModeAgent), and steps 1+ already
+	// accept them raw. Routing through resolvePermMode would reject that
+	// pattern and diverge from steps 1+.
+	//
+	// Without this branch, a chain-only dispatch that omits the top-level
+	// permissionMode is wrongly rejected with ErrNoPermissionMode, and step 0
+	// launches with the top-level/default mode instead of chain[0]
+	// (Copilot PR #7; FR-012a / US3 per-step permission profiles).
+	var pm core.PermissionMode
+	if resolvedChain != nil && len(*resolvedChain) > 0 {
+		pm = (*resolvedChain)[0].PermissionMode
+		// FR-021: never silently default per-step autonomy. The service layer
+		// validates the whole chain before dispatch, but Dispatch is a public
+		// entry point, so guard against an empty/invalid step-0 mode here too.
+		if pm == "" || !pm.Valid() {
+			return DispatchResult{}, fmt.Errorf("%w: chain step 0 permissionMode is missing or invalid", ErrNoPermissionMode)
+		}
+	} else {
+		var err error
+		pm, err = o.resolvePermMode(req.Mode, req.PermissionMode)
+		if err != nil {
+			return DispatchResult{}, err
+		}
 	}
 
 	// FR-021: under the tmux-absent fallback there is no attachable session to
@@ -665,10 +702,6 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		o.mu.Unlock()
 		return DispatchResult{Bead: joinedBead, Joined: true, Queued: isQueued}, nil
 	}
-	// Resolve the step chain for this dispatch. M2 single-step behaviour
-	// (nil Chain) is preserved when no chain is supplied in the request and
-	// no default chain is configured.
-	resolvedChain := o.resolveChain(req)
 
 	reserved := &Run{
 		BeadID:         req.BeadID,
