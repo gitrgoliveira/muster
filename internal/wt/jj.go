@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -61,16 +62,40 @@ func jjSrcRepoDir(wtPath string) (string, error) {
 // which is populated by Create before the agent runs. The fallback to
 // jjSrcRepoDir (reading the agent-writable .jj/repo file) is used only when
 // the cache has no entry (e.g. the backend was reconstructed after the fact).
+// When allowedRepos is non-nil (populated from the orchestrator's repo-map
+// values), the fallback is further restricted to paths in the allow-list.
 type jjBackend struct {
 	worktreesDir string
 	// srcRepos caches beadID → srcRepo path as populated by Create.
 	// Push and Remove prefer this over re-reading the agent-writable .jj/repo.
 	srcRepos sync.Map
+	// allowedRepos is an optional allow-list of absolute source-repo paths.
+	// When non-nil (length > 0), the resolveSrcRepo fallback (reading the
+	// agent-writable .jj/repo) rejects any path not in the list. A nil or
+	// empty slice disables the allow-list check (open set). The cache hit
+	// path is never restricted — the orchestrator controls what goes into
+	// the cache via Create.
+	allowedRepos []string
 }
 
-// NewJJBackend returns a jj Backend with worktreesDir baked in.
+// NewJJBackend returns a jj Backend with worktreesDir baked in and no
+// allow-list restriction (any valid, non-traversal srcRepo is permitted).
 func NewJJBackend(worktreesDir string) Backend {
-	return &jjBackend{worktreesDir: worktreesDir}
+	return NewJJBackendAllowed(worktreesDir, nil)
+}
+
+// NewJJBackendAllowed returns a jj Backend with worktreesDir baked in and an
+// explicit allow-list for the resolveSrcRepo fallback path. When allowedRepos
+// is non-nil and non-empty, any srcRepo resolved from the agent-writable
+// .jj/repo file that is not in the list is rejected with an error. Pass nil
+// to disable the allow-list (equivalent to NewJJBackend).
+//
+// Callers should pass the values of the orchestrator's RepoMap so the fallback
+// is restricted to operator-declared source repos — this prevents a compromised
+// agent from redirecting Push/Remove to an arbitrary directory by tampering with
+// .jj/repo.
+func NewJJBackendAllowed(worktreesDir string, allowedRepos []string) Backend {
+	return &jjBackend{worktreesDir: worktreesDir, allowedRepos: allowedRepos}
 }
 
 // Create ensures the per-bead jj workspace exists. It first probes `jj root`
@@ -129,6 +154,11 @@ func (j *jjBackend) Create(ctx context.Context, worktreesDir, srcRepo, beadID st
 // segments after filepath.Clean, and is NOT inside the worktrees directory
 // (a workspace is never a source repo). Any violation returns an error to
 // prevent path-traversal attacks through a tampered .jj/repo.
+//
+// Additionally, when j.allowedRepos is non-empty (populated from the
+// orchestrator's repo-map values), the fallback is restricted to paths in the
+// allow-list. The cache hit path is exempt because the orchestrator controls
+// the cache via Create (only operator-declared repos ever enter it).
 func (j *jjBackend) resolveSrcRepo(beadID, wtPath string) (string, error) {
 	if v, ok := j.srcRepos.Load(beadID); ok {
 		return v.(string), nil
@@ -149,6 +179,12 @@ func (j *jjBackend) resolveSrcRepo(beadID, wtPath string) (string, error) {
 		if strings.HasPrefix(cleaned+string(filepath.Separator), wtDir+string(filepath.Separator)) || cleaned == wtDir {
 			return "", fmt.Errorf("wt jj: resolved srcRepo %q failed validation (possible path traversal)", srcRepo)
 		}
+	}
+	// Allow-list check: when the allow-list is non-empty, reject any srcRepo that
+	// is not in it. The allow-list contains operator-declared repo paths (RepoMap
+	// values); an agent cannot add to it. Cache hits (above) bypass this check.
+	if len(j.allowedRepos) > 0 && !slices.Contains(j.allowedRepos, cleaned) {
+		return "", fmt.Errorf("wt jj: resolved srcRepo %q is not in allowed repos list", cleaned)
 	}
 	return cleaned, nil
 }
@@ -238,9 +274,15 @@ func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) (bool,
 // ResolveRemote — empty defaults to "origin").
 //
 // Algorithm (pinned in research.md R6):
-//  1. Create a bookmark muster/<beadID> at the sealed parent revision (@-).
+//  1. Set bookmark muster/<beadID> at the sealed parent revision (@-).
 //  2. Export jj bookmarks to git refs via `jj git export`.
 //  3. Resolve the shared srcrepo and push the branch via `git push <remote> <branch>`.
+//
+// Step 1 uses `jj bookmark set` (not `create`) so Push is idempotent: `set`
+// moves an existing bookmark to the new revision, whereas `create` would fail
+// if the bookmark already exists. Note: `jj bookmark set` may refuse a backward
+// move without --allow-backwards; that is acceptable because we only call Push
+// at the same or a newer revision (never moving a bookmark backward intentionally).
 //
 // jj's `jj git push --bookmark` is avoided because it requires a user identity
 // in the jj config (fails with no-author error when JJ_CONFIG=/dev/null or
@@ -259,14 +301,18 @@ func (j *jjBackend) Push(ctx context.Context, beadID, remote string) error {
 
 	branch := BranchName(beadID)
 
-	// 1. Create jj bookmark at @- (the sealed revision, not the empty WC).
-	bmCmd := exec.CommandContext(ctx, "jj", "bookmark", "create", branch, "-r", "@-")
+	// 1. Set jj bookmark at @- (the sealed revision, not the empty WC).
+	// Use `bookmark set` instead of `bookmark create` for idempotency: `set`
+	// creates the bookmark when absent and moves it when present, so a second
+	// Push call for the same bead succeeds rather than hard-failing on a
+	// "bookmark already exists" error.
+	bmCmd := exec.CommandContext(ctx, "jj", "bookmark", "set", branch, "-r", "@-")
 	bmCmd.Dir = wtPath
 	if out, err := bmCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("wt jj: bookmark create aborted: %w", ctx.Err())
+			return fmt.Errorf("wt jj: bookmark set aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt jj: jj bookmark create %q: %w\n%s", branch, err, out)
+		return fmt.Errorf("wt jj: jj bookmark set %q: %w\n%s", branch, err, out)
 	}
 
 	// 2. Export jj bookmarks to git refs so the branch is visible to git push.
@@ -287,7 +333,10 @@ func (j *jjBackend) Push(ctx context.Context, beadID, remote string) error {
 	}
 
 	// 4. Use `git push` from the srcrepo (colocated .git is there).
-	resolvedRemote := ResolveRemote(remote)
+	resolvedRemote, err := ResolveRemote(remote)
+	if err != nil {
+		return err
+	}
 	pushCmd := exec.CommandContext(ctx, "git", "push", resolvedRemote, branch)
 	pushCmd.Dir = srcRepo
 	if out, err := pushCmd.CombinedOutput(); err != nil {

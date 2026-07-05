@@ -596,6 +596,74 @@ func TestJJBackend_WriteMethodsNotImplemented(t *testing.T) {
 	}
 }
 
+// ── T033: Push idempotency — bookmark set ────────────────────────────────────
+
+// TestJJPush_FakeJJ_UsesBookmarkSet verifies that Push invokes
+// `jj bookmark set` (not `jj bookmark create`) so repeated Push calls
+// succeed even when the bookmark already exists.
+func TestJJPush_FakeJJ_UsesBookmarkSet(t *testing.T) {
+	binDir := t.TempDir()
+	addFakeJJToBinDir(t, binDir)
+
+	// Also need a fake git for the git push step.
+	fakeBin := filepath.Join(binDir, "git")
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	worktreesDir := t.TempDir()
+	beadID := "push-idem-bead"
+
+	// Create a workspace directory so the lstat check passes.
+	wtPath := filepath.Join(worktreesDir, beadID)
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Write a fake .jj/repo file so resolveSrcRepo's fallback can resolve srcRepo.
+	jjDir := filepath.Join(wtPath, ".jj")
+	if err := os.MkdirAll(jjDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll .jj: %v", err)
+	}
+	// srcRepo is a temp dir we'll create.
+	srcRepo := t.TempDir()
+	// jjSrcRepoDir expects a RELATIVE path from wtPath/.jj to srcRepo/.jj/repo.
+	// Compute the relative path dynamically.
+	rel, err := filepath.Rel(jjDir, filepath.Join(srcRepo, ".jj", "repo"))
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jjDir, "repo"), []byte(rel+"\n"), 0o644); err != nil {
+		t.Fatalf("write .jj/repo: %v", err)
+	}
+
+	recordFile := filepath.Join(t.TempDir(), "jj_calls.txt")
+	t.Setenv("FAKE_JJ_RECORD_FILE", recordFile)
+
+	b := wt.NewJJBackend(worktreesDir)
+	ctx := context.Background()
+
+	// Push should succeed (fake jj and fake git both exit 0).
+	if err := b.Push(ctx, beadID, ""); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	calls, err := os.ReadFile(recordFile)
+	if err != nil {
+		t.Fatalf("read record file: %v", err)
+	}
+	callStr := string(calls)
+
+	// The record file is tab-delimited (fake_jj.sh uses IFS=$tab for printf).
+	// Must use "bookmark set", never "bookmark create".
+	if !strings.Contains(callStr, "bookmark\tset") {
+		t.Errorf("Push must use 'jj bookmark set'; got calls:\n%s", callStr)
+	}
+	if strings.Contains(callStr, "bookmark\tcreate") {
+		t.Errorf("Push must NOT use 'jj bookmark create' (not idempotent); got calls:\n%s", callStr)
+	}
+}
+
 // ── T025: Real-jj integration test ──────────────────────────────────────────
 
 // TestJJIntegration_WorktreeAndDiff is the full real-jj integration test.
@@ -944,5 +1012,117 @@ func TestJJBackend_EmptyWorktreesDir_Errors(t *testing.T) {
 	}
 	if _, err := b.Diff(ctx, "bead", ""); err == nil {
 		t.Error("Diff with empty worktreesDir: expected error, got nil")
+	}
+}
+
+// ── T028: jj resolveSrcRepo fallback allow-list (tri-review 5) ──────────────────────
+
+// makeJJWorkspaceWithFakeRepo creates a worktree directory with a .jj/repo file
+// that resolves to srcRepo. It does NOT use real jj — the structure is crafted
+// manually so the test is fully hermetic (no fake jj or real jj binary needed).
+//
+// jjSrcRepoDir reads wtPath/.jj/repo, interprets its contents as a relative
+// path from wtPath/.jj to srcRepo/.jj/repo, resolves it, then strips the
+// trailing /.jj/repo suffix. The file content we write here achieves:
+//
+//	wtPath/.jj/../../../<srcRepoBase>/.jj/repo  →  srcRepo
+//
+// which simplifies to: relative path = ../../<srcRepoBase>/.jj/repo
+// (from wtPath/.jj going up two levels to the parent of worktreesDir, then
+// down into srcRepoBase). Because t.TempDir() paths are unpredictable we
+// compute the relative path dynamically.
+func makeJJWorkspaceWithFakeRepo(t *testing.T, worktreesDir, beadID, srcRepo string) string {
+	t.Helper()
+	wtPath := filepath.Join(worktreesDir, beadID)
+	jjDir := filepath.Join(wtPath, ".jj")
+	if err := os.MkdirAll(jjDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll .jj: %v", err)
+	}
+	// Compute relative path from wtPath/.jj to srcRepo/.jj/repo.
+	rel, err := filepath.Rel(jjDir, filepath.Join(srcRepo, ".jj", "repo"))
+	if err != nil {
+		t.Fatalf("filepath.Rel: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jjDir, "repo"), []byte(rel), 0o644); err != nil {
+		t.Fatalf("write .jj/repo: %v", err)
+	}
+	return wtPath
+}
+
+// TestJJBackend_AllowList_RejectsFallbackOutsideList verifies that
+// NewJJBackendAllowed with a non-empty allow-list rejects a srcRepo path
+// resolved from .jj/repo that is NOT in the list. The Remove call (which
+// exercises the resolveSrcRepo fallback) must fail with an "not in allowed"
+// error, not a traversal error.
+func TestJJBackend_AllowList_RejectsFallbackOutsideList(t *testing.T) {
+	binDir := t.TempDir()
+	addFakeJJToBinDir(t, binDir)
+
+	worktreesDir := t.TempDir()
+	beadID := "allowlist-bead"
+
+	// srcRepo is a real directory — just not the one in the allow-list.
+	srcRepo := t.TempDir()
+	makeJJWorkspaceWithFakeRepo(t, worktreesDir, beadID, srcRepo)
+
+	// The allow-list contains a different (allowed) path, not srcRepo.
+	otherAllowed := t.TempDir()
+	b := wt.NewJJBackendAllowed(worktreesDir, []string{otherAllowed})
+	ctx := context.Background()
+
+	err := b.Remove(ctx, beadID)
+	if err == nil {
+		t.Fatal("Remove with out-of-allow-list srcRepo: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not in allowed") {
+		t.Errorf("Remove allow-list error = %q; want to contain 'not in allowed'", err.Error())
+	}
+}
+
+// TestJJBackend_AllowList_AcceptsFallbackInsideList verifies that
+// NewJJBackendAllowed accepts a srcRepo path that IS in the allow-list.
+// The Remove succeeds past resolveSrcRepo (fake jj handles workspace forget).
+func TestJJBackend_AllowList_AcceptsFallbackInsideList(t *testing.T) {
+	binDir := t.TempDir()
+	addFakeJJToBinDir(t, binDir)
+
+	worktreesDir := t.TempDir()
+	beadID := "allowlist-accepted-bead"
+
+	srcRepo := t.TempDir()
+	makeJJWorkspaceWithFakeRepo(t, worktreesDir, beadID, srcRepo)
+
+	// Allow-list contains srcRepo — fallback should be permitted.
+	b := wt.NewJJBackendAllowed(worktreesDir, []string{srcRepo})
+	ctx := context.Background()
+
+	// Remove may fail at `jj workspace forget` or os.RemoveAll (the worktrees dir
+	// file layout is minimal), but must NOT fail with "not in allowed".
+	err := b.Remove(ctx, beadID)
+	if err != nil && strings.Contains(err.Error(), "not in allowed") {
+		t.Errorf("Remove with allowed srcRepo should not return allow-list error, got: %v", err)
+	}
+}
+
+// TestJJBackend_AllowList_NilAllowsAll verifies that NewJJBackend (nil
+// allow-list) continues to permit any valid, non-traversal srcRepo — existing
+// behaviour is not regressed.
+func TestJJBackend_AllowList_NilAllowsAll(t *testing.T) {
+	binDir := t.TempDir()
+	addFakeJJToBinDir(t, binDir)
+
+	worktreesDir := t.TempDir()
+	beadID := "allowlist-nil-bead"
+
+	srcRepo := t.TempDir()
+	makeJJWorkspaceWithFakeRepo(t, worktreesDir, beadID, srcRepo)
+
+	// No allow-list → any valid path is accepted.
+	b := wt.NewJJBackend(worktreesDir)
+	ctx := context.Background()
+
+	err := b.Remove(ctx, beadID)
+	if err != nil && strings.Contains(err.Error(), "not in allowed") {
+		t.Errorf("Remove with nil allow-list should not return allow-list error, got: %v", err)
 	}
 }

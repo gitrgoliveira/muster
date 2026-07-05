@@ -230,6 +230,52 @@ func TestJJPush_ToBarePushable(t *testing.T) {
 	}
 }
 
+// TestJJPush_IdempotentTwice verifies that calling Push twice on the same bead
+// succeeds on the second call (bookmark set is idempotent; bookmark create is not).
+// Skip-gated on real jj.
+func TestJJPush_IdempotentTwice(t *testing.T) {
+	if !jjAvailable() {
+		t.Skip("jj not available on PATH")
+	}
+	t.Setenv("JJ_CONFIG", "/dev/null")
+
+	// Set up a bare "remote".
+	remoteDir := t.TempDir()
+	if out, err := exec.Command("git", "init", "--bare", remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init bare: %v\n%s", err, out)
+	}
+
+	srcRepo := initJJRepoForWrite(t)
+	runJJ(t, srcRepo, "git", "remote", "add", "origin", remoteDir)
+
+	worktreesDir := t.TempDir()
+	beadID := "jj-push-idempotent"
+
+	wtPath := createJJWorkspace(t, srcRepo, worktreesDir, beadID)
+
+	// Write and finalize so there is something to push.
+	if err := os.WriteFile(filepath.Join(wtPath, "result.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	b := wt.NewJJBackend(worktreesDir)
+	ctx := context.Background()
+
+	if _, err := b.Finalize(ctx, beadID, "feat: idempotency test"); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+
+	// First push.
+	if err := b.Push(ctx, beadID, ""); err != nil {
+		t.Fatalf("Push (first): %v", err)
+	}
+
+	// Second push — must succeed because bookmark set moves rather than failing.
+	if err := b.Push(ctx, beadID, ""); err != nil {
+		t.Fatalf("Push (second, idempotency): %v — want nil (bookmark set is idempotent)", err)
+	}
+}
+
 // TestJJPush_NoRemote verifies Push returns an error when no remote is configured.
 func TestJJPush_NoRemote(t *testing.T) {
 	if !jjAvailable() {

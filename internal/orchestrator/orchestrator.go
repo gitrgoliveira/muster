@@ -206,6 +206,24 @@ func (m RepoMap) Resolve(beadID string) (string, error) {
 	return path, nil
 }
 
+// repoMapValues returns the values of a RepoMap as a slice. Used to populate
+// the jj backend's allow-list (tri-review 5) so the fallback srcRepo resolution is
+// restricted to operator-declared paths. Returns nil when m is empty so the
+// jj backend treats the allow-list as disabled (open set).
+func repoMapValues(m RepoMap) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	vals := make([]string, 0, len(m))
+	for _, v := range m {
+		// Clean each path: the jj backend compares the allow-list against a
+		// filepath.Clean'd resolved path, so an uncleaned operator value (e.g.
+		// trailing slash) would falsely reject a legitimate repo.
+		vals = append(vals, filepath.Clean(v))
+	}
+	return vals
+}
+
 // Config holds Orchestrator constructor options.
 type Config struct {
 	Adapters        *adapter.Registry
@@ -286,7 +304,10 @@ func New(cfg Config) *Orchestrator {
 	if backend == nil {
 		switch defaultVCS {
 		case wt.VCSJJ:
-			backend = wt.NewJJBackend(cfg.WorktreesDir)
+			// Pass the repo-map values as the fallback allow-list so that a
+			// compromised agent cannot redirect Push/Remove to an arbitrary directory
+			// by tampering with the agent-writable .jj/repo file (tri-review 5).
+			backend = wt.NewJJBackendAllowed(cfg.WorktreesDir, repoMapValues(cfg.RepoMap))
 		default:
 			backend = wt.NewGitBackend(cfg.WorktreesDir)
 		}

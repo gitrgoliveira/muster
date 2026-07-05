@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -190,18 +191,24 @@ type BeadService struct {
 	// Enabled in remote mode (no file watcher); embedded mode leaves it false
 	// so the watcher remains the single WS source and writes aren't double-announced.
 	publishOnWrite bool
+	// wtOpMu serializes mutating worktree operations (Finalize, Remove) per bead.
+	// Push is excluded because it is read-side from the worktree's perspective and
+	// is explicitly permitted at any run state.
+	// Key: beadID (string) → *sync.Mutex.
+	// A pointer so the With* builder copies share the same lock map (they are the same logical service).
+	wtOpMu *sync.Map
 }
 
 // NewBeadService constructs a BeadService.
 // cli may be nil; write operations return CodeCLIMissing in that case.
 func NewBeadService(backend store.Backend, cli CLIRunner, pub Publisher) *BeadService {
-	return &BeadService{backend: backend, cli: cli, publish: pub}
+	return &BeadService{backend: backend, cli: cli, publish: pub, wtOpMu: &sync.Map{}}
 }
 
 // NewBeadServiceWithRepo constructs a BeadService with an explicit repo name.
 // publishOnWrite should be true in remote mode (where no watcher runs).
 func NewBeadServiceWithRepo(backend store.Backend, cli CLIRunner, pub Publisher, repo string, publishOnWrite bool) *BeadService {
-	return &BeadService{backend: backend, cli: cli, repo: repo, publish: pub, publishOnWrite: publishOnWrite}
+	return &BeadService{backend: backend, cli: cli, repo: repo, publish: pub, publishOnWrite: publishOnWrite, wtOpMu: &sync.Map{}}
 }
 
 // WithOrchestrator returns a new BeadService with an orchestrator dispatcher
@@ -861,10 +868,33 @@ func (svc *BeadService) Diff(ctx context.Context, id, path string) (io.ReadClose
 
 // ── Write-side worktree methods (M4 US2) ─────────────────────────────────────
 
+// lockWtOp acquires the per-bead worktree-operation mutex for id and returns a
+// release function. Callers must defer the returned function:
+//
+//	unlock := svc.lockWtOp(id)
+//	defer unlock()
+//
+// This serializes Finalize and Remove for the same bead to close the TOCTOU
+// window between checkRunNotActive (which reads run state) and the actual
+// backend call. Push is intentionally excluded — it is permitted at any run
+// state and does not mutate the worktree's commit graph.
+func (svc *BeadService) lockWtOp(id string) func() {
+	v, _ := svc.wtOpMu.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // checkRunNotActive returns CodeRunAlreadyActive when the bead's current run is
 // in a non-terminal state (StepActive or StepPending). Push is permitted at any
 // run state (the agent may have finished but the worktree is still dirty).
 // Finalize and Remove must wait for a terminal state to avoid racing the agent.
+//
+// Note: checkRunNotActive does not hold the wtOpMu lock itself; callers
+// (FinalizeWorktree, RemoveWorktree) must call lockWtOp before checkRunNotActive
+// and hold the lock across the subsequent backend call to close the TOCTOU
+// window. A narrow residual window still exists between the agent updating its
+// run state and muster observing it, which is accepted as a known limitation.
 func (svc *BeadService) checkRunNotActive(id string) error {
 	if svc.wtAccessor == nil {
 		return nil // no accessor = no run state; caller handles the nil accessor check
@@ -885,6 +915,8 @@ func (svc *BeadService) checkRunNotActive(id string) error {
 //
 // M1 guard: returns (false, CodeRunAlreadyActive) when the bead's run is
 // StepActive or StepPending. Terminal states (StepDone, StepFailed, or absent) are allowed.
+// The per-bead wtOpMu lock is held from the guard check through the backend
+// call to close the TOCTOU window between reading run state and acting on it.
 func (svc *BeadService) FinalizeWorktree(ctx context.Context, id, message string) (bool, error) {
 	if svc.wtAccessor == nil {
 		return false, &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
@@ -893,7 +925,12 @@ func (svc *BeadService) FinalizeWorktree(ctx context.Context, id, message string
 	if _, err := svc.GetBead(ctx, id); err != nil {
 		return false, err
 	}
-	// M1 run-state guard.
+	// Acquire per-bead lock before the run-state guard to close the TOCTOU
+	// window (tri-review 5): checkRunNotActive + Finalize are executed atomically
+	// with respect to concurrent RemoveWorktree for the same bead.
+	unlock := svc.lockWtOp(id)
+	defer unlock()
+	// M1 run-state guard (held under lock).
 	if err := svc.checkRunNotActive(id); err != nil {
 		return false, err
 	}
@@ -910,10 +947,17 @@ func (svc *BeadService) FinalizeWorktree(ctx context.Context, id, message string
 // PushWorktree pushes branch muster/<beadID> to remote (resolved via
 // wt.ResolveRemote — empty defaults to "origin").
 // Push is permitted regardless of the current run state (the run may be finished
-// but the branch not yet pushed). Push failures map to CodeInternal.
+// but the branch not yet pushed). An invalid remote name returns CodeInvalidRequest
+// immediately, before the backend is called. Push failures map to CodeInternal.
 func (svc *BeadService) PushWorktree(ctx context.Context, id, remote string) error {
 	if svc.wtAccessor == nil {
 		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Validate and resolve the remote name early — before the bead lookup and
+	// the backend call — so an invalid remote is rejected with a clear 400.
+	resolvedRemote, err := wt.ResolveRemote(remote)
+	if err != nil {
+		return &ServiceError{Code: CodeInvalidRequest, Message: "invalid remote name: " + err.Error()}
 	}
 	// Verify the bead exists.
 	if _, err := svc.GetBead(ctx, id); err != nil {
@@ -923,7 +967,7 @@ func (svc *BeadService) PushWorktree(ctx context.Context, id, remote string) err
 		return mapWorktreeReadError(err, id, "push")
 	}
 	if svc.publish != nil {
-		svc.publish(ws.Frame{Type: ws.EventWorktreePushed, BeadID: id, Branch: wt.BranchName(id), Remote: wt.ResolveRemote(remote)})
+		svc.publish(ws.Frame{Type: ws.EventWorktreePushed, BeadID: id, Branch: wt.BranchName(id), Remote: resolvedRemote})
 	}
 	return nil
 }
@@ -932,6 +976,8 @@ func (svc *BeadService) PushWorktree(ctx context.Context, id, remote string) err
 //
 // M1 guard: same as FinalizeWorktree — returns CodeRunAlreadyActive when the
 // bead's run is StepActive or StepPending.
+// The per-bead wtOpMu lock is held from the guard check through the backend
+// call, mirroring FinalizeWorktree's TOCTOU fix (tri-review 5).
 func (svc *BeadService) RemoveWorktree(ctx context.Context, id string) error {
 	if svc.wtAccessor == nil {
 		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
@@ -940,7 +986,10 @@ func (svc *BeadService) RemoveWorktree(ctx context.Context, id string) error {
 	if _, err := svc.GetBead(ctx, id); err != nil {
 		return err
 	}
-	// M1 run-state guard.
+	// Acquire per-bead lock before the run-state guard (tri-review 5).
+	unlock := svc.lockWtOp(id)
+	defer unlock()
+	// M1 run-state guard (held under lock).
 	if err := svc.checkRunNotActive(id); err != nil {
 		return err
 	}

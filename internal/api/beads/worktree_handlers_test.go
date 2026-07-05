@@ -575,6 +575,38 @@ func TestPushWorktreeHandler_200_CustomRemote(t *testing.T) {
 	}
 }
 
+// TestPushWorktreeHandler_400_InvalidRemote verifies that a request with an
+// option-like remote name (e.g. "--force") returns 400 INVALID_REQUEST before
+// reaching the backend. This guards against remote-name injection into git push.
+func TestPushWorktreeHandler_400_InvalidRemote(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepDone}
+	srv := newWorktreeTestServer(t, acc)
+
+	for _, badRemote := range []string{"--force", "-f", "--receive-pack=/bin/sh", "a b"} {
+		t.Run(badRemote, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"remote": badRemote})
+			resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/push", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("remote=%q: status = %d, want 400; body: %s", badRemote, resp.StatusCode, b)
+			}
+			code := errorCode(t, resp)
+			if code != services.CodeInvalidRequest {
+				t.Errorf("remote=%q: error code = %q, want %q", badRemote, code, services.CodeInvalidRequest)
+			}
+			// The fake accessor's Push must NOT have been called.
+			if acc.pushBeadID != "" {
+				t.Errorf("remote=%q: backend Push was called despite invalid remote", badRemote)
+			}
+		})
+	}
+}
+
 // TestPushWorktreeHandler_500_BackendError verifies that a push backend error
 // maps to 500.
 func TestPushWorktreeHandler_500_BackendError(t *testing.T) {

@@ -15,6 +15,23 @@ import (
 	"github.com/gitrgoliveira/muster/internal/worktree"
 )
 
+// checkWorktreeDir verifies path exists and is a directory, returning
+// ErrWorktreeNotFound for absent/non-dir paths. Used by Finalize, Push, and
+// Remove to DRY the repeated lstat/IsNotExist/IsDir guard before each git op.
+func checkWorktreeDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrWorktreeNotFound
+		}
+		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return ErrWorktreeNotFound
+	}
+	return nil
+}
+
 // gitBackend implements Backend using the git VCS. It optionally stores a
 // worktreesDir so that the interface methods Status/DiffSummary/Diff can resolve
 // the worktree path without requiring the caller to pass it on every call.
@@ -88,16 +105,9 @@ func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) (bool
 	}
 	path := filepath.Join(g.worktreesDir, beadID)
 
-	// Verify the worktree exists.
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, ErrWorktreeNotFound
-		}
-		return false, fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
-	}
-	if !info.IsDir() {
-		return false, ErrWorktreeNotFound
+	// Verify the worktree exists and is a directory.
+	if err := checkWorktreeDir(path); err != nil {
+		return false, err
 	}
 
 	// Check for changes using `git status --porcelain`.
@@ -149,19 +159,15 @@ func (g *gitBackend) Push(ctx context.Context, beadID, remote string) error {
 	}
 	path := filepath.Join(g.worktreesDir, beadID)
 
-	// Verify the worktree exists.
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ErrWorktreeNotFound
-		}
-		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
-	}
-	if !info.IsDir() {
-		return ErrWorktreeNotFound
+	// Verify the worktree exists and is a directory.
+	if err := checkWorktreeDir(path); err != nil {
+		return err
 	}
 
-	resolvedRemote := ResolveRemote(remote)
+	resolvedRemote, err := ResolveRemote(remote)
+	if err != nil {
+		return err
+	}
 	branch := BranchName(beadID)
 
 	cmd := exec.CommandContext(ctx, "git", "push", resolvedRemote, branch)
@@ -187,16 +193,9 @@ func (g *gitBackend) Remove(ctx context.Context, beadID string) error {
 	}
 	path := filepath.Join(g.worktreesDir, beadID)
 
-	// Verify the worktree exists.
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ErrWorktreeNotFound
-		}
-		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
-	}
-	if !info.IsDir() {
-		return ErrWorktreeNotFound
+	// Verify the worktree exists and is a directory.
+	if err := checkWorktreeDir(path); err != nil {
+		return err
 	}
 
 	// Refuse removal when the worktree has uncommitted changes (tracked or
@@ -227,55 +226,16 @@ func (g *gitBackend) Remove(ctx context.Context, beadID string) error {
 		return fmt.Errorf("wt git: git worktree remove %q: %w\n%s", path, err, removeOut)
 	}
 
-	// Prune stale worktree refs from the main repo's metadata.
-	// We need to run this from somewhere with access to the git repo; since the
-	// worktree is now removed, find the main repo via the git-common-dir. We run
-	// prune from the srcRepo by resolving it from the common dir.
-	// Best-effort: prune failure is non-fatal (stale refs are cosmetic).
-	if mainRepo := gitMainRepoDir(ctx, path); mainRepo != "" {
-		pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune")
-		pruneCmd.Dir = mainRepo
-		_ = pruneCmd.Run() // best-effort
-	}
+	// Prune stale worktree refs from the main repo's metadata. Run from
+	// filepath.Dir(path): `git rev-parse --git-common-dir` succeeds from a
+	// sibling git worktree's parent, so prune runs in the same context. If the
+	// parent has no git context (e.g. worktreesDir is outside any repo) this
+	// exits non-zero and we ignore it — stale refs are cosmetic.
+	pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune")
+	pruneCmd.Dir = filepath.Dir(path)
+	_ = pruneCmd.Run() // best-effort: stale refs are cosmetic; fails harmlessly when the parent dir has no git context
 
 	return nil
-}
-
-// gitMainRepoDir returns the path to the main repository (where .git lives)
-// given a worktree path. It reads the worktree's .git file (which contains the
-// gitdir pointing back to the main repo's worktrees/<name> directory). Returns
-// empty string on any error (used for best-effort prune only).
-func gitMainRepoDir(ctx context.Context, wtPath string) string {
-	// git rev-parse --git-common-dir returns the common git directory
-	// (e.g. /path/to/main/.git) from within any worktree.
-	// Note: this is called after the worktree directory is already gone, so we
-	// pass the path but it may fail — in which case we just skip the prune.
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
-	cmd.Dir = filepath.Dir(wtPath) // run from parent dir since wtPath is removed
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	commonDir := strings.TrimSpace(string(out))
-	if commonDir == "" {
-		return ""
-	}
-	// commonDir is .git itself or a path inside it; go up to the repo root.
-	if !filepath.IsAbs(commonDir) {
-		commonDir = filepath.Join(filepath.Dir(wtPath), commonDir)
-	}
-	// Walk up from .git to find the repo root.
-	for {
-		parent := filepath.Dir(commonDir)
-		if parent == commonDir {
-			break
-		}
-		if filepath.Base(commonDir) == ".git" {
-			return parent
-		}
-		commonDir = parent
-	}
-	return ""
 }
 
 // ── Package-level helpers (bypass Backend interface) ──────────────────────

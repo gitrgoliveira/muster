@@ -1,6 +1,7 @@
 package wt_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/wt"
@@ -27,23 +28,45 @@ func TestBranchName(t *testing.T) {
 	}
 }
 
-// TestResolveRemote verifies the remote-name resolution logic.
-// When the remote param is empty, defaults to "origin".
-// When non-empty, uses the provided value as-is.
+// TestResolveRemote verifies the remote-name resolution and validation logic.
+// Empty → ("origin", nil); valid names pass through; invalid names return ErrInvalidRemote.
 func TestResolveRemote(t *testing.T) {
 	cases := []struct {
-		name   string
-		remote string // empty = use default
-		want   string
+		name    string
+		remote  string
+		want    string
+		wantErr bool
 	}{
-		{"empty uses origin", "", "origin"},
-		{"explicit remote", "upstream", "upstream"},
-		{"explicit origin", "origin", "origin"},
-		{"custom remote name", "my-fork", "my-fork"},
+		// Valid inputs.
+		{"empty uses origin", "", "origin", false},
+		{"explicit remote", "upstream", "upstream", false},
+		{"explicit origin", "origin", "origin", false},
+		{"custom remote name", "my-fork", "my-fork", false},
+		{"alphanumeric", "my-remote", "my-remote", false},
+		{"dots and dashes", "r2.d2", "r2.d2", false},
+		// Invalid inputs — leading '-' is an option, not a name.
+		{"leading dash long", "--force", "", true},
+		{"leading dash short", "-f", "", true},
+		{"receive-pack injection", "--receive-pack=/bin/sh", "", true},
+		{"space in name", "a b", "", true},
+		// Non-ASCII characters are rejected.
+		{"non-ascii", "über", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := wt.ResolveRemote(tc.remote)
+			got, err := wt.ResolveRemote(tc.remote)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("ResolveRemote(%q): want error, got nil (resolved to %q)", tc.remote, got)
+				}
+				if !errors.Is(err, wt.ErrInvalidRemote) {
+					t.Errorf("ResolveRemote(%q): error want ErrInvalidRemote, got %v", tc.remote, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveRemote(%q): unexpected error: %v", tc.remote, err)
+			}
 			if got != tc.want {
 				t.Errorf("ResolveRemote(%q) = %q, want %q", tc.remote, got, tc.want)
 			}

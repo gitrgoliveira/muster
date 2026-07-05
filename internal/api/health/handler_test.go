@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/api/health"
+	"github.com/gitrgoliveira/muster/internal/services"
 )
 
 func TestHealthz_Returns200_AndOK(t *testing.T) {
@@ -709,4 +710,66 @@ func TestOrchestratorStatus_M4_M3FieldsIntact(t *testing.T) {
 	mustHaveKey(t, raw, "build")
 	mustHaveKey(t, raw, "vcs")
 	mustHaveKey(t, raw, "worktreeCount")
+}
+
+// ── Fix B: error code must match services.CodeInvalidCapacity ─────────────────
+// These tests verify that SetCapacity returns the canonical INVALID_CAPACITY
+// code from services rather than a locally-defined duplicate that could drift.
+
+func TestSetCapacityHandler_ZeroCapacity_ReturnsServicesCode(t *testing.T) {
+	fake := &fakeCapacitySetter{}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":0}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 got %d", res.StatusCode)
+	}
+
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	// Must match the canonical constant — not a local copy that could drift.
+	if errBody.Error.Code != services.CodeInvalidCapacity {
+		t.Errorf("want code %q got %q", services.CodeInvalidCapacity, errBody.Error.Code)
+	}
+}
+
+func TestSetCapacityHandler_SetCapacityError_ReturnsServicesCode(t *testing.T) {
+	fake := &fakeCapacitySetter{setErr: fmt.Errorf("scheduler not configured")}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":3}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 got %d", res.StatusCode)
+	}
+
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	// Must match the canonical constant — not a local copy that could drift.
+	if errBody.Error.Code != services.CodeInvalidCapacity {
+		t.Errorf("want code %q got %q", services.CodeInvalidCapacity, errBody.Error.Code)
+	}
 }

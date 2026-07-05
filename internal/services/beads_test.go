@@ -7,7 +7,10 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/store"
@@ -1126,5 +1129,104 @@ func TestT040_FinalizeWorktree_NoEventOnError(t *testing.T) {
 	}
 	if len(*frames) != 0 {
 		t.Errorf("expected no WS frames on error, got %d", len(*frames))
+	}
+}
+
+// ── T041: per-bead operation mutex (tri-review 5 — TOCTOU) ─────────────────────────
+
+// slowWorktreeAccessor wraps fakeWriteableWorktreeAccessor and inserts a
+// configurable delay inside Finalize and Remove so concurrent callers have a
+// real opportunity to interleave. It also maintains an atomic in-flight counter
+// so the test can assert mutual exclusion.
+type slowWorktreeAccessor struct {
+	fakeWriteableWorktreeAccessor
+	delay    time.Duration
+	inFlight atomic.Int32 // incremented during Finalize/Remove; must never exceed 1
+	maxSeen  atomic.Int32 // peak in-flight value observed
+}
+
+func (s *slowWorktreeAccessor) Finalize(ctx context.Context, beadID, message string) (bool, error) {
+	cur := s.inFlight.Add(1)
+	defer s.inFlight.Add(-1)
+	// Record peak.
+	for {
+		prev := s.maxSeen.Load()
+		if cur <= prev || s.maxSeen.CompareAndSwap(prev, cur) {
+			break
+		}
+	}
+	time.Sleep(s.delay)
+	return s.fakeWriteableWorktreeAccessor.Finalize(ctx, beadID, message)
+}
+
+func (s *slowWorktreeAccessor) Remove(ctx context.Context, beadID string) error {
+	cur := s.inFlight.Add(1)
+	defer s.inFlight.Add(-1)
+	for {
+		prev := s.maxSeen.Load()
+		if cur <= prev || s.maxSeen.CompareAndSwap(prev, cur) {
+			break
+		}
+	}
+	time.Sleep(s.delay)
+	return s.fakeWriteableWorktreeAccessor.Remove(ctx, beadID)
+}
+
+// TestT041_WtOp_Serialized verifies that concurrent FinalizeWorktree and
+// RemoveWorktree calls for the same bead are serialized by the per-bead
+// operation mutex: the in-flight counter inside the slow accessor must never
+// exceed 1, even though both goroutines start simultaneously.
+func TestT041_WtOp_Serialized(t *testing.T) {
+	t.Parallel()
+
+	slow := &slowWorktreeAccessor{
+		fakeWriteableWorktreeAccessor: fakeWriteableWorktreeAccessor{
+			existingBeadID: "bd-1",
+			runState:       core.StepDone,
+		},
+		delay: 20 * time.Millisecond,
+	}
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: "bd-1", Title: "Test bead", Status: "open", IssueType: "task"},
+	})
+	svc := NewBeadService(backend, nil, func(ws.Frame) {}).WithWorktreeAccessor(slow)
+
+	ctx := context.Background()
+
+	// Launch both operations simultaneously.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var finalizeErr, removeErr error
+	go func() {
+		defer wg.Done()
+		<-start
+		_, finalizeErr = svc.FinalizeWorktree(ctx, "bd-1", "msg")
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		// Give Finalize a tiny head start so it enters the slow section first.
+		time.Sleep(2 * time.Millisecond)
+		removeErr = svc.RemoveWorktree(ctx, "bd-1")
+	}()
+
+	close(start)
+	wg.Wait()
+
+	// Both operations must succeed (the fake never returns an error here).
+	if finalizeErr != nil {
+		t.Errorf("FinalizeWorktree: %v", finalizeErr)
+	}
+	if removeErr != nil {
+		t.Errorf("RemoveWorktree: %v", removeErr)
+	}
+
+	// The critical assertion: the peak in-flight count must be exactly 1.
+	// If the mutex is absent, both goroutines enter the slow section together
+	// and maxSeen reaches 2.
+	if peak := slow.maxSeen.Load(); peak > 1 {
+		t.Errorf("concurrent operations detected: peak in-flight = %d, want ≤ 1", peak)
 	}
 }

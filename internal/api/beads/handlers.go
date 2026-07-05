@@ -475,6 +475,8 @@ type FinalizeResponse struct {
 
 // PushRequest is the optional body for POST /beads/{id}/worktree/push.
 // An absent or empty body defaults Remote to "" (resolved to "origin" by wt.ResolveRemote).
+// A non-empty Remote is validated against ^[A-Za-z0-9][A-Za-z0-9._-]*$; names beginning
+// with '-' or containing spaces are rejected with 400 INVALID_REQUEST.
 type PushRequest struct {
 	Remote string `json:"remote"`
 }
@@ -524,6 +526,8 @@ func (h *Handlers) FinalizeWorktree(w http.ResponseWriter, r *http.Request) {
 // PushWorktree handles POST /beads/{id}/worktree/push.
 // Accepts an optional JSON body: {"remote":"<name>"}. When the body is absent
 // or remote is empty, the remote defaults to "origin" via wt.ResolveRemote.
+// A non-empty remote is validated before reaching the service; invalid names
+// (leading '-', spaces, non-ASCII) return 400 INVALID_REQUEST.
 func (h *Handlers) PushWorktree(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !validateID(w, r, id) {
@@ -552,6 +556,14 @@ func (h *Handlers) PushWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate the remote name before calling the service so the handler can
+	// render a 400 directly (thin-handler style: validate → delegate → render).
+	resolvedRemote, remoteErr := wt.ResolveRemote(req.Remote)
+	if remoteErr != nil {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, remoteErr.Error())
+		return
+	}
+
 	if err := h.svc.PushWorktree(r.Context(), id, req.Remote); mapServiceError(w, r, err) {
 		return
 	}
@@ -559,7 +571,7 @@ func (h *Handlers) PushWorktree(w http.ResponseWriter, r *http.Request) {
 	render.WriteJSON(w, http.StatusOK, PushResponse{
 		Pushed: true,
 		Branch: wt.BranchName(id),
-		Remote: wt.ResolveRemote(req.Remote),
+		Remote: resolvedRemote,
 	})
 }
 
