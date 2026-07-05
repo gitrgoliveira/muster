@@ -91,8 +91,10 @@ func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
 	return true
 }
 
-// parseStepIdx parses and validates the {idx} path param shared by Attach, Send,
-// and the advance/loopback endpoints.
+// parseStepIdx parses and validates the {idx} path param used by the Attach and
+// Send handlers. (The advance/loopback endpoints have no {idx} path param —
+// advance is implicit +1 and loopback carries its target in the request body —
+// so they do not call this.)
 //
 // T045 (widened from M2): accepts any non-negative canonical decimal integer.
 // Non-canonical forms ("-0", "+0", "00", leading-zero strings) and negative

@@ -377,32 +377,54 @@ func TestGitRemove_DirtyWorktree_ReturnsDirtyError(t *testing.T) {
 	}
 }
 
-// TestGitWriteMethods_VCSUnavailable verifies ErrVCSUnavailable behavior when
-// the git binary is removed from PATH. This simulates the runtime-missing case.
+// TestGitWriteMethods_VCSUnavailable verifies that when the git binary is
+// genuinely absent from PATH, the write methods return an explicit error
+// wrapping exec.ErrNotFound (no panic) — the runtime-missing case.
 func TestGitWriteMethods_VCSUnavailable(t *testing.T) {
-	// Create a fake-on-path dir with no git binary (empty bin dir).
+	// Shadow git by setting PATH to ONLY an empty dir. Prepending an empty dir
+	// (the previous approach) does NOT hide the real git — PATH resolution just
+	// falls through to it — so exec would still find git and the test asserted
+	// nothing about the missing-binary path (Copilot PR #7).
 	binDir := t.TempDir()
-	// Add binDir first on PATH so the real git is shadowed.
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", binDir)
 
-	// The wt package checks for the binary at call time.
-	// We verify that Finalize/Push/Remove return an error when git is absent.
-	// The errors won't be ErrVCSUnavailable itself (that's for VCS type mismatch)
-	// but rather an exec error — either exec.ErrNotFound or a subprocess failure.
-	// The key requirement is: no panic, explicit error returned.
-	b := wt.NewGitBackend(t.TempDir())
+	// Create a REAL worktree directory so the lstat/IsDir guard passes and the
+	// methods actually reach the `git` exec. Without this, path
+	// <worktreesDir>/<beadID> does not exist and every method short-circuits
+	// with ErrWorktreeNotFound BEFORE any git call — which is what made the old
+	// test a false positive (it passed on ErrWorktreeNotFound regardless of
+	// whether git was present).
+	worktreesDir := t.TempDir()
+	const beadID = "mp-a"
+	if err := os.MkdirAll(filepath.Join(worktreesDir, beadID), 0o755); err != nil {
+		t.Fatalf("setup worktree dir: %v", err)
+	}
+
+	b := wt.NewGitBackend(worktreesDir)
 	ctx := context.Background()
 
 	for _, op := range []struct {
 		name string
 		fn   func() error
 	}{
-		{"Finalize", func() error { _, err := b.Finalize(ctx, "any", "msg"); return err }},
-		{"Push", func() error { return b.Push(ctx, "any", "") }},
-		{"Remove", func() error { return b.Remove(ctx, "any") }},
+		{"Finalize", func() error { _, err := b.Finalize(ctx, beadID, "msg"); return err }},
+		{"Push", func() error { return b.Push(ctx, beadID, "") }},
+		{"Remove", func() error { return b.Remove(ctx, beadID) }},
 	} {
-		if err := op.fn(); err == nil {
+		err := op.fn()
+		if err == nil {
 			t.Errorf("%s with absent git: expected error, got nil", op.name)
+			continue
+		}
+		// Must be the git-absent path, NOT the early worktree-not-found guard:
+		// an ErrWorktreeNotFound here would mean the method short-circuited
+		// before ever exec'ing git, i.e. the test isn't exercising the
+		// missing-binary case at all.
+		if errors.Is(err, wt.ErrWorktreeNotFound) {
+			t.Errorf("%s: short-circuited with ErrWorktreeNotFound before exec'ing git; test does not exercise the missing-binary path: %v", op.name, err)
+		}
+		if !errors.Is(err, exec.ErrNotFound) {
+			t.Errorf("%s with absent git: expected error wrapping exec.ErrNotFound, got %v", op.name, err)
 		}
 	}
 }
