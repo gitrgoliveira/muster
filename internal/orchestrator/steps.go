@@ -55,9 +55,9 @@ func (o *Orchestrator) Advance(beadID string) error {
 	// scheduler later launches it (tri-review #1/#3). A terminal run (Done/
 	// Failed) has no watcher to relaunch, so an advance would silently no-op
 	// (tri-review #4). Guard both here.
-	if run.State != core.StepActive {
+	if st := run.State; st != core.StepActive {
 		o.mu.Unlock()
-		return fmt.Errorf("%w: bead %q run is not active (state=%s)", ErrStepOutOfRange, beadID, run.State)
+		return fmt.Errorf("%w: bead %q run is not active (state=%s)", ErrStepOutOfRange, beadID, st)
 	}
 	if run.Chain == nil || len(*run.Chain) == 0 {
 		o.mu.Unlock()
@@ -137,9 +137,9 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 		return fmt.Errorf("%w: no run for bead %q", ErrStepOutOfRange, beadID)
 	}
 	// Only a live (running) step can loop back (tri-review #3/#4) — see Advance.
-	if run.State != core.StepActive {
+	if st := run.State; st != core.StepActive {
 		o.mu.Unlock()
-		return fmt.Errorf("%w: bead %q run is not active (state=%s)", ErrStepOutOfRange, beadID, run.State)
+		return fmt.Errorf("%w: bead %q run is not active (state=%s)", ErrStepOutOfRange, beadID, st)
 	}
 	if run.Chain == nil || len(*run.Chain) == 0 {
 		o.mu.Unlock()
