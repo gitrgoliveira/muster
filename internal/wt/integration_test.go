@@ -47,8 +47,8 @@ func (a *worktreeTestAccessor) DefaultVCS() string { return a.defaultVCS }
 
 // Write-side stubs — not exercised by the M3 integration test but needed to
 // satisfy the WorktreeAccessor interface after it was widened in M4 (T036a).
-func (a *worktreeTestAccessor) Finalize(_ context.Context, _, _ string) error {
-	return nil
+func (a *worktreeTestAccessor) Finalize(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
 }
 func (a *worktreeTestAccessor) Push(_ context.Context, _ string) error   { return nil }
 func (a *worktreeTestAccessor) Remove(_ context.Context, _ string) error { return nil }

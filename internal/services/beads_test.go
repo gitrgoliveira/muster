@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/core"
@@ -589,6 +590,30 @@ func TestT018_SetCapacity_InvalidCapacity(t *testing.T) {
 	}
 }
 
+// TestT018_SetCapacity_NoDoubleWrap verifies that when the SchedulerManager
+// adapter returns a pre-wrapped *ServiceError (mimicking the orchestrator adapter
+// returning a raw error that BeadService then wraps once), the final error
+// message does not contain the code string twice. This guards against the
+// double-wrapping anti-pattern where both the adapter and BeadService each wrap
+// the same error in ServiceError{CodeInvalidCapacity}.
+func TestT018_SetCapacity_NoDoubleWrap(t *testing.T) {
+	// Simulate the adapter returning a pre-wrapped *ServiceError — this is what
+	// the old (buggy) schedulerManagerAdapter did. BeadService.SetCapacity must
+	// not wrap it a second time.
+	preWrapped := &ServiceError{Code: CodeInvalidCapacity, Message: "capacity must be > 0"}
+	fake := &fakeSchedulerManager{setErr: preWrapped}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	err := svc.SetCapacity(0)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	// The code must not appear more than once in the message.
+	if count := strings.Count(msg, CodeInvalidCapacity); count > 1 {
+		t.Errorf("error message contains %q %d times (double-wrap): %s", CodeInvalidCapacity, count, msg)
+	}
+}
+
 func TestT018_SchedulerSnapshot_NoScheduler(t *testing.T) {
 	svc := NewBeadService(nil, nil, nil)
 	snap := svc.SchedulerSnapshot()
@@ -689,10 +714,13 @@ func (f *fakeWriteableWorktreeAccessor) BeadRunState(beadID string) core.StepSta
 	return ""
 }
 
-func (f *fakeWriteableWorktreeAccessor) Finalize(_ context.Context, beadID, message string) error {
+func (f *fakeWriteableWorktreeAccessor) Finalize(_ context.Context, beadID, message string) (bool, error) {
 	f.finalizeBeadID = beadID
 	f.finalizeMsg = message
-	return f.finalizeErr
+	if f.finalizeErr != nil {
+		return false, f.finalizeErr
+	}
+	return true, nil
 }
 
 func (f *fakeWriteableWorktreeAccessor) Push(_ context.Context, beadID string) error {
@@ -721,7 +749,7 @@ func newSvcWithFakeWT(beadID string, wa WorktreeAccessor) *BeadService {
 // TestT037_FinalizeWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
 func TestT037_FinalizeWorktree_NoAccessor(t *testing.T) {
 	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
-	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
 	se := mustServiceError(t, err)
 	if se.Code != CodeVCSUnavailable {
 		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
@@ -736,7 +764,7 @@ func TestT037_FinalizeWorktree_RunActive(t *testing.T) {
 	}
 	svc := newSvcWithFakeWT("bd-1", wa)
 
-	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
 	se := mustServiceError(t, err)
 	if se.Code != CodeRunAlreadyActive {
 		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
@@ -751,7 +779,7 @@ func TestT037_FinalizeWorktree_RunPending(t *testing.T) {
 	}
 	svc := newSvcWithFakeWT("bd-1", wa)
 
-	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
 	se := mustServiceError(t, err)
 	if se.Code != CodeRunAlreadyActive {
 		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
@@ -768,7 +796,7 @@ func TestT037_FinalizeWorktree_TerminalState(t *testing.T) {
 			}
 			svc := newSvcWithFakeWT("bd-1", wa)
 
-			if err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
+			if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
 				t.Fatalf("expected success for state=%q, got %v", state, err)
 			}
 			if wa.finalizeBeadID != "bd-1" {
@@ -790,7 +818,7 @@ func TestT037_FinalizeWorktree_BackendError(t *testing.T) {
 	}
 	svc := newSvcWithFakeWT("bd-1", wa)
 
-	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
 	se := mustServiceError(t, err)
 	if se.Code != CodeInternal {
 		t.Errorf("code want %q got %q", CodeInternal, se.Code)
@@ -806,7 +834,7 @@ func TestT037_FinalizeWorktree_VCSUnavailable(t *testing.T) {
 	}
 	svc := newSvcWithFakeWT("bd-1", wa)
 
-	err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
 	se := mustServiceError(t, err)
 	if se.Code != CodeVCSUnavailable {
 		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
@@ -822,7 +850,7 @@ func TestT037_FinalizeWorktree_NotFound(t *testing.T) {
 	})
 	svc := NewBeadService(backend, nil, func(ws.Frame) {}).WithWorktreeAccessor(wa)
 
-	err := svc.FinalizeWorktree(context.Background(), "bd-missing", "msg")
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-missing", "msg")
 	se := mustServiceError(t, err)
 	if se.Code != CodeNotFound {
 		t.Errorf("code want %q got %q", CodeNotFound, se.Code)
@@ -984,7 +1012,7 @@ func TestT040_FinalizeWorktree_EmitsEvent(t *testing.T) {
 	}
 	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
 
-	if err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
+	if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
 		t.Fatalf("FinalizeWorktree: %v", err)
 	}
 
@@ -1059,7 +1087,7 @@ func TestT040_FinalizeWorktree_NoEventOnError(t *testing.T) {
 	}
 	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
 
-	if err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg"); err == nil {
+	if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg"); err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if len(*frames) != 0 {

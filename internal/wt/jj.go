@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // jjSrcRepoDir resolves the shared jj source-repo directory for a given workspace.
@@ -55,8 +56,16 @@ func jjSrcRepoDir(wtPath string) (string, error) {
 // worktreesDir to be baked in via NewJJBackend(worktreesDir). The exported
 // helpers JJStatusAt/JJDiffSummaryAt/JJDiffAt accept worktreesDir explicitly
 // and are used by tests and the service layer.
+//
+// Security: Push and Remove resolve the srcRepo path via the srcRepos cache,
+// which is populated by Create before the agent runs. The fallback to
+// jjSrcRepoDir (reading the agent-writable .jj/repo file) is used only when
+// the cache has no entry (e.g. the backend was reconstructed after the fact).
 type jjBackend struct {
 	worktreesDir string
+	// srcRepos caches beadID → srcRepo path as populated by Create.
+	// Push and Remove prefer this over re-reading the agent-writable .jj/repo.
+	srcRepos sync.Map
 }
 
 // NewJJBackend returns a jj Backend with worktreesDir baked in.
@@ -85,9 +94,10 @@ func (j *jjBackend) Create(ctx context.Context, worktreesDir, srcRepo, beadID st
 		return "", fmt.Errorf("%w: jj root failed in %q: %s", ErrVCSUnavailable, srcRepo, strings.TrimSpace(string(out)))
 	}
 
-	// If the workspace already exists, return it (reuse).
+	// If the workspace already exists, return it (reuse) and refresh the cache.
 	if info, err := os.Lstat(wtPath); err == nil {
 		if info.IsDir() {
+			j.srcRepos.Store(beadID, srcRepo)
 			return wtPath, nil
 		}
 	}
@@ -102,7 +112,22 @@ func (j *jjBackend) Create(ctx context.Context, worktreesDir, srcRepo, beadID st
 		return "", fmt.Errorf("wt jj: workspace add %q: %w\n%s", wtPath, err, out)
 	}
 
+	// Cache srcRepo before the agent starts so Push/Remove can use the trusted
+	// value rather than re-reading the agent-writable .jj/repo file (FIX 4).
+	j.srcRepos.Store(beadID, srcRepo)
+
 	return wtPath, nil
+}
+
+// resolveSrcRepo returns the srcRepo path for beadID. It checks the in-memory
+// cache (populated by Create) first — this is the security-preferred path that
+// avoids reading the agent-writable .jj/repo file. Falls back to jjSrcRepoDir
+// only when no cached entry exists (e.g. backend was reconstructed).
+func (j *jjBackend) resolveSrcRepo(beadID, wtPath string) (string, error) {
+	if v, ok := j.srcRepos.Load(beadID); ok {
+		return v.(string), nil
+	}
+	return jjSrcRepoDir(wtPath)
 }
 
 // Status returns the worktree's state. Requires NewJJBackend(worktreesDir).
@@ -132,18 +157,21 @@ func (j *jjBackend) Diff(ctx context.Context, beadID, path string) (io.ReadClose
 // Finalize seals the working-copy changes with message and starts a new empty WC.
 //
 // Algorithm (pinned in research.md R6):
-//  1. Check `jj diff --summary` — empty output means no changes → no-op success.
+//  1. Check `jj diff --summary` — empty output means no changes → no-op (false, nil).
 //  2. `jj describe -m <message>` to set the description on the current WC change.
 //  3. `jj new` to advance the WC past the now-sealed revision.
-func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) error {
+//
+// Returns (true, nil) when a revision was sealed; (false, nil) when the
+// workspace had no changes (no-op).
+func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) (bool, error) {
 	wtPath := filepath.Join(j.worktreesDir, beadID)
 
 	// Verify workspace exists.
 	if _, err := os.Lstat(wtPath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
+			return false, fmt.Errorf("wt jj: workspace %q not found: %w", beadID, ErrWorktreeNotFound)
 		}
-		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
+		return false, fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
 	}
 
 	// No-op detection: jj diff --summary empty → nothing to commit.
@@ -152,13 +180,13 @@ func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) error 
 	out, err := diffCmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("wt jj: diff --summary aborted: %w", ctx.Err())
+			return false, fmt.Errorf("wt jj: diff --summary aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt jj: jj diff --summary in %q: %w\n%s", wtPath, err, out)
+		return false, fmt.Errorf("wt jj: jj diff --summary in %q: %w\n%s", wtPath, err, out)
 	}
 	if strings.TrimSpace(string(out)) == "" {
-		// No changes — Finalize is a no-op (success).
-		return nil
+		// No changes — Finalize is a no-op (success, no revision sealed).
+		return false, nil
 	}
 
 	// Seal: describe the WC change with the message.
@@ -166,9 +194,9 @@ func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) error 
 	descCmd.Dir = wtPath
 	if out, err := descCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("wt jj: describe aborted: %w", ctx.Err())
+			return false, fmt.Errorf("wt jj: describe aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt jj: jj describe in %q: %w\n%s", wtPath, err, out)
+		return false, fmt.Errorf("wt jj: jj describe in %q: %w\n%s", wtPath, err, out)
 	}
 
 	// Advance past the sealed revision.
@@ -176,11 +204,11 @@ func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) error 
 	newCmd.Dir = wtPath
 	if out, err := newCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("wt jj: new aborted: %w", ctx.Err())
+			return false, fmt.Errorf("wt jj: new aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt jj: jj new in %q: %w\n%s", wtPath, err, out)
+		return false, fmt.Errorf("wt jj: jj new in %q: %w\n%s", wtPath, err, out)
 	}
-	return nil
+	return true, nil
 }
 
 // Push pushes the bead's sealed revision to the default remote.
@@ -227,8 +255,9 @@ func (j *jjBackend) Push(ctx context.Context, beadID string) error {
 		return fmt.Errorf("wt jj: jj git export: %w\n%s", err, out)
 	}
 
-	// 3. Resolve the shared srcrepo via the workspace's .jj/repo pointer.
-	srcRepo, err := jjSrcRepoDir(wtPath)
+	// 3. Resolve the shared srcrepo: use the cache (populated by Create) to
+	// avoid reading the agent-writable .jj/repo file (FIX 4, tri-review #13).
+	srcRepo, err := j.resolveSrcRepo(beadID, wtPath)
 	if err != nil {
 		return fmt.Errorf("wt jj: resolving srcrepo for push: %w", err)
 	}
@@ -264,8 +293,8 @@ func (j *jjBackend) Remove(ctx context.Context, beadID string) error {
 		return fmt.Errorf("wt jj: lstat workspace %q: %w", wtPath, err)
 	}
 
-	// Resolve srcrepo — `jj workspace forget` must run from the shared repo.
-	srcRepo, err := jjSrcRepoDir(wtPath)
+	// Resolve srcrepo via cache (preferred) or .jj/repo fallback (see FIX 4).
+	srcRepo, err := j.resolveSrcRepo(beadID, wtPath)
 	if err != nil {
 		return fmt.Errorf("wt jj: resolving srcrepo for remove: %w", err)
 	}

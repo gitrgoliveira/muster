@@ -35,9 +35,10 @@ type fakeWorktreeAccessor struct {
 	runState core.StepStatus
 
 	// write-side errors (nil = success)
-	finalizeErr error
-	pushErr     error
-	removeErr   error
+	finalizeErr       error
+	finalizeCommitted bool // value returned by Finalize when err==nil
+	pushErr           error
+	removeErr         error
 
 	// write-side capture
 	finalizeBeadID string
@@ -65,10 +66,13 @@ func (f *fakeWorktreeAccessor) DefaultVCS() string { return f.vcs }
 
 func (f *fakeWorktreeAccessor) BeadRunState(_ string) core.StepStatus { return f.runState }
 
-func (f *fakeWorktreeAccessor) Finalize(_ context.Context, beadID, message string) error {
+func (f *fakeWorktreeAccessor) Finalize(_ context.Context, beadID, message string) (bool, error) {
 	f.finalizeBeadID = beadID
 	f.finalizeMsg = message
-	return f.finalizeErr
+	if f.finalizeErr != nil {
+		return false, f.finalizeErr
+	}
+	return f.finalizeCommitted, nil
 }
 
 func (f *fakeWorktreeAccessor) Push(_ context.Context, beadID string) error {
@@ -349,9 +353,10 @@ func TestDiffHandler_200_CleanWorktree_EmptyBody(t *testing.T) {
 // with committed=true and the message echoed.
 func TestFinalizeWorktreeHandler_200(t *testing.T) {
 	acc := &fakeWorktreeAccessor{
-		status:   wt.WorktreeStatus{Exists: true, Clean: false},
-		vcs:      "git",
-		runState: core.StepDone,
+		status:            wt.WorktreeStatus{Exists: true, Clean: false},
+		vcs:               "git",
+		runState:          core.StepDone,
+		finalizeCommitted: true,
 	}
 	srv := newWorktreeTestServer(t, acc)
 
@@ -374,8 +379,48 @@ func TestFinalizeWorktreeHandler_200(t *testing.T) {
 	if result.Message != "feat: seal work" {
 		t.Errorf("message = %q, want %q", result.Message, "feat: seal work")
 	}
+	if !result.Committed {
+		t.Error("committed want true (dirty worktree finalized)")
+	}
 	if acc.finalizeBeadID != "mp-aaa" {
 		t.Errorf("Finalize called with beadID=%q, want mp-aaa", acc.finalizeBeadID)
+	}
+}
+
+// TestFinalizeWorktreeHandler_200_CleanWorktree_CommittedFalse verifies that a
+// finalize on a clean worktree returns committed=false in the response.
+// This is the end-to-end test for the contract fix: no-op finalize must not
+// hardcode committed=true.
+func TestFinalizeWorktreeHandler_200_CleanWorktree_CommittedFalse(t *testing.T) {
+	acc := &fakeWorktreeAccessor{
+		status:            wt.WorktreeStatus{Exists: true, Clean: true},
+		vcs:               "git",
+		runState:          core.StepDone,
+		finalizeCommitted: false, // clean worktree: no commit created
+	}
+	srv := newWorktreeTestServer(t, acc)
+
+	body := bytes.NewBufferString(`{"message":"no-op seal"}`)
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/finalize", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, b)
+	}
+
+	var result beads.FinalizeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.Committed {
+		t.Error("committed want false for clean-worktree finalize (no-op), got true")
+	}
+	if result.Message != "no-op seal" {
+		t.Errorf("message = %q, want %q", result.Message, "no-op seal")
 	}
 }
 

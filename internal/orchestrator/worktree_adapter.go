@@ -43,7 +43,7 @@ func (a *worktreeAccessorAdapter) DefaultVCS() string {
 }
 
 // Finalize delegates to the orchestrator's selected wt.Backend.
-func (a *worktreeAccessorAdapter) Finalize(ctx context.Context, beadID, message string) error {
+func (a *worktreeAccessorAdapter) Finalize(ctx context.Context, beadID, message string) (bool, error) {
 	return a.o.backend.Finalize(ctx, beadID, message)
 }
 

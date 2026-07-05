@@ -501,12 +501,13 @@ func (h *Handlers) FinalizeWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.FinalizeWorktree(r.Context(), id, req.Message); mapServiceError(w, r, err) {
+	committed, err := h.svc.FinalizeWorktree(r.Context(), id, req.Message)
+	if mapServiceError(w, r, err) {
 		return
 	}
 
 	render.WriteJSON(w, http.StatusOK, FinalizeResponse{
-		Committed: true,
+		Committed: committed,
 		Message:   req.Message,
 	})
 }

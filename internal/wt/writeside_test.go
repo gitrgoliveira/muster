@@ -107,9 +107,12 @@ func TestGitFinalize_NoChanges(t *testing.T) {
 	wtPath := filepath.Join(worktreesDir, beadID)
 	beforeLog := gitLogLatest(t, wtPath)
 
-	err := b.Finalize(ctx, beadID, "should not commit")
+	committed, err := b.Finalize(ctx, beadID, "should not commit")
 	if err != nil {
 		t.Fatalf("Finalize on clean worktree: expected success, got %v", err)
+	}
+	if committed {
+		t.Error("Finalize on clean worktree: committed want false, got true")
 	}
 
 	// After finalize: commit log must be unchanged (no new commit).
@@ -136,8 +139,12 @@ func TestGitFinalize_WithChanges(t *testing.T) {
 	b := wt.NewGitBackend(worktreesDir)
 	ctx := context.Background()
 
-	if err := b.Finalize(ctx, beadID, "feat: agent work done"); err != nil {
+	committed, err := b.Finalize(ctx, beadID, "feat: agent work done")
+	if err != nil {
 		t.Fatalf("Finalize: %v", err)
+	}
+	if !committed {
+		t.Error("Finalize on dirty worktree: committed want true, got false")
 	}
 
 	// Verify a commit was created with the right message.
@@ -187,7 +194,7 @@ func TestGitFinalize_AllFilesStaged(t *testing.T) {
 	b := wt.NewGitBackend(worktreesDir)
 	ctx := context.Background()
 
-	if err := b.Finalize(ctx, beadID, "all changes committed"); err != nil {
+	if _, err := b.Finalize(ctx, beadID, "all changes committed"); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 
@@ -206,7 +213,7 @@ func TestGitFinalize_AllFilesStaged(t *testing.T) {
 func TestGitFinalize_MissingWorktree(t *testing.T) {
 	b := wt.NewGitBackend(t.TempDir()) // empty worktreesDir with no beads
 	ctx := context.Background()
-	err := b.Finalize(ctx, "nonexistent", "msg")
+	_, err := b.Finalize(ctx, "nonexistent", "msg")
 	if err == nil {
 		t.Fatal("expected error for missing worktree, got nil")
 	}
@@ -239,7 +246,7 @@ func TestGitPush_ToBarePushable(t *testing.T) {
 	b := wt.NewGitBackend(worktreesDir)
 	ctx := context.Background()
 
-	if err := b.Finalize(ctx, beadID, "finalized for push"); err != nil {
+	if _, err := b.Finalize(ctx, beadID, "finalized for push"); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 
@@ -360,7 +367,7 @@ func TestGitWriteMethods_VCSUnavailable(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"Finalize", func() error { return b.Finalize(ctx, "any", "msg") }},
+		{"Finalize", func() error { _, err := b.Finalize(ctx, "any", "msg"); return err }},
 		{"Push", func() error { return b.Push(ctx, "any") }},
 		{"Remove", func() error { return b.Remove(ctx, "any") }},
 	} {
@@ -378,7 +385,7 @@ func TestGitWriteMethods_NotErrNotImplemented(t *testing.T) {
 	ctx := context.Background()
 
 	// All three should return real errors (e.g. worktree not found), not the stub.
-	if err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
+	if _, err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
 		t.Error("Finalize: still returning ErrNotImplemented (M3 stub not replaced)")
 	}
 	if err := b.Push(ctx, "bead"); err == wt.ErrNotImplemented {

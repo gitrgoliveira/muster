@@ -688,7 +688,7 @@ func TestGitBackend_WriteMethodsNotImplemented(t *testing.T) {
 	// Via NewGitBackend (has worktreesDir but no worktree exists for "bead").
 	b := wt.NewGitBackend(t.TempDir())
 	ctx := context.Background()
-	if err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
+	if _, err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
 		t.Errorf("Finalize: M3 stub still in place (ErrNotImplemented), want real error")
 	}
 	if err := b.Push(ctx, "bead"); err == wt.ErrNotImplemented {

@@ -105,8 +105,9 @@ type Backend interface {
 	Diff(ctx context.Context, beadID, path string) (io.ReadCloser, error)
 
 	// Finalize commits the worktree's changes with msg; a no-change worktree is
-	// a no-op success (no commit). Implemented in M4 (git + jj).
-	Finalize(ctx context.Context, beadID, msg string) error
+	// a no-op success (no commit). Returns (true, nil) when a commit was created,
+	// (false, nil) when the worktree was already clean (no-op). Implemented in M4 (git + jj).
+	Finalize(ctx context.Context, beadID, msg string) (committed bool, err error)
 
 	// Push pushes the worktree's branch (muster/<beadID>) upstream; failures are
 	// explicit errors, never silent. Implemented in M4 (git + jj).

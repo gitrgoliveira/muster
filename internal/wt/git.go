@@ -29,9 +29,6 @@ import (
 // and the service layer when worktreesDir comes from config.
 type gitBackend struct {
 	worktreesDir string
-	// pushRemote is the git remote name used by Push. Defaults to "origin" when
-	// empty (resolved by ResolveRemote). Configurable via NewGitBackendWithRemote.
-	pushRemote string
 }
 
 // NewGitBackend returns a git Backend with worktreesDir baked in. The resulting
@@ -40,12 +37,6 @@ type gitBackend struct {
 // Push uses the default "origin" remote.
 func NewGitBackend(worktreesDir string) Backend {
 	return &gitBackend{worktreesDir: worktreesDir}
-}
-
-// NewGitBackendWithRemote is like NewGitBackend but also sets the push remote.
-// An empty remote falls back to "origin" (same as NewGitBackend).
-func NewGitBackendWithRemote(worktreesDir, pushRemote string) Backend {
-	return &gitBackend{worktreesDir: worktreesDir, pushRemote: pushRemote}
 }
 
 // Create ensures the per-bead git worktree exists by delegating to
@@ -88,12 +79,12 @@ func (g *gitBackend) Diff(ctx context.Context, beadID, path string) (io.ReadClos
 
 // Finalize commits all changes in the bead's worktree with the given message.
 // If the worktree has no changes (git status --porcelain is empty), this is a
-// no-op and returns success immediately — no commit is created (FR-010).
-// On non-empty changes: git add -A + git commit -m <message>.
+// no-op and returns (false, nil) — no commit is created (FR-010).
+// On non-empty changes: git add -A + git commit -m <message>; returns (true, nil).
 // Requires the backend was constructed with NewGitBackend(worktreesDir).
-func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) error {
+func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) (bool, error) {
 	if g.worktreesDir == "" {
-		return fmt.Errorf("wt git: Finalize requires worktreesDir — use NewGitBackend")
+		return false, fmt.Errorf("wt git: Finalize requires worktreesDir — use NewGitBackend")
 	}
 	path := filepath.Join(g.worktreesDir, beadID)
 
@@ -101,12 +92,12 @@ func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) error
 	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return ErrWorktreeNotFound
+			return false, ErrWorktreeNotFound
 		}
-		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
+		return false, fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
 	}
 	if !info.IsDir() {
-		return ErrWorktreeNotFound
+		return false, ErrWorktreeNotFound
 	}
 
 	// Check for changes using `git status --porcelain`.
@@ -115,14 +106,14 @@ func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) error
 	out, err := statusCmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("wt git: finalize status aborted: %w", ctx.Err())
+			return false, fmt.Errorf("wt git: finalize status aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt git: git status in %q: %w\n%s", path, err, out)
+		return false, fmt.Errorf("wt git: git status in %q: %w\n%s", path, err, out)
 	}
 
-	// No changes — no-op success.
+	// No changes — no-op success (no commit created).
 	if strings.TrimSpace(string(out)) == "" {
-		return nil
+		return false, nil
 	}
 
 	// Stage all changes.
@@ -130,9 +121,9 @@ func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) error
 	addCmd.Dir = path
 	if addOut, err := addCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("wt git: finalize add aborted: %w", ctx.Err())
+			return false, fmt.Errorf("wt git: finalize add aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt git: git add -A in %q: %w\n%s", path, err, addOut)
+		return false, fmt.Errorf("wt git: git add -A in %q: %w\n%s", path, err, addOut)
 	}
 
 	// Commit with the provided message.
@@ -140,17 +131,15 @@ func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) error
 	commitCmd.Dir = path
 	if commitOut, err := commitCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("wt git: finalize commit aborted: %w", ctx.Err())
+			return false, fmt.Errorf("wt git: finalize commit aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt git: git commit in %q: %w\n%s", path, err, commitOut)
+		return false, fmt.Errorf("wt git: git commit in %q: %w\n%s", path, err, commitOut)
 	}
 
-	return nil
+	return true, nil
 }
 
-// Push pushes the bead's branch (muster/<beadID>) to the remote. The remote
-// defaults to "origin" (configurable via the remote parameter stored in the
-// backend's pushRemote field, which defaults to "origin" if empty).
+// Push pushes the bead's branch (muster/<beadID>) to the "origin" remote.
 // A non-zero git exit (no remote, auth failure, rejected) returns an explicit
 // typed error — never silent success (FR-007).
 // Requires the backend was constructed with NewGitBackend(worktreesDir).
@@ -172,7 +161,7 @@ func (g *gitBackend) Push(ctx context.Context, beadID string) error {
 		return ErrWorktreeNotFound
 	}
 
-	remote := ResolveRemote(g.pushRemote)
+	remote := ResolveRemote("")
 	branch := BranchName(beadID)
 
 	cmd := exec.CommandContext(ctx, "git", "push", remote, branch)
