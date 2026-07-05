@@ -23,6 +23,18 @@ type serviceDispatcherAdapter struct {
 // import-cycle-avoiding request type into the orchestrator's own DispatchRequest
 // and mirroring the result back into the services-layer type.
 func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (services.OrchestratorDispatchResult, error) {
+	// nil means "no override" to resolveChain (which treats any non-nil
+	// req.Chain as explicit); only build a *StepChain when the caller
+	// actually supplied steps, so an empty-but-non-nil req.Chain doesn't
+	// spuriously short-circuit the orchestrator's configured default chain.
+	var chain *StepChain
+	if len(req.Chain) > 0 {
+		c := make(StepChain, len(req.Chain))
+		for i, s := range req.Chain {
+			c[i] = StepProfile{Name: s.Name, PermissionMode: s.PermissionMode, PromptRef: s.PromptRef}
+		}
+		chain = &c
+	}
 	res, err := a.o.Dispatch(ctx, DispatchRequest{
 		BeadID:         req.BeadID,
 		BeadTitle:      req.BeadTitle,
@@ -30,6 +42,7 @@ func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.Or
 		Agent:          req.Agent,
 		Mode:           req.Mode,
 		PermissionMode: req.PermissionMode,
+		Chain:          chain,
 	})
 	if err != nil {
 		return services.OrchestratorDispatchResult{}, mapDispatchError(err)

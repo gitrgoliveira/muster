@@ -310,10 +310,21 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1:1 field mapping only — chain validation lives in the service layer
+	// (Constitution III: handlers stay thin).
+	var chain []services.ChainStepInput
+	if len(req.Chain) > 0 {
+		chain = make([]services.ChainStepInput, len(req.Chain))
+		for i, s := range req.Chain {
+			chain[i] = services.ChainStepInput{Name: s.Name, PermissionMode: s.PermissionMode, PromptRef: s.PromptRef}
+		}
+	}
+
 	input := services.DispatchInput{
 		Agent:          req.Agent,
 		Mode:           req.Mode,
 		PermissionMode: req.PermissionMode,
+		Chain:          chain,
 	}
 
 	result, err := h.svc.Dispatch(r.Context(), id, input)

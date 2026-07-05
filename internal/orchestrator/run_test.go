@@ -85,6 +85,46 @@ func TestRunRegistry_OneActivePerBead(t *testing.T) {
 	}
 }
 
+// TestListRunSummaries_SortedByBeadID verifies that ListRunSummaries returns
+// its results ordered by BeadID ascending, as its doc comment promises
+// ("ordered by BeadID for deterministic output"). Registering runs via
+// registerRun populates the underlying map (o.runs) whose Go iteration order
+// is randomized per-run, so a naive range-over-map implementation would
+// return nondeterministic order; asserting an exact expected order here is a
+// valid deterministic test of the sort itself. Three or more out-of-order IDs
+// (rather than just two) make an accidental pass via lucky map iteration
+// implausible.
+func TestListRunSummaries_SortedByBeadID(t *testing.T) {
+	o := New(Config{RepoMap: RepoMap{"mp": "/tmp/repo"}})
+
+	o.mu.Lock()
+	o.registerRun(&Run{BeadID: "mp-zzz", State: core.StepActive})
+	o.registerRun(&Run{BeadID: "mp-aaa", State: core.StepActive})
+	o.registerRun(&Run{BeadID: "mp-mmm", State: core.StepActive})
+	o.mu.Unlock()
+
+	summaries := o.ListRunSummaries()
+	if len(summaries) != 3 {
+		t.Fatalf("len(summaries) = %d, want 3", len(summaries))
+	}
+	want := []string{"mp-aaa", "mp-mmm", "mp-zzz"}
+	for i, w := range want {
+		if summaries[i].BeadID != w {
+			t.Errorf("summaries[%d].BeadID = %q, want %q (full order: %v)", i, summaries[i].BeadID, w, summaryBeadIDs(summaries))
+		}
+	}
+}
+
+// summaryBeadIDs is a small test helper for building a readable order dump in
+// failure messages.
+func summaryBeadIDs(summaries []RunSummary) []string {
+	ids := make([]string, len(summaries))
+	for i, s := range summaries {
+		ids[i] = s.BeadID
+	}
+	return ids
+}
+
 func TestResolvePermMode(t *testing.T) {
 	o := New(Config{RepoMap: RepoMap{}})
 

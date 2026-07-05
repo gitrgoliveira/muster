@@ -102,6 +102,20 @@ type DispatchInput struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode // NEW (FR-021); validated/allow-listed
+	// Chain is an optional per-dispatch step-chain override (contract
+	// http-endpoints.md "chain" field). Nil/empty means the M2 single-step
+	// default (or the orchestrator's configured default chain, if any).
+	Chain []ChainStepInput
+}
+
+// ChainStepInput is a wire-agnostic mirror of orchestrator.StepProfile.
+// Defined here (not in orchestrator) to avoid an import cycle — same reason
+// OrchestratorDispatchRequest below is defined in services rather than
+// referencing orchestrator.DispatchRequest directly.
+type ChainStepInput struct {
+	Name           string
+	PermissionMode core.PermissionMode
+	PromptRef      string
 }
 
 // DispatchResult is the return value of BeadService.Dispatch.
@@ -145,6 +159,9 @@ type OrchestratorDispatchRequest struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode
+	// Chain mirrors orchestrator.DispatchRequest.Chain (via ChainStepInput /
+	// orchestrator.StepProfile); nil/empty means no per-dispatch override.
+	Chain []ChainStepInput
 }
 
 // OrchestratorDispatchResult is the service-layer mirror of
@@ -586,6 +603,19 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 	if input.PermissionMode != "" && !input.PermissionMode.Valid() {
 		return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: "invalid permissionMode"}
 	}
+	// An explicit chain override is validated fail-fast, the same as the
+	// scalar fields above: FR-012a requires per-step PermissionMode to never
+	// be silently defaulted, so a step missing (or with an invalid)
+	// PermissionMode is a 400, not a fallback to DefaultPermissionMode. An
+	// empty/nil input.Chain (the M2 single-step default) is unaffected.
+	for i, step := range input.Chain {
+		if step.Name == "" {
+			return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: fmt.Sprintf("chain[%d]: name is required", i)}
+		}
+		if !step.PermissionMode.Valid() {
+			return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: fmt.Sprintf("chain[%d]: invalid or missing permissionMode", i)}
+		}
+	}
 
 	// If an orchestrator is available, delegate real dispatch to it.
 	if svc.orchestrator != nil {
@@ -601,6 +631,7 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			Agent:          input.Agent,
 			Mode:           input.Mode,
 			PermissionMode: input.PermissionMode,
+			Chain:          input.Chain,
 		}
 		orchResult, orchErr := svc.orchestrator.Dispatch(ctx, req)
 		if orchErr != nil {

@@ -43,6 +43,17 @@ type DispatchRequest struct {
 	Agent          core.AgentID        `json:"agent"`
 	Mode           core.Mode           `json:"mode"`
 	PermissionMode core.PermissionMode `json:"permissionMode,omitempty"`
+	// Chain is an optional per-dispatch step-chain override (contract
+	// http-endpoints.md: "Request body unchanged, plus optional additive
+	// field `chain`"). Omitted/empty means the M2 single-step default.
+	Chain []ChainStepRequest `json:"chain,omitempty"`
+}
+
+// ChainStepRequest is the wire shape of a single step in DispatchRequest.Chain.
+type ChainStepRequest struct {
+	Name           string              `json:"name"`
+	PermissionMode core.PermissionMode `json:"permissionMode,omitempty"`
+	PromptRef      string              `json:"promptRef,omitempty"`
 }
 
 type CommentRequest struct {

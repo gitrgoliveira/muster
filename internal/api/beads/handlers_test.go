@@ -446,9 +446,11 @@ type fakeOrchestratorDispatcher struct {
 	result      *core.Bead
 	joined      bool
 	queued      bool
+	lastReq     services.OrchestratorDispatchRequest
 }
 
-func (f *fakeOrchestratorDispatcher) Dispatch(_ context.Context, _ services.OrchestratorDispatchRequest) (services.OrchestratorDispatchResult, error) {
+func (f *fakeOrchestratorDispatcher) Dispatch(_ context.Context, req services.OrchestratorDispatchRequest) (services.OrchestratorDispatchResult, error) {
+	f.lastReq = req
 	if f.dispatchErr != nil {
 		return services.OrchestratorDispatchResult{}, f.dispatchErr
 	}
@@ -550,6 +552,41 @@ func TestDispatch_501_AdapterNotFound(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 	assert.Equal(t, "ADAPTER_NOT_FOUND", errorCode(t, resp))
+}
+
+// TestDispatch_Chain_ReachesService verifies that a "chain" array in the
+// dispatch request body reaches services.DispatchInput.Chain — and from
+// there OrchestratorDispatcher.Dispatch — with matching fields, in order.
+// This is the HTTP-layer half of the wiring that makes the per-dispatch
+// step-chain override (contract http-endpoints.md line 9) actually reachable;
+// without it, the orchestrator's resolveChain always saw nil.
+func TestDispatch_Chain_ReachesService(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/dispatch", map[string]interface{}{
+		"agent":          "claude",
+		"mode":           "agent",
+		"permissionMode": "acceptEdits",
+		"chain": []map[string]interface{}{
+			{"name": "plan", "permissionMode": "plan"},
+			{"name": "build", "permissionMode": "acceptEdits", "promptRef": "build-ref"},
+		},
+	})
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	if len(orch.lastReq.Chain) != 2 {
+		t.Fatalf("orchestrator received Chain of length %d, want 2", len(orch.lastReq.Chain))
+	}
+	want := []services.ChainStepInput{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits, PromptRef: "build-ref"},
+	}
+	for i, w := range want {
+		if orch.lastReq.Chain[i] != w {
+			t.Errorf("Chain[%d] = %+v, want %+v", i, orch.lastReq.Chain[i], w)
+		}
+	}
 }
 
 func TestDispatch_400_InvalidPermissionMode(t *testing.T) {

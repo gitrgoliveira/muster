@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -447,6 +448,7 @@ func (o *Orchestrator) ListRunSummaries() []RunSummary {
 			Quota:    r.Quota,
 		})
 	}
+	sort.Slice(summaries, func(i, j int) bool { return summaries[i].BeadID < summaries[j].BeadID })
 	return summaries
 }
 

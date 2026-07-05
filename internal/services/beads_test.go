@@ -246,15 +246,115 @@ type fakeOrchestrator struct {
 	dispatchCalled bool
 	joined         bool // when true, Dispatch returns Joined:true (idempotent join)
 	queued         bool // when true, Dispatch returns Queued:true (capacity-waiting)
+	lastReq        OrchestratorDispatchRequest
 }
 
-func (f *fakeOrchestrator) Dispatch(context.Context, OrchestratorDispatchRequest) (OrchestratorDispatchResult, error) {
+func (f *fakeOrchestrator) Dispatch(_ context.Context, req OrchestratorDispatchRequest) (OrchestratorDispatchResult, error) {
 	f.dispatchCalled = true
+	f.lastReq = req
 	return OrchestratorDispatchResult{
 		Bead:   &core.Bead{ID: "mp-aaa", Column: core.ColRunning},
 		Joined: f.joined,
 		Queued: f.queued,
 	}, nil
+}
+
+// ── Dispatch chain (per-dispatch step-chain override) ──────────────────
+
+// TestDispatch_Chain_MissingPermissionMode verifies that an explicit chain
+// with a step missing PermissionMode is rejected with CodeInvalidRequest
+// before the orchestrator is ever called. FR-012a is explicit that
+// per-step permission mode is never silently defaulted, so this must be a
+// hard 400, not a fallback to DefaultPermissionMode.
+func TestDispatch_Chain_MissingPermissionMode(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	svc := NewBeadService(backend, nil, nil).WithOrchestrator(orch)
+
+	_, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{
+		Agent: core.AgentClaude,
+		Mode:  core.ModeAgent,
+		Chain: []ChainStepInput{
+			{Name: "plan", PermissionMode: core.PermPlan},
+			{Name: "build"}, // missing PermissionMode
+		},
+	})
+	if err == nil {
+		t.Fatal("Dispatch should reject a chain step with no PermissionMode")
+	}
+	var se *ServiceError
+	if !errors.As(err, &se) {
+		t.Fatalf("want *ServiceError, got %T: %v", err, err)
+	}
+	if se.Code != CodeInvalidRequest {
+		t.Errorf("code = %q, want %q", se.Code, CodeInvalidRequest)
+	}
+	if orch.dispatchCalled {
+		t.Error("orchestrator.Dispatch must not be called when chain validation fails")
+	}
+}
+
+// TestDispatch_Chain_EmptyName verifies that an explicit chain with a step
+// whose Name is empty is rejected with CodeInvalidRequest before the
+// orchestrator is called.
+func TestDispatch_Chain_EmptyName(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	svc := NewBeadService(backend, nil, nil).WithOrchestrator(orch)
+
+	_, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{
+		Agent: core.AgentClaude,
+		Mode:  core.ModeAgent,
+		Chain: []ChainStepInput{
+			{Name: "", PermissionMode: core.PermPlan},
+		},
+	})
+	if err == nil {
+		t.Fatal("Dispatch should reject a chain step with an empty Name")
+	}
+	var se *ServiceError
+	if !errors.As(err, &se) {
+		t.Fatalf("want *ServiceError, got %T: %v", err, err)
+	}
+	if se.Code != CodeInvalidRequest {
+		t.Errorf("code = %q, want %q", se.Code, CodeInvalidRequest)
+	}
+	if orch.dispatchCalled {
+		t.Error("orchestrator.Dispatch must not be called when chain validation fails")
+	}
+}
+
+// TestDispatch_Chain_ForwardedVerbatim verifies that a valid chain is
+// forwarded, in order and unmodified, into OrchestratorDispatchRequest.Chain
+// — this is the wiring the rest of M4's step-chain feature (advance/loopback)
+// depends on; without it resolveChain always sees nil and every dispatch is
+// forced into the M2 single-step path.
+func TestDispatch_Chain_ForwardedVerbatim(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	svc := NewBeadService(backend, nil, nil).WithOrchestrator(orch)
+
+	chain := []ChainStepInput{
+		{Name: "plan", PermissionMode: core.PermPlan, PromptRef: "plan-ref"},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	_, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{
+		Agent: core.AgentClaude,
+		Mode:  core.ModeAgent,
+		Chain: chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !orch.dispatchCalled {
+		t.Fatal("orchestrator.Dispatch was not called")
+	}
+	if len(orch.lastReq.Chain) != 2 {
+		t.Fatalf("forwarded Chain length = %d, want 2", len(orch.lastReq.Chain))
+	}
+	if orch.lastReq.Chain[0] != chain[0] || orch.lastReq.Chain[1] != chain[1] {
+		t.Errorf("forwarded Chain = %+v, want %+v", orch.lastReq.Chain, chain)
+	}
 }
 
 // TestDispatch_OrchestratorPath_PersistsRunningState verifies that
