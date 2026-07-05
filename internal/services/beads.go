@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -48,6 +49,11 @@ const (
 	// M3 worktree codes.
 	CodeWorktreeNotFound = "WORKTREE_NOT_FOUND" // 404 — bead exists but has no worktree
 	CodeVCSUnavailable   = "VCS_UNAVAILABLE"    // 412 — VCS binary absent or wrong VCS type
+	CodeWorktreeDirty    = "WORKTREE_DIRTY"     // 409 — worktree has uncommitted changes; finalize first
+
+	// M4 dispatcher codes (additive).
+	CodeStepOutOfRange  = "STEP_OUT_OF_RANGE" // 422 — step index outside [0, chainLen)
+	CodeInvalidCapacity = "INVALID_CAPACITY"  // 400 — scheduler capacity ≤0
 )
 
 // ServiceError wraps a validation or state error with a code understood by
@@ -96,6 +102,28 @@ type DispatchInput struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode // NEW (FR-021); validated/allow-listed
+	// Chain is an optional per-dispatch step-chain override (contract
+	// http-endpoints.md "chain" field). Nil/empty means the M2 single-step
+	// default (or the orchestrator's configured default chain, if any).
+	Chain []ChainStepInput
+}
+
+// ChainStepInput is a wire-agnostic mirror of orchestrator.StepProfile.
+// Defined here (not in orchestrator) to avoid an import cycle — same reason
+// OrchestratorDispatchRequest below is defined in services rather than
+// referencing orchestrator.DispatchRequest directly.
+type ChainStepInput struct {
+	Name           string
+	PermissionMode core.PermissionMode
+	PromptRef      string
+}
+
+// DispatchResult is the return value of BeadService.Dispatch.
+// It carries the active bead plus idempotency flags surfaced to the HTTP layer.
+type DispatchResult struct {
+	Bead   *core.Bead
+	Joined bool // true when joining an existing in-flight run (M4 US4)
+	Queued bool // true when the run is waiting for a capacity slot (M4 US1)
 }
 
 // CommentInput carries the validated comment parameters.
@@ -113,11 +141,13 @@ type CommentInput struct {
 // The Dispatch method accepts an OrchestratorDispatchRequest, which mirrors
 // orchestrator.DispatchRequest — kept in sync by the API layer.
 type OrchestratorDispatcher interface {
-	// Dispatch launches an agent run for the given bead, returning the active bead.
-	// Implementations return *ServiceError (with Code set per
-	// orchestrator.mapDispatchError) rather than raw orchestrator sentinels;
-	// anything else is treated as CodeInternal by wrapOrchestratorError.
-	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (*core.Bead, error)
+	// Dispatch launches an agent run for the given bead. On success it returns
+	// an OrchestratorDispatchResult containing the active bead plus idempotency
+	// flags (Joined, Queued). Implementations return *ServiceError (with Code
+	// set per orchestrator.mapDispatchError) rather than raw orchestrator
+	// sentinels; anything else is treated as CodeInternal by
+	// wrapOrchestratorError.
+	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (OrchestratorDispatchResult, error)
 }
 
 // OrchestratorDispatchRequest is the input for OrchestratorDispatcher.Dispatch.
@@ -129,6 +159,38 @@ type OrchestratorDispatchRequest struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode
+	// Chain mirrors orchestrator.DispatchRequest.Chain (via ChainStepInput /
+	// orchestrator.StepProfile); nil/empty means no per-dispatch override.
+	Chain []ChainStepInput
+}
+
+// OrchestratorDispatchResult is the service-layer mirror of
+// orchestrator.DispatchResult; defined here (not in orchestrator) to avoid an
+// import cycle. Kept in sync with orchestrator.DispatchResult per the
+// OrchestratorDispatchRequest mirroring pattern.
+type OrchestratorDispatchResult struct {
+	Bead   *core.Bead
+	Joined bool // true when joining an in-flight run (idempotent dispatch, M4 US4)
+	Queued bool // true when admitted to the waiting queue (capacity full, M4 US1)
+}
+
+// SchedulerSnapshot is the service-layer view of the scheduler's current state.
+// It mirrors orchestrator.SchedulerSnapshot; defined here to avoid import cycles.
+type SchedulerSnapshot struct {
+	Capacity    int
+	ActiveCount int
+	Waiting     []string // bead IDs in FIFO order
+}
+
+// SchedulerManager is the interface BeadService uses to manage scheduler capacity.
+// The real implementation is *orchestrator.Orchestrator; tests substitute a fake.
+// Defined here (not in orchestrator) to avoid import cycles.
+type SchedulerManager interface {
+	// SetCapacity changes the scheduler's maximum concurrency at runtime.
+	// n must be > 0; returns an error (code INVALID_CAPACITY) otherwise.
+	SetCapacity(n int) error
+	// SchedulerSnapshot returns the current scheduler state (capacity, active, waiting).
+	SchedulerSnapshot() SchedulerSnapshot
 }
 
 // BeadService implements business logic on top of the store.
@@ -136,26 +198,34 @@ type BeadService struct {
 	backend      store.Backend
 	cli          CLIRunner              // may be nil; writes return CodeCLIMissing when nil
 	orchestrator OrchestratorDispatcher // may be nil; dispatch returns CodeCLIMissing when nil
+	scheduler    SchedulerManager       // may be nil; SetCapacity/SchedulerSnapshot return error when nil
 	attacher     SessionAttacher        // may be nil; attach/send return unavailable when nil
 	wtAccessor   WorktreeAccessor       // may be nil; worktree/diff return CodeVCSUnavailable when nil
+	stepAdvancer StepAdvancer           // may be nil; advance/loopback return unavailable when nil
 	repo         string
 	publish      Publisher
 	// publishOnWrite broadcasts a WS frame after each successful CLI write.
 	// Enabled in remote mode (no file watcher); embedded mode leaves it false
 	// so the watcher remains the single WS source and writes aren't double-announced.
 	publishOnWrite bool
+	// wtOpMu serializes mutating worktree operations (Finalize, Remove) per bead.
+	// Push is excluded because it is read-side from the worktree's perspective and
+	// is explicitly permitted at any run state.
+	// Key: beadID (string) → *sync.Mutex.
+	// A pointer so the With* builder copies share the same lock map (they are the same logical service).
+	wtOpMu *sync.Map
 }
 
 // NewBeadService constructs a BeadService.
 // cli may be nil; write operations return CodeCLIMissing in that case.
 func NewBeadService(backend store.Backend, cli CLIRunner, pub Publisher) *BeadService {
-	return &BeadService{backend: backend, cli: cli, publish: pub}
+	return &BeadService{backend: backend, cli: cli, publish: pub, wtOpMu: &sync.Map{}}
 }
 
 // NewBeadServiceWithRepo constructs a BeadService with an explicit repo name.
 // publishOnWrite should be true in remote mode (where no watcher runs).
 func NewBeadServiceWithRepo(backend store.Backend, cli CLIRunner, pub Publisher, repo string, publishOnWrite bool) *BeadService {
-	return &BeadService{backend: backend, cli: cli, repo: repo, publish: pub, publishOnWrite: publishOnWrite}
+	return &BeadService{backend: backend, cli: cli, repo: repo, publish: pub, publishOnWrite: publishOnWrite, wtOpMu: &sync.Map{}}
 }
 
 // WithOrchestrator returns a new BeadService with an orchestrator dispatcher
@@ -164,6 +234,43 @@ func (svc *BeadService) WithOrchestrator(o OrchestratorDispatcher) *BeadService 
 	svc2 := *svc
 	svc2.orchestrator = o
 	return &svc2
+}
+
+// WithScheduler returns a new BeadService with a scheduler manager attached.
+// The manager is used by SetCapacity and SchedulerSnapshot when present.
+func (svc *BeadService) WithScheduler(s SchedulerManager) *BeadService {
+	svc2 := *svc
+	svc2.scheduler = s
+	return &svc2
+}
+
+// SetCapacity changes the scheduler's maximum concurrency at runtime.
+// Returns *ServiceError{Code: CodeInvalidCapacity} when n ≤ 0, or when the
+// scheduler is not configured (scheduler == nil).
+func (svc *BeadService) SetCapacity(n int) error {
+	if svc.scheduler == nil {
+		return &ServiceError{Code: CodeInvalidCapacity, Message: "scheduler not configured"}
+	}
+	if err := svc.scheduler.SetCapacity(n); err != nil {
+		// If the adapter already returned a *ServiceError, pass it through
+		// without re-wrapping (guards against double-wrap from the orchestrator
+		// adapter path — tri-review fix #12).
+		var se *ServiceError
+		if errors.As(err, &se) {
+			return se
+		}
+		return &ServiceError{Code: CodeInvalidCapacity, Message: err.Error()}
+	}
+	return nil
+}
+
+// SchedulerSnapshot returns the current scheduler state. If the scheduler is
+// not configured, it returns a zero-value snapshot (capacity 0, no active runs).
+func (svc *BeadService) SchedulerSnapshot() SchedulerSnapshot {
+	if svc.scheduler == nil {
+		return SchedulerSnapshot{}
+	}
+	return svc.scheduler.SchedulerSnapshot()
 }
 
 // WithAttacher returns a new BeadService with a session attacher attached.
@@ -483,15 +590,31 @@ func (svc *BeadService) Move(ctx context.Context, id string, input MoveInput) (*
 // not fatal, since the run is already active) — beads is the source of truth
 // for issue state, so the launch alone is not enough. Otherwise it falls back
 // to the legacy bd-CLI path (stub).
-func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchInput) (*core.Bead, error) {
+//
+// Returns a DispatchResult carrying the active bead plus idempotency flags
+// (Joined=true when joining an existing in-flight run; Queued=true when waiting).
+func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchInput) (DispatchResult, error) {
 	if !input.Agent.Valid() {
-		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid agent"}
+		return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: "invalid agent"}
 	}
 	if !input.Mode.Valid() {
-		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid mode"}
+		return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: "invalid mode"}
 	}
 	if input.PermissionMode != "" && !input.PermissionMode.Valid() {
-		return nil, &ServiceError{Code: CodeInvalidRequest, Message: "invalid permissionMode"}
+		return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: "invalid permissionMode"}
+	}
+	// An explicit chain override is validated fail-fast, the same as the
+	// scalar fields above: FR-012a requires per-step PermissionMode to never
+	// be silently defaulted, so a step missing (or with an invalid)
+	// PermissionMode is a 400, not a fallback to DefaultPermissionMode. An
+	// empty/nil input.Chain (the M2 single-step default) is unaffected.
+	for i, step := range input.Chain {
+		if step.Name == "" {
+			return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: fmt.Sprintf("chain[%d]: name is required", i)}
+		}
+		if !step.PermissionMode.Valid() {
+			return DispatchResult{}, &ServiceError{Code: CodeInvalidRequest, Message: fmt.Sprintf("chain[%d]: invalid or missing permissionMode", i)}
+		}
 	}
 
 	// If an orchestrator is available, delegate real dispatch to it.
@@ -499,7 +622,7 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// Get the bead first to obtain title/desc for the prompt.
 		bead, err := svc.GetBead(ctx, id)
 		if err != nil {
-			return nil, err
+			return DispatchResult{}, err
 		}
 		req := OrchestratorDispatchRequest{
 			BeadID:         id,
@@ -508,16 +631,28 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			Agent:          input.Agent,
 			Mode:           input.Mode,
 			PermissionMode: input.PermissionMode,
+			Chain:          input.Chain,
 		}
-		result, orchErr := svc.orchestrator.Dispatch(ctx, req)
+		orchResult, orchErr := svc.orchestrator.Dispatch(ctx, req)
 		if orchErr != nil {
-			return nil, wrapOrchestratorError(orchErr)
+			return DispatchResult{}, wrapOrchestratorError(orchErr)
 		}
-		if result == nil {
-			// Defensive: a (nil, nil) return would otherwise fall through to
-			// `return result, nil` below and hand the HTTP layer a 200 with a
-			// null bead. Treat a missing bead with no error as an internal fault.
-			return nil, &ServiceError{Code: CodeInternal, Message: "orchestrator returned no bead"}
+		if orchResult.Bead == nil {
+			// Defensive: a zero-value result with no error would hand the HTTP
+			// layer a 200 with a null bead. Treat a missing bead with no error
+			// as an internal fault.
+			return DispatchResult{}, &ServiceError{Code: CodeInternal, Message: "orchestrator returned no bead"}
+		}
+
+		// Idempotent join: the bead is already in-flight. Skip the bd-claim
+		// and WS publish (the run transition already happened on the first
+		// dispatch) and return directly so the handler can render 200+joined.
+		if orchResult.Joined {
+			return DispatchResult{
+				Bead:   orchResult.Bead,
+				Joined: true,
+				Queued: orchResult.Queued,
+			}, nil
 		}
 
 		// Persist the running transition. Beads is the source of truth for
@@ -565,14 +700,14 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 		// a jsonl write into the hub, so this manual publish is the only
 		// signal beyond tmux.session.opened. Overlay the orchestrator's
 		// column so the frame carries a complete payload even if the bd
-		// claim above failed/was unavailable (result.Column is still
+		// claim above failed/was unavailable (orchResult.Bead.Column is still
 		// authoritative for "the run is active" either way).
 		// Return the same merged bead from the HTTP path so the response
 		// matches the WS frame (clients otherwise saw a stub here while a
 		// concurrent socket-listener saw the full bead).
-		// result is guaranteed non-nil here (the (nil,nil) case returned above).
+		// orchResult.Bead is guaranteed non-nil here (the nil-bead case returned above).
 		merged := *bead
-		merged.Column = result.Column
+		merged.Column = orchResult.Bead.Column
 		if svc.publishOnWrite || !persisted {
 			// svc.publishOnWrite: remote mode, no watcher runs at all, so
 			// this manual publish is the only signal regardless of
@@ -584,21 +719,21 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			// without a running-transition signal at all.
 			svc.publishForce(ws.EventBeadUpdated, &merged)
 		}
-		return &merged, nil
+		return DispatchResult{Bead: &merged, Queued: orchResult.Queued}, nil
 	}
 
 	// Legacy stub path: just move the bead to running via bd CLI.
 	if err := svc.requireCLI(); err != nil {
-		return nil, err
+		return DispatchResult{}, err
 	}
 
 	iss, err := svc.cli.Dispatch(ctx, id)
 	if err != nil {
-		return nil, wrapCLIError(err)
+		return DispatchResult{}, wrapCLIError(err)
 	}
 	b := IssueToBead(&iss, svc.repo)
 	svc.publishWrite(ws.EventBeadUpdated, &b)
-	return &b, nil
+	return DispatchResult{Bead: &b}, nil
 }
 
 // AttachResponse describes a live tmux session for user attachment.
@@ -625,8 +760,8 @@ type WorktreeDTO struct {
 	Files  []wt.FileChange `json:"files"`
 }
 
-// WorktreeAccessor is the interface BeadService uses to query the VCS backend.
-// The real implementation wraps the orchestrator's wt.Backend.
+// WorktreeAccessor is the interface BeadService uses to query and mutate the
+// VCS backend. The real implementation wraps the orchestrator's wt.Backend.
 // Defined here (not in orchestrator) to avoid import cycles.
 type WorktreeAccessor interface {
 	// WorktreeStatus returns the status of the per-bead worktree.
@@ -639,6 +774,22 @@ type WorktreeAccessor interface {
 	Diff(ctx context.Context, beadID, path string) (io.ReadCloser, error)
 	// DefaultVCS returns the VCS label (e.g. "git") for the DTO vcs field.
 	DefaultVCS() string
+
+	// Finalize seals the current working-copy changes with message.
+	// Returns (true, nil) when a commit was created; (false, nil) for a no-op
+	// (clean worktree). A no-change worktree succeeds as a no-op (idempotent).
+	Finalize(ctx context.Context, beadID, message string) (bool, error)
+	// Push pushes branch muster/<beadID> to remote (resolved via wt.ResolveRemote —
+	// empty defaults to "origin").
+	Push(ctx context.Context, beadID, remote string) error
+	// Remove deregisters and deletes the per-bead worktree directory.
+	Remove(ctx context.Context, beadID string) error
+
+	// BeadRunState returns the current run state for the given bead.
+	// Returns an empty string when no run record exists (never dispatched or
+	// already evicted). The service M1 guard uses this to refuse Finalize/Remove
+	// when a run is still active (StepActive or StepPending).
+	BeadRunState(beadID string) core.StepStatus
 }
 
 // GetAttach returns attachment info for a running step.
@@ -684,6 +835,8 @@ func mapWorktreeReadError(err error, id, op string) *ServiceError {
 		return &ServiceError{Code: CodeWorktreeNotFound, Message: "no worktree for bead " + id}
 	case errors.Is(err, wt.ErrVCSUnavailable), errors.Is(err, exec.ErrNotFound):
 		return &ServiceError{Code: CodeVCSUnavailable, Message: op + ": vcs backend unavailable: " + err.Error()}
+	case errors.Is(err, wt.ErrWorktreeDirty):
+		return &ServiceError{Code: CodeWorktreeDirty, Message: op + ": " + err.Error()}
 	default:
 		return &ServiceError{Code: CodeInternal, Message: op + " failed: " + err.Error()}
 	}
@@ -742,6 +895,201 @@ func (svc *BeadService) Diff(ctx context.Context, id, path string) (io.ReadClose
 		return nil, mapWorktreeReadError(err, id, "diff")
 	}
 	return rc, nil
+}
+
+// ── Write-side worktree methods (M4 US2) ─────────────────────────────────────
+
+// lockWtOp acquires the per-bead worktree-operation mutex for id and returns a
+// release function. Callers must defer the returned function:
+//
+//	unlock := svc.lockWtOp(id)
+//	defer unlock()
+//
+// This serializes Finalize and Remove for the same bead to close the TOCTOU
+// window between checkRunNotActive (which reads run state) and the actual
+// backend call. Push is intentionally excluded — it is permitted at any run
+// state and does not mutate the worktree's commit graph.
+func (svc *BeadService) lockWtOp(id string) func() {
+	v, _ := svc.wtOpMu.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// checkRunNotActive returns CodeRunAlreadyActive when the bead's current run is
+// in a non-terminal state (StepActive or StepPending). Push is permitted at any
+// run state (the agent may have finished but the worktree is still dirty).
+// Finalize and Remove must wait for a terminal state to avoid racing the agent.
+//
+// Note: checkRunNotActive does not hold the wtOpMu lock itself; callers
+// (FinalizeWorktree, RemoveWorktree) must call lockWtOp before checkRunNotActive
+// and hold the lock across the subsequent backend call to close the TOCTOU
+// window. A narrow residual window still exists between the agent updating its
+// run state and muster observing it, which is accepted as a known limitation.
+func (svc *BeadService) checkRunNotActive(id string) error {
+	if svc.wtAccessor == nil {
+		return nil // no accessor = no run state; caller handles the nil accessor check
+	}
+	state := svc.wtAccessor.BeadRunState(id)
+	if state == core.StepActive || state == core.StepPending {
+		return &ServiceError{
+			Code:    CodeRunAlreadyActive,
+			Message: "cannot finalize/remove worktree while a run is active (state=" + string(state) + ")",
+		}
+	}
+	return nil
+}
+
+// FinalizeWorktree seals the per-bead worktree's working-copy changes with
+// message. A no-change worktree succeeds as a no-op (idempotent).
+// Returns (true, nil) when a commit was created; (false, nil) for a no-op.
+//
+// M1 guard: returns (false, CodeRunAlreadyActive) when the bead's run is
+// StepActive or StepPending. Terminal states (StepDone, StepFailed, or absent) are allowed.
+// The per-bead wtOpMu lock is held from the guard check through the backend
+// call to close the TOCTOU window between reading run state and acting on it.
+func (svc *BeadService) FinalizeWorktree(ctx context.Context, id, message string) (bool, error) {
+	if svc.wtAccessor == nil {
+		return false, &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Reject NUL bytes in the commit message: git commit -m treats NUL as a
+	// message terminator, producing a silently truncated commit. Do NOT use
+	// validateField here — that rejects newlines, and multiline commit messages
+	// are legitimate.
+	if strings.ContainsRune(message, 0) {
+		return false, &ServiceError{Code: CodeInvalidRequest, Message: "message must not contain NUL bytes"}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return false, err
+	}
+	// Acquire per-bead lock before the run-state guard to close the TOCTOU
+	// window (tri-review 5): checkRunNotActive + Finalize are executed atomically
+	// with respect to concurrent RemoveWorktree for the same bead.
+	unlock := svc.lockWtOp(id)
+	defer unlock()
+	// M1 run-state guard (held under lock).
+	if err := svc.checkRunNotActive(id); err != nil {
+		return false, err
+	}
+	committed, err := svc.wtAccessor.Finalize(ctx, id, message)
+	if err != nil {
+		return false, mapWorktreeReadError(err, id, "finalize")
+	}
+	if svc.publish != nil {
+		svc.publish(ws.Frame{Type: ws.EventWorktreeFinalized, BeadID: id, Committed: &committed})
+	}
+	return committed, nil
+}
+
+// PushWorktree pushes branch muster/<beadID> to remote (resolved via
+// wt.ResolveRemote — empty defaults to "origin").
+// Push is permitted regardless of the current run state (the run may be finished
+// but the branch not yet pushed). An invalid remote name returns CodeInvalidRequest
+// immediately, before the backend is called. Push failures map to CodeInternal.
+func (svc *BeadService) PushWorktree(ctx context.Context, id, remote string) error {
+	if svc.wtAccessor == nil {
+		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Validate and resolve the remote name early — before the bead lookup and
+	// the backend call — so an invalid remote is rejected with a clear 400.
+	resolvedRemote, err := wt.ResolveRemote(remote)
+	if err != nil {
+		return &ServiceError{Code: CodeInvalidRequest, Message: "invalid remote name: " + err.Error()}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return err
+	}
+	// Pass resolvedRemote (not raw remote) so the backend, WS frame, and HTTP
+	// response all use the same value. The backend's own ResolveRemote is an
+	// idempotent revalidation (defense-in-depth for direct backend callers).
+	if err := svc.wtAccessor.Push(ctx, id, resolvedRemote); err != nil {
+		return mapWorktreeReadError(err, id, "push")
+	}
+	if svc.publish != nil {
+		svc.publish(ws.Frame{Type: ws.EventWorktreePushed, BeadID: id, Branch: wt.BranchName(id), Remote: resolvedRemote})
+	}
+	return nil
+}
+
+// RemoveWorktree deregisters and deletes the per-bead worktree directory.
+//
+// M1 guard: same as FinalizeWorktree — returns CodeRunAlreadyActive when the
+// bead's run is StepActive or StepPending.
+// The per-bead wtOpMu lock is held from the guard check through the backend
+// call, mirroring FinalizeWorktree's TOCTOU fix (tri-review 5).
+func (svc *BeadService) RemoveWorktree(ctx context.Context, id string) error {
+	if svc.wtAccessor == nil {
+		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
+	}
+	// Verify the bead exists.
+	if _, err := svc.GetBead(ctx, id); err != nil {
+		return err
+	}
+	// Acquire per-bead lock before the run-state guard (tri-review 5).
+	unlock := svc.lockWtOp(id)
+	defer unlock()
+	// M1 run-state guard (held under lock).
+	if err := svc.checkRunNotActive(id); err != nil {
+		return err
+	}
+	if err := svc.wtAccessor.Remove(ctx, id); err != nil {
+		return mapWorktreeReadError(err, id, "remove")
+	}
+	if svc.publish != nil {
+		svc.publish(ws.Frame{Type: ws.EventWorktreeRemoved, BeadID: id})
+	}
+	return nil
+}
+
+// StepAdvancer is the interface BeadService uses to advance or loop back the
+// step pointer for a live multi-step run. The real implementation is
+// *orchestrator.Orchestrator (wrapped in service_adapter.go); tests may
+// substitute a fake. Defined here (not in orchestrator) to avoid import cycles.
+type StepAdvancer interface {
+	// Advance moves the step pointer forward by 1 for the run keyed by beadID.
+	// Returns (newStepIdx, chainLen, nil) on success, or (0, 0, *ServiceError)
+	// with Code==CodeStepOutOfRange when already at the last step or no chain.
+	Advance(ctx context.Context, beadID string) (stepIdx, chainLen int, err error)
+	// LoopBack moves the step pointer back to toIdx for the run keyed by beadID.
+	// Returns (toIdx, chainLen, nil) on success, or (0, 0, *ServiceError) with
+	// Code==CodeStepOutOfRange when toIdx is out of range.
+	LoopBack(ctx context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error)
+}
+
+// WithStepAdvancer returns a new BeadService with a step advancer attached.
+// The advancer is used by AdvanceStep and LoopBackStep when present.
+func (svc *BeadService) WithStepAdvancer(a StepAdvancer) *BeadService {
+	svc2 := *svc
+	svc2.stepAdvancer = a
+	return &svc2
+}
+
+// AdvanceStep moves the chain step pointer forward by 1 for the given bead.
+// Returns (newStepIdx, chainLen) on success; maps ErrStepOutOfRange → CodeStepOutOfRange.
+func (svc *BeadService) AdvanceStep(ctx context.Context, beadID string) (stepIdx, chainLen int, err error) {
+	// Verify the bead exists before touching the orchestrator.
+	if _, err := svc.GetBead(ctx, beadID); err != nil {
+		return 0, 0, err
+	}
+	if svc.stepAdvancer == nil {
+		return 0, 0, &ServiceError{Code: CodeAttachUnavailable, Message: "advance not available: no multi-step dispatcher configured"}
+	}
+	return svc.stepAdvancer.Advance(ctx, beadID)
+}
+
+// LoopBackStep moves the chain step pointer back to toIdx for the given bead.
+// Returns (toIdx, chainLen) on success; maps ErrStepOutOfRange → CodeStepOutOfRange.
+func (svc *BeadService) LoopBackStep(ctx context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error) {
+	// Verify the bead exists before touching the orchestrator.
+	if _, err := svc.GetBead(ctx, beadID); err != nil {
+		return 0, 0, err
+	}
+	if svc.stepAdvancer == nil {
+		return 0, 0, &ServiceError{Code: CodeAttachUnavailable, Message: "loopback not available: no multi-step dispatcher configured"}
+	}
+	return svc.stepAdvancer.LoopBack(ctx, beadID, toIdx)
 }
 
 // AddComment appends a comment via the CLI.

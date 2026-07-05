@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/gitrgoliveira/muster/internal/api/beads"
+	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/ws"
@@ -43,6 +44,15 @@ func (a *worktreeTestAccessor) Diff(ctx context.Context, beadID, path string) (i
 }
 
 func (a *worktreeTestAccessor) DefaultVCS() string { return a.defaultVCS }
+
+// Write-side stubs — not exercised by the M3 integration test but needed to
+// satisfy the WorktreeAccessor interface after it was widened in M4 (T036a).
+func (a *worktreeTestAccessor) Finalize(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}
+func (a *worktreeTestAccessor) Push(_ context.Context, _, _ string) error { return nil }
+func (a *worktreeTestAccessor) Remove(_ context.Context, _ string) error  { return nil }
+func (a *worktreeTestAccessor) BeadRunState(_ string) core.StepStatus     { return "" }
 
 // TestIntegration_WorktreeAndDiff is the T020 end-to-end integration test.
 // It:

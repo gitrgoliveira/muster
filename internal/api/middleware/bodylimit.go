@@ -9,7 +9,7 @@ import (
 )
 
 // BodyLimit is a Chi-compatible middleware that enforces a 1 MiB body limit on
-// POST and PATCH requests. All other methods are passed through unchanged.
+// POST, PATCH, and PUT requests. All other methods are passed through unchanged.
 //
 // The body is read eagerly in the middleware. If it exceeds 1 MiB the request
 // is rejected immediately with 400 INVALID_REQUEST before the handler runs.
@@ -19,7 +19,7 @@ func BodyLimit(next http.Handler) http.Handler {
 	const maxBytes = 1 << 20 // 1 MiB
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		if r.Method != http.MethodPost && r.Method != http.MethodPatch && r.Method != http.MethodPut {
 			next.ServeHTTP(w, r)
 			return
 		}

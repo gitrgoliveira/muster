@@ -31,11 +31,16 @@ type completion struct {
 // fakeTransport is a minimal tmux.Manager that records calls and returns
 // controllable results.
 type fakeTransport struct {
-	spawnErr       error
-	spawnPane      string // optional: Session.Pane to report from Spawn
-	deadCode       int
-	deadDead       bool
-	deadErr        error
+	spawnErr  error
+	spawnPane string // optional: Session.Pane to report from Spawn
+	deadCode  int
+	deadDead  bool
+	deadErr   error
+
+	// spawnedSession is protected by spawnMu because Spawn can be called
+	// concurrently (e.g. in T012 ConcurrentDispatch) and -race would detect
+	// the unsynchronized write.
+	spawnMu        sync.Mutex
 	spawnedSession *tmux.Session
 
 	// killCalled/pipeCalled are written from watcher goroutines
@@ -45,8 +50,19 @@ type fakeTransport struct {
 	pipeCalled  atomic.Bool
 	listReturns []tmux.Session
 
+	// killedNames records every session name passed to Kill (under killMu), so
+	// tests can assert the OLD session is torn down on a step transition rather
+	// than an empty/wrong name (Copilot #355 regression).
+	killMu      sync.Mutex
+	killedNames []string
+
 	spawnCount atomic.Int32
 	spawnDelay time.Duration // optional: widen the dispatch race window
+
+	// spawnHook is called inside Spawn before returning, while the launch goroutine
+	// is still inside doLaunch. Used by Fix-1 (tri-review 6) tests to block Spawn
+	// so Advance can be called during the launch window (nil-cancel race).
+	spawnHook func()
 
 	// forceDead is a test hook: when set, DeadStatus reports the pane as dead
 	// regardless of deadDead. Tests that recover a *live* session (deadDead
@@ -58,7 +74,18 @@ type fakeTransport struct {
 }
 
 func (f *fakeTransport) Detect() (string, error) { return "3.6b", nil }
-func (f *fakeTransport) Kill(name string) error  { f.killCalled.Store(true); return nil }
+func (f *fakeTransport) Kill(name string) error {
+	f.killCalled.Store(true)
+	f.killMu.Lock()
+	f.killedNames = append(f.killedNames, name)
+	f.killMu.Unlock()
+	return nil
+}
+func (f *fakeTransport) killed() []string {
+	f.killMu.Lock()
+	defer f.killMu.Unlock()
+	return append([]string(nil), f.killedNames...)
+}
 func (f *fakeTransport) Attach(name string) (string, error) {
 	return "tmux attach -t " + name, nil
 }
@@ -80,6 +107,9 @@ func (f *fakeTransport) Spawn(name, cwd string, env, argv []string) (*tmux.Sessi
 	if f.spawnDelay > 0 {
 		time.Sleep(f.spawnDelay)
 	}
+	if f.spawnHook != nil {
+		f.spawnHook()
+	}
 	if f.spawnErr != nil {
 		return nil, f.spawnErr
 	}
@@ -88,7 +118,9 @@ func (f *fakeTransport) Spawn(name, cwd string, env, argv []string) (*tmux.Sessi
 		Pane:      f.spawnPane,
 		StartedAt: time.Now(),
 	}
+	f.spawnMu.Lock()
 	f.spawnedSession = sess
+	f.spawnMu.Unlock()
 	return sess, nil
 }
 
@@ -299,12 +331,17 @@ func TestDispatch_ClientDisconnect_DoesNotAbortDetectOrEnsure(t *testing.T) {
 	}
 }
 
-func TestDispatch_409_DuplicateRun(t *testing.T) {
+// TestDispatch_200_JoinedRun is the M4 US4 T048 migration of the former
+// TestDispatch_409_DuplicateRun.  A duplicate dispatch of an active bead must
+// return 200 + joined:true, NOT ErrRunAlreadyActive.
+func TestDispatch_200_JoinedRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires unix shell")
 	}
 	repoPath := initGitRepo(t)
-	o, _ := newOrchestratorForTest(t, repoPath)
+	o, transport := newOrchestratorForTest(t, repoPath)
+	// Keep the watcher alive so the run stays active.
+	t.Cleanup(func() { transport.forceDead.Store(true) })
 
 	req := orchestrator.DispatchRequest{
 		BeadID:         "mp-abc",
@@ -315,16 +352,104 @@ func TestDispatch_409_DuplicateRun(t *testing.T) {
 		PermissionMode: core.PermAcceptEdits,
 	}
 
-	if _, err := o.Dispatch(context.Background(), req); err != nil {
+	first, err := o.Dispatch(context.Background(), req)
+	if err != nil {
 		t.Fatalf("first Dispatch: %v", err)
 	}
-
-	_, err := o.Dispatch(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error for duplicate run, got nil")
+	if first.Joined {
+		t.Fatal("first dispatch must not be joined")
 	}
-	if !errors.Is(err, orchestrator.ErrRunAlreadyActive) {
-		t.Errorf("want ErrRunAlreadyActive, got %v", err)
+
+	// Second dispatch of the same in-flight bead must join, not error.
+	second, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second (duplicate) Dispatch: %v", err)
+	}
+	if !second.Joined {
+		t.Error("second dispatch of an in-flight bead must return Joined:true")
+	}
+	if second.Bead == nil {
+		t.Fatal("second dispatch result must carry the existing bead")
+	}
+	if second.Bead.ID != "mp-abc" {
+		t.Errorf("joined bead ID want mp-abc got %q", second.Bead.ID)
+	}
+	// Exactly one run must exist (no new run registered).
+	if count := o.RunCount(); count != 1 {
+		t.Errorf("RunCount want 1 after join, got %d", count)
+	}
+}
+
+// TestDispatch_JoinWaitingBead verifies that a duplicate dispatch of a bead
+// that is already waiting (StepPending, queued) also joins (Joined:true) rather
+// than returning an error. This covers the case where capacity is full and the
+// first dispatch is queued, not yet active. (M4 US4 T049)
+func TestDispatch_JoinWaitingBead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	// Set capacity=1 and dispatch one run first so the second is queued.
+	transport := &fakeTransport{}
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:      reg,
+		Transport:     transport,
+		RepoMap:       orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:  t.TempDir(),
+		MaxConcurrent: 1,
+	})
+
+	reqA := orchestrator.DispatchRequest{
+		BeadID:         "mp-aaa",
+		BeadTitle:      "First",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+	reqB := orchestrator.DispatchRequest{
+		BeadID:         "mp-bbb",
+		BeadTitle:      "Second",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	// Fill the capacity slot.
+	if _, err := o.Dispatch(context.Background(), reqA); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+
+	// Dispatch mp-bbb — it goes into the queue (capacity full).
+	first, err := o.Dispatch(context.Background(), reqB)
+	if err != nil {
+		t.Fatalf("queued dispatch: %v", err)
+	}
+	if !first.Queued {
+		t.Fatal("expected first dispatch of mp-bbb to be queued")
+	}
+	if first.Joined {
+		t.Fatal("first dispatch of mp-bbb must not be joined")
+	}
+
+	// Second dispatch of mp-bbb (still waiting) — must join the waiter.
+	second, err := o.Dispatch(context.Background(), reqB)
+	if err != nil {
+		t.Fatalf("duplicate queued dispatch: %v", err)
+	}
+	if !second.Joined {
+		t.Error("duplicate dispatch of a waiting bead must return Joined:true")
+	}
+	if second.Bead == nil {
+		t.Fatal("joined result must carry the bead")
+	}
+	if second.Bead.ID != "mp-bbb" {
+		t.Errorf("joined bead ID want mp-bbb got %q", second.Bead.ID)
 	}
 }
 
@@ -722,9 +847,10 @@ func TestDispatch_OnComplete_Timeout(t *testing.T) {
 	}
 }
 
-// TestDispatch_ConcurrentDuplicate verifies FIX 2: two goroutines dispatching
-// the same bead → exactly one succeeds, one gets ErrRunAlreadyActive, and only
-// one tmux session is spawned (no TOCTOU double-spawn).
+// TestDispatch_ConcurrentDuplicate verifies FIX 2 (migrated for M4 US4): two
+// goroutines dispatching the same bead → exactly one creates the run, the other
+// joins it (Joined:true), and only one tmux session is spawned (no TOCTOU
+// double-spawn). This replaces the former 409/ErrRunAlreadyActive assertion.
 func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("requires unix shell")
@@ -734,6 +860,7 @@ func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 
 	// Pane stays alive so the run remains active during the race.
 	transport := &fakeTransport{deadDead: false, spawnDelay: 50 * time.Millisecond}
+	t.Cleanup(func() { transport.forceDead.Store(true) })
 	reg := adapter.NewRegistry()
 	reg.Register(claude.New(claude.Options{}))
 
@@ -753,19 +880,20 @@ func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	var successes, conflicts atomic.Int32
+	var successes, joiners atomic.Int32
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := o.Dispatch(context.Background(), req)
-			switch {
-			case err == nil:
-				successes.Add(1)
-			case errors.Is(err, orchestrator.ErrRunAlreadyActive):
-				conflicts.Add(1)
-			default:
+			res, err := o.Dispatch(context.Background(), req)
+			if err != nil {
 				t.Errorf("unexpected dispatch error: %v", err)
+				return
+			}
+			if res.Joined {
+				joiners.Add(1)
+			} else {
+				successes.Add(1)
 			}
 		}()
 	}
@@ -774,8 +902,8 @@ func TestDispatch_ConcurrentDuplicate(t *testing.T) {
 	if s := successes.Load(); s != 1 {
 		t.Errorf("want exactly 1 success, got %d", s)
 	}
-	if c := conflicts.Load(); c != 1 {
-		t.Errorf("want exactly 1 conflict, got %d", c)
+	if j := joiners.Load(); j != 1 {
+		t.Errorf("want exactly 1 joiner, got %d", j)
 	}
 	if sc := transport.spawnCount.Load(); sc != 1 {
 		t.Errorf("want exactly 1 Spawn, got %d", sc)
@@ -839,5 +967,423 @@ func TestAsServiceDispatcher_NotNil(t *testing.T) {
 	d := o.AsServiceDispatcher()
 	if d == nil {
 		t.Error("AsServiceDispatcher should not return nil")
+	}
+}
+
+// ── T009: DispatchResult — compile-only type definition check ─────────────────
+
+// TestDispatchResult_ZeroValueSane verifies the orchestrator-package
+// DispatchResult has sane zero values and the expected field set. It is a
+// compile-time guard: a missing or renamed field causes a build failure.
+func TestDispatchResult_ZeroValueSane(t *testing.T) {
+	var dr orchestrator.DispatchResult
+
+	if dr.Bead != nil {
+		t.Errorf("DispatchResult.Bead zero value: want nil, got %v", dr.Bead)
+	}
+	if dr.Joined {
+		t.Error("DispatchResult.Joined zero value: want false")
+	}
+	if dr.Queued {
+		t.Error("DispatchResult.Queued zero value: want false")
+	}
+
+	// Exercise all fields to confirm they compile.
+	_ = orchestrator.DispatchResult{Bead: nil, Joined: true, Queued: true}
+}
+
+// ── T051: Race — many concurrent identical dispatches yield exactly one run ──
+
+// TestDispatch_RaceIdentical verifies that many concurrent dispatches for the
+// same bead yield exactly one run (no leaked sessions or goroutines). All
+// concurrent callers either succeed with Joined:true or are the sole winner
+// that creates the run. (M4 US4 T051, -race clean)
+func TestDispatch_RaceIdentical(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	o, transport := newOrchestratorForTest(t, repoPath)
+	// Keep the watcher alive so the run stays active for the full test.
+	t.Cleanup(func() { transport.forceDead.Store(true) })
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-race",
+		BeadTitle:      "Race test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	const n = 20
+	type result struct {
+		res orchestrator.DispatchResult
+		err error
+	}
+	results := make(chan result, n)
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := o.Dispatch(context.Background(), req)
+			results <- result{res, err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var winners, joiners, errs int
+	for r := range results {
+		if r.err != nil {
+			errs++
+			t.Errorf("concurrent dispatch error: %v", r.err)
+			continue
+		}
+		if r.res.Joined {
+			joiners++
+		} else {
+			winners++
+		}
+	}
+
+	if errs > 0 {
+		t.Fatalf("got %d errors from %d concurrent dispatches", errs, n)
+	}
+	if winners != 1 {
+		t.Errorf("want exactly 1 winner, got %d (joiners=%d)", winners, joiners)
+	}
+	if joiners != n-1 {
+		t.Errorf("want %d joiners, got %d", n-1, joiners)
+	}
+	// Exactly one run must be registered.
+	if count := o.RunCount(); count != 1 {
+		t.Errorf("RunCount want 1 got %d", count)
+	}
+}
+
+// ── T052: Fresh dispatch after terminal state starts a new run ───────────────
+
+// TestDispatch_FreshAfterTerminal verifies that after a run reaches a terminal
+// state (StepDone/StepFailed and evicted), a fresh dispatch starts a new run
+// rather than erroring or joining the old one. (M4 US4 T052)
+func TestDispatch_FreshAfterTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+
+	// Transport: pane is immediately dead (exit 0) so finishRun fires quickly.
+	transport := &fakeTransport{deadDead: true, deadCode: 0}
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	done := make(chan struct{})
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    transport,
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+		// Very short retention so the eviction fires promptly.
+		RunRetention: 10 * time.Millisecond,
+		OnComplete: func(beadID string, exitCode int, success bool) {
+			// Signal only for the first completion (close is idempotent on nil channel).
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		},
+	})
+
+	req := orchestrator.DispatchRequest{
+		BeadID:         "mp-fresh",
+		BeadTitle:      "Fresh test",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermAcceptEdits,
+	}
+
+	// First dispatch — completes immediately.
+	first, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	if first.Joined {
+		t.Fatal("first dispatch must not be joined")
+	}
+
+	// Wait for completion + eviction.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnComplete not called")
+	}
+
+	// Wait for eviction.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if o.GetRun("mp-fresh") == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if o.GetRun("mp-fresh") != nil {
+		t.Fatal("run should have been evicted before second dispatch")
+	}
+
+	// Second dispatch after eviction must start a NEW run (not join the old one).
+	second, err := o.Dispatch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second dispatch after terminal: %v", err)
+	}
+	if second.Joined {
+		t.Error("second dispatch after terminal must NOT be joined (new run)")
+	}
+	if second.Bead == nil {
+		t.Fatal("second dispatch must return a bead")
+	}
+}
+
+// ── T008: Run struct M4 extensions — compile-only skeleton ───────────────────
+
+// TestRun_M4Fields_ZeroValueSane verifies that the M4 additions to Run have
+// sane zero values: Chain nil (single-step default) and Quota.Known false (no
+// usage data yet). This is a compile-time guard — if the fields are removed or
+// renamed the test fails to build.
+func TestRun_M4Fields_ZeroValueSane(t *testing.T) {
+	var r orchestrator.Run
+
+	// Chain nil means single-step M2 behaviour; never accidentally non-nil.
+	if r.Chain != nil {
+		t.Errorf("Run.Chain zero value: want nil, got %v", r.Chain)
+	}
+
+	// Quota.Known false means "no usage data" — the correct initial state before
+	// US5 wires the on-disk reader.
+	if r.Quota.Known {
+		t.Error("Run.Quota.Known zero value: want false")
+	}
+}
+
+// ── Chain step-0 permission-mode bug (Copilot PR #7 / FR-012a / US3) ─────────
+
+// TestDispatch_ChainDrivesStep0PermissionMode verifies that when a multi-step
+// chain is supplied, step 0 launches with chain[0].PermissionMode (not the
+// top-level/default pm). Specifically: if the chain overrides the per-step
+// mode, the run must reflect chain[0]'s mode, not req.PermissionMode.
+func TestDispatch_ChainDrivesStep0PermissionMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	o, _ := newOrchestratorForTest(t, repoPath)
+
+	chain := orchestrator.StepChain{
+		{Name: "step0", PermissionMode: core.PermAcceptEdits},
+		{Name: "step1", PermissionMode: core.PermDontAsk},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-cpm0",
+		BeadTitle:      "Chain drives step 0 pm",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: core.PermDontAsk, // top-level is dontAsk, but chain[0] is acceptEdits
+		Chain:          &chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+
+	run := o.GetRun("mp-cpm0")
+	if run == nil {
+		t.Fatal("GetRun returned nil")
+	}
+	// The run's PermissionMode must come from chain[0], not from req.PermissionMode.
+	if run.PermissionMode != core.PermAcceptEdits {
+		t.Errorf("run.PermissionMode: want acceptEdits (chain[0]) got %q (top-level was dontAsk)", run.PermissionMode)
+	}
+}
+
+// TestDispatch_ChainOnly_NoTopLevelPermMode_Succeeds is the (a) regression:
+// dispatching with req.PermissionMode="" (omitted, no default configured) and
+// a valid chain must SUCCEED, not return ErrNoPermissionMode.
+func TestDispatch_ChainOnly_NoTopLevelPermMode_Succeeds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+		// No DefaultPermMode — previously this would cause ErrNoPermissionMode
+		// for a chain dispatch that omits the top-level permissionMode.
+	})
+
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermAcceptEdits},
+		{Name: "build", PermissionMode: core.PermDontAsk},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-noplm",
+		BeadTitle:      "No top-level pm",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // omitted — chain provides per-step pms
+		Chain:          &chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch with chain and no top-level permissionMode: %v (want success)", err)
+	}
+	if errors.Is(err, orchestrator.ErrNoPermissionMode) {
+		t.Fatal("chain dispatch must not return ErrNoPermissionMode when chain provides per-step pms")
+	}
+}
+
+// TestDispatch_ChainStep0_PlanMode verifies the quickstart's canonical plan →
+// build chain: chain[0] has PermissionMode=core.PermPlan under Mode=ModeAgent.
+// Previously resolvePermMode would reject PermPlan for a non-plan Mode; now the
+// chain path bypasses resolvePermMode so step 0 can legitimately use "plan".
+func TestDispatch_ChainStep0_PlanMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir: t.TempDir(),
+	})
+
+	// Quickstart's canonical plan→build chain: step 0 uses "plan" under
+	// ModeAgent.  resolvePermMode would reject this, so the fix must NOT
+	// route chain pms through resolvePermMode.
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-planstep",
+		BeadTitle:      "Plan then build",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // chain provides the step pm; top-level omitted
+		Chain:          &chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch with chain[0].PermissionMode=plan under ModeAgent: %v (want success)", err)
+	}
+
+	run := o.GetRun("mp-planstep")
+	if run == nil {
+		t.Fatal("GetRun returned nil")
+	}
+	if run.PermissionMode != core.PermPlan {
+		t.Errorf("run.PermissionMode: want plan (chain[0]) got %q", run.PermissionMode)
+	}
+}
+
+// TestDispatch_ChainStep0_EmptyPermMode_Rejected verifies that Dispatch returns
+// an error wrapping ErrNoPermissionMode when chain[0].PermissionMode is empty.
+// The service layer also validates this, but Dispatch is a public entry point
+// and must guard independently (FR-021: no silent defaults for autonomy).
+func TestDispatch_ChainStep0_EmptyPermMode_Rejected(t *testing.T) {
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:     reg,
+		Transport:    &fakeTransport{},
+		RepoMap:      orchestrator.RepoMap{"mp": t.TempDir()},
+		WorktreesDir: t.TempDir(),
+	})
+
+	chain := orchestrator.StepChain{
+		{Name: "step0", PermissionMode: ""}, // empty — must be rejected
+		{Name: "step1", PermissionMode: core.PermAcceptEdits},
+	}
+	_, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID:         "mp-emptypm",
+		Agent:          core.AgentClaude,
+		Mode:           core.ModeAgent,
+		PermissionMode: "", // also empty; neither provides a valid mode
+		Chain:          &chain,
+	})
+	if err == nil {
+		t.Fatal("want error for chain with empty step-0 permissionMode, got nil")
+	}
+	if !errors.Is(err, orchestrator.ErrNoPermissionMode) {
+		t.Errorf("want error wrapping ErrNoPermissionMode, got %v", err)
+	}
+}
+
+// TestDispatch_ErrorPath_DrainsWaiters is the regression for tri-review-2 CRIT:
+// when an admitted run's doLaunch fails while other dispatches are queued behind
+// it (capacity 1), the Dispatch error path must launch the next FIFO waiter
+// rather than stranding it. With every launch failing (spawnErr), the scheduler
+// must fully drain — a stranded waiter would leave activeCount>0 / waiting!=0
+// forever.
+func TestDispatch_ErrorPath_DrainsWaiters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	transport := &fakeTransport{spawnErr: errors.New("simulated spawn failure")}
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+		MaxConcurrent:   1, // one active slot → the rest queue behind it
+	})
+
+	// Fire several dispatches concurrently so some queue while the admitted one
+	// is in doLaunch (which fails at Spawn).
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_, _ = o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+				BeadID:         "mp-drain" + string(rune('a'+n)),
+				Agent:          core.AgentClaude,
+				Mode:           core.ModeAgent,
+				PermissionMode: core.PermAcceptEdits,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	// Poll until the scheduler fully drains (every launch failed, so nothing
+	// should remain active or waiting). A stranded waiter never drains.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		snap := o.SchedulerSnapshot()
+		if snap.ActiveCount == 0 && len(snap.Waiting) == 0 {
+			return // drained — fix works
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scheduler did not drain: activeCount=%d waiting=%v (stranded waiter — tri-review-2 CRIT)", snap.ActiveCount, snap.Waiting)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

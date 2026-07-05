@@ -41,9 +41,13 @@ func NewRouter(
 		render.WriteError(w, req, http.StatusMethodNotAllowed, render.CodeMethodNotAllowed, "method not allowed")
 	})
 
-	// Health endpoints.
+	// Health and orchestrator management endpoints.
 	r.Get("/api/v1/healthz", health.HealthzHandler)
 	r.Get("/api/v1/orchestrator/status", health.OrchestratorStatusHandler(statusCfg))
+	if statusCfg.SchedulerSnapshotter != nil {
+		oh := health.NewOrchestratorHandler(statusCfg.SchedulerSnapshotter)
+		r.With(middleware.BodyLimit).Put("/api/v1/orchestrator/capacity", oh.SetCapacity)
+	}
 
 	// WebSocket stream endpoint.
 	r.Get("/api/v1/stream", stream.StreamHandler(hub))
@@ -60,9 +64,16 @@ func NewRouter(
 	// M2 additions: step attach/send endpoints (US3).
 	r.Get("/api/v1/beads/{id}/steps/{idx}/attach", h.Attach)
 	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/steps/{idx}/send", h.Send)
+	// M4 additions: operator-driven step advance/loopback (US3).
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/steps/advance", h.AdvanceStep)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/steps/loopback", h.LoopBackStep)
 	// M3 additions: worktree and diff endpoints (US2).
 	r.Get("/api/v1/beads/{id}/worktree", h.Worktree)
 	r.Get("/api/v1/beads/{id}/diff", h.Diff)
+	// M4 additions: worktree write-side endpoints (US2).
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/worktree/finalize", h.FinalizeWorktree)
+	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/worktree/push", h.PushWorktree)
+	r.Delete("/api/v1/beads/{id}/worktree", h.RemoveWorktree)
 
 	// Build the SPA file server.
 	subFS, err := fs.Sub(uiFS, "ui")

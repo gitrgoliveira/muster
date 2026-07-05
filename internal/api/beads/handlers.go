@@ -2,8 +2,10 @@ package beads
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/render"
@@ -69,6 +71,11 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusNotFound, se.Code, se.Message)
 	case services.CodeVCSUnavailable:
 		render.WriteError(w, r, http.StatusPreconditionFailed, se.Code, se.Message)
+	case services.CodeWorktreeDirty:
+		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
+	// M4 step-chain error codes.
+	case services.CodeStepOutOfRange:
+		render.WriteError(w, r, http.StatusBadRequest, se.Code, se.Message)
 	default:
 		render.WriteError(w, r, http.StatusInternalServerError, render.CodeInternal, se.Message)
 	}
@@ -84,18 +91,55 @@ func validateID(w http.ResponseWriter, r *http.Request, id string) bool {
 	return true
 }
 
-// parseStepIdx parses and validates the {idx} path param shared by Attach and
-// Send. M2 only supports step 0, so it requires the canonical "0" exactly and
-// writes a 404 (unknown step) with ok=false for anything else. Requiring the
-// literal "0" (rather than strconv.Atoi(idxStr)==0) rejects non-canonical zero
-// forms — "-0", "+0", "00" — that the contract doesn't define, keeping routing
-// unambiguous.
+// parseStepIdx parses and validates the {idx} path param used by the Attach and
+// Send handlers. (The advance/loopback endpoints have no {idx} path param —
+// advance is implicit +1 and loopback carries its target in the request body —
+// so they do not call this.)
+//
+// T045 (widened from M2): accepts any non-negative canonical decimal integer.
+// Non-canonical forms ("-0", "+0", "00", leading-zero strings) and negative
+// values are rejected with 404 so the routing surface stays unambiguous. The
+// service layer enforces chain-range validation — the handler only ensures the
+// path token is a valid non-negative integer.
 func parseStepIdx(w http.ResponseWriter, r *http.Request, idxStr string) (idx int, ok bool) {
-	if idxStr != "0" {
+	// Reject non-canonical forms before Atoi. A valid canonical decimal integer:
+	//   - is non-empty
+	//   - does not start with "+" or "-" (Atoi accepts both; we don't)
+	//   - does not have a leading zero unless the string is exactly "0"
+	if idxStr == "" || idxStr[0] == '+' || idxStr[0] == '-' {
 		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
 		return 0, false
 	}
-	return 0, true
+	if len(idxStr) > 1 && idxStr[0] == '0' {
+		// Leading zero: "00", "01", etc. — reject.
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return 0, false
+	}
+	n, err := strconv.Atoi(idxStr)
+	if err != nil || n < 0 {
+		render.WriteError(w, r, http.StatusNotFound, render.CodeNotFound, "step index not found")
+		return 0, false
+	}
+	return n, true
+}
+
+// cleanJSONDecodeMsg strips Go's raw `json: unknown field "X"` decoder error
+// down to `unknown field: X`, shared by decodeJSON and any handler that
+// decodes an optional body itself (e.g. PushWorktree, which must tolerate
+// io.EOF and so cannot use decodeJSON directly).
+func cleanJSONDecodeMsg(err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "unknown field") {
+		const prefix = `json: unknown field "`
+		if idx := strings.Index(msg, prefix); idx >= 0 {
+			rest := msg[idx+len(prefix):]
+			if end := strings.Index(rest, `"`); end >= 0 {
+				field := rest[:end]
+				msg = "unknown field: " + field
+			}
+		}
+	}
+	return msg
 }
 
 // decodeJSON decodes the request body with DisallowUnknownFields. On error,
@@ -104,18 +148,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v interface{}) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "unknown field") {
-			const prefix = `json: unknown field "`
-			if idx := strings.Index(msg, prefix); idx >= 0 {
-				rest := msg[idx+len(prefix):]
-				if end := strings.Index(rest, `"`); end >= 0 {
-					field := rest[:end]
-					msg = "unknown field: " + field
-				}
-			}
-		}
-		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, msg)
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, cleanJSONDecodeMsg(err))
 		return false
 	}
 	return true
@@ -256,8 +289,18 @@ func (h *Handlers) Move(w http.ResponseWriter, r *http.Request) {
 	render.WriteJSON(w, http.StatusOK, bead)
 }
 
+// dispatchResponse is the JSON body for a successful POST /beads/{id}/dispatch.
+// It is additive: existing fields (the bead) are unchanged; joined and queued
+// are new M4 US4/US1 fields. Clients that ignore unknown fields are unaffected.
+type dispatchResponse struct {
+	*core.Bead
+	Joined bool `json:"joined"` // true when joining an existing in-flight run (M4 US4)
+	Queued bool `json:"queued"` // true when admitted to the waiting queue (M4 US1)
+}
+
 // Dispatch handles POST /beads/{id}/dispatch.
-// On success returns 202 Accepted with the bead in running state (FR-002).
+// Returns 202 Accepted on fresh launch, or 200 OK + joined:true when joining
+// an existing in-flight run (idempotent dispatch, M4 US4 contract).
 func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !validateID(w, r, id) {
@@ -269,19 +312,41 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1:1 field mapping only — chain validation lives in the service layer
+	// (Constitution III: handlers stay thin).
+	var chain []services.ChainStepInput
+	if len(req.Chain) > 0 {
+		chain = make([]services.ChainStepInput, len(req.Chain))
+		for i, s := range req.Chain {
+			chain[i] = services.ChainStepInput{Name: s.Name, PermissionMode: s.PermissionMode, PromptRef: s.PromptRef}
+		}
+	}
+
 	input := services.DispatchInput{
 		Agent:          req.Agent,
 		Mode:           req.Mode,
 		PermissionMode: req.PermissionMode,
+		Chain:          chain,
 	}
 
-	bead, err := h.svc.Dispatch(r.Context(), id, input)
+	result, err := h.svc.Dispatch(r.Context(), id, input)
 	if mapServiceError(w, r, err) {
 		return
 	}
 
-	// 202 Accepted — run has been launched asynchronously.
-	render.WriteJSON(w, http.StatusAccepted, bead)
+	body := dispatchResponse{
+		Bead:   result.Bead,
+		Joined: result.Joined,
+		Queued: result.Queued,
+	}
+
+	if result.Joined {
+		// 200 OK — caller joined an existing in-flight run (idempotent).
+		render.WriteJSON(w, http.StatusOK, body)
+		return
+	}
+	// 202 Accepted — run has been launched (or queued) asynchronously.
+	render.WriteJSON(w, http.StatusAccepted, body)
 }
 
 // Attach handles GET /beads/{id}/steps/{idx}/attach.
@@ -413,6 +478,186 @@ func (h *Handlers) Diff(w http.ResponseWriter, r *http.Request) {
 // SendRequest is the body for POST /beads/{id}/steps/{idx}/send.
 type SendRequest struct {
 	Keys string `json:"keys"`
+}
+
+// ── M4 write-side worktree handlers ──────────────────────────────────────────
+
+// FinalizeRequest is the body for POST /beads/{id}/worktree/finalize.
+type FinalizeRequest struct {
+	Message string `json:"message"`
+}
+
+// FinalizeResponse is the JSON body returned by FinalizeWorktree.
+type FinalizeResponse struct {
+	// Committed is true when changes were committed; false for a no-op (clean worktree).
+	Committed bool   `json:"committed"`
+	Message   string `json:"message"`
+}
+
+// PushRequest is the optional body for POST /beads/{id}/worktree/push.
+// An absent or empty body defaults Remote to "" (resolved to "origin" by wt.ResolveRemote).
+// A non-empty Remote is validated against ^[A-Za-z0-9][A-Za-z0-9._-]*$; names beginning
+// with '-' or containing spaces are rejected with 400 INVALID_REQUEST.
+type PushRequest struct {
+	Remote string `json:"remote"`
+}
+
+// PushResponse is the JSON body returned by PushWorktree.
+type PushResponse struct {
+	Pushed bool   `json:"pushed"`
+	Branch string `json:"branch"`
+	Remote string `json:"remote"`
+}
+
+// RemoveResponse is the JSON body returned by RemoveWorktree.
+type RemoveResponse struct {
+	Removed bool `json:"removed"`
+}
+
+// FinalizeWorktree handles POST /beads/{id}/worktree/finalize.
+// Body: {"message":"<commit message>"}
+// Seals the working-copy changes. A no-change worktree is a no-op success.
+// Returns 409 when the bead's run is still active.
+func (h *Handlers) FinalizeWorktree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req FinalizeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "message is required")
+		return
+	}
+
+	committed, err := h.svc.FinalizeWorktree(r.Context(), id, req.Message)
+	if mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, FinalizeResponse{
+		Committed: committed,
+		Message:   req.Message,
+	})
+}
+
+// PushWorktree handles POST /beads/{id}/worktree/push.
+// Accepts an optional JSON body: {"remote":"<name>"}. When the body is absent
+// or remote is empty, the remote defaults to "origin" via wt.ResolveRemote.
+// A non-empty remote is validated before reaching the service; invalid names
+// (leading '-', spaces, non-ASCII) return 400 INVALID_REQUEST.
+func (h *Handlers) PushWorktree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	// Decode the optional request body. An absent or empty body (io.EOF) is
+	// fine — remote defaults to "". Unknown fields are rejected per the
+	// BodyLimit-safe decode pattern used by other handlers.
+	var req PushRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, cleanJSONDecodeMsg(err))
+		return
+	}
+
+	// Validate the remote name before calling the service so the handler can
+	// render a 400 directly (thin-handler style: validate → delegate → render).
+	resolvedRemote, remoteErr := wt.ResolveRemote(req.Remote)
+	if remoteErr != nil {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, remoteErr.Error())
+		return
+	}
+
+	if err := h.svc.PushWorktree(r.Context(), id, req.Remote); mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, PushResponse{
+		Pushed: true,
+		Branch: wt.BranchName(id),
+		Remote: resolvedRemote,
+	})
+}
+
+// RemoveWorktree handles DELETE /beads/{id}/worktree.
+// Deregisters and removes the per-bead worktree directory.
+// Returns 409 when the bead's run is still active.
+func (h *Handlers) RemoveWorktree(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	if err := h.svc.RemoveWorktree(r.Context(), id); mapServiceError(w, r, err) {
+		return
+	}
+
+	render.WriteJSON(w, http.StatusOK, RemoveResponse{Removed: true})
+}
+
+// StepActionResponse is the body returned by POST /beads/{id}/steps/advance and
+// POST /beads/{id}/steps/loopback.
+type StepActionResponse struct {
+	StepIdx  int `json:"stepIdx"`
+	ChainLen int `json:"chainLen"`
+}
+
+// LoopBackRequest is the body for POST /beads/{id}/steps/loopback.
+type LoopBackRequest struct {
+	ToIdx *int `json:"toIdx"` // pointer so we can detect missing field vs 0
+}
+
+// AdvanceStep handles POST /beads/{id}/steps/advance.
+// Advances the run's chain pointer forward by 1 and starts the next step.
+// Returns 200 { "stepIdx": N+1, "chainLen": L }.
+// Returns 400/STEP_OUT_OF_RANGE when already at the last step or no chain.
+func (h *Handlers) AdvanceStep(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	stepIdx, chainLen, err := h.svc.AdvanceStep(r.Context(), id)
+	if mapServiceError(w, r, err) {
+		return
+	}
+	render.WriteJSON(w, http.StatusOK, StepActionResponse{StepIdx: stepIdx, ChainLen: chainLen})
+}
+
+// LoopBackStep handles POST /beads/{id}/steps/loopback.
+// Moves the run's chain pointer back to toIdx and starts that step.
+// Body: {"toIdx": N}. Returns 200 { "stepIdx": toIdx, "chainLen": L }.
+// Returns 400 when toIdx is missing, negative, or out of range.
+func (h *Handlers) LoopBackStep(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !validateID(w, r, id) {
+		return
+	}
+
+	var req LoopBackRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.ToIdx == nil {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "toIdx is required")
+		return
+	}
+	if *req.ToIdx < 0 {
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, "toIdx must be >= 0")
+		return
+	}
+
+	stepIdx, chainLen, err := h.svc.LoopBackStep(r.Context(), id, *req.ToIdx)
+	if mapServiceError(w, r, err) {
+		return
+	}
+	render.WriteJSON(w, http.StatusOK, StepActionResponse{StepIdx: stepIdx, ChainLen: chainLen})
 }
 
 // Comment handles POST /beads/{id}/comments.

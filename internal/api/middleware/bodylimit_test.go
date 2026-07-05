@@ -116,3 +116,47 @@ func TestBodyLimit_PassesThroughGet(t *testing.T) {
 		t.Error("expected downstream handler to be called for GET request")
 	}
 }
+
+func TestBodyLimit_PUT_RejectsOversize_400_InvalidRequest(t *testing.T) {
+	handler := middleware.BodyLimit(echoLenHandler)
+
+	req := newRequest(http.MethodPut, (1<<20)+1)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+
+	var resp render.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if resp.Error.Code != render.CodeInvalidRequest {
+		t.Errorf("expected code %q, got %q", render.CodeInvalidRequest, resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "1 MiB") {
+		t.Errorf("expected message to contain \"1 MiB\", got %q", resp.Error.Message)
+	}
+}
+
+func TestBodyLimit_PUT_SmallBody_PassesThrough(t *testing.T) {
+	handler := middleware.BodyLimit(echoLenHandler)
+
+	bodySize := 256
+	req := newRequest(http.MethodPut, bodySize)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]int
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if got := resp["bytes"]; got != bodySize {
+		t.Errorf("expected handler to receive %d bytes, got %d", bodySize, got)
+	}
+}

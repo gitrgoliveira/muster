@@ -33,6 +33,40 @@ type VCSStatus struct {
 	JJ VCSAvailability `json:"jj"`
 }
 
+// SchedulerSnapshotDTO is the JSON shape for the scheduler's current state.
+// Used by both GET /orchestrator/status (embedded) and PUT /orchestrator/capacity (body).
+type SchedulerSnapshotDTO struct {
+	Capacity    int      `json:"capacity"`
+	ActiveCount int      `json:"activeCount"`
+	Waiting     []string `json:"waiting"`
+}
+
+// RunQuotaDTO is the best-effort token/cost usage for a run (M4 US5 T063).
+// Known is false when no on-disk session record was found (advisory only —
+// never fails a run). CostUSD is 0 for interactive claude sessions.
+type RunQuotaDTO struct {
+	Known        bool    `json:"known"`
+	InputTokens  int64   `json:"inputTokens"`
+	OutputTokens int64   `json:"outputTokens"`
+	CostUSD      float64 `json:"costUSD"`
+}
+
+// RunSummaryDTO is a per-run summary included in OrchestratorStatusResponse.
+// It carries per-step chain progress (T047).
+type RunSummaryDTO struct {
+	// BeadID is the bead this run belongs to.
+	BeadID string `json:"beadID"`
+	// StepIdx is the current (or last completed) step index.
+	StepIdx int `json:"stepIdx"`
+	// ChainLen is the total number of steps in the chain. 0 means single-step (M2).
+	ChainLen int `json:"chainLen"`
+	// State is the run's current state: "pending", "active", "done", "failed".
+	State string `json:"state"`
+	// Quota is the best-effort token/cost usage captured at run end (M4 US5).
+	// Omitted from JSON when nil (active runs that have not yet captured quota).
+	Quota *RunQuotaDTO `json:"quota,omitempty"`
+}
+
 // OrchestratorStatusResponse is the body returned by GET /api/v1/orchestrator/status.
 type OrchestratorStatusResponse struct {
 	Build         string `json:"build"`
@@ -59,4 +93,15 @@ type OrchestratorStatusResponse struct {
 	// WorktreeCount is the number of per-bead worktree directories under
 	// the configured --worktrees-dir.
 	WorktreeCount int `json:"worktreeCount"`
+
+	// M4 additions (additive — all M0–M3 fields unchanged).
+	// Capacity is the scheduler's maximum concurrency.
+	Capacity int `json:"capacity"`
+	// ActiveCount is the number of currently-running agent sessions.
+	ActiveCount int `json:"activeCount"`
+	// Waiting is the bead IDs in FIFO order waiting for a capacity slot.
+	Waiting []string `json:"waiting"`
+	// Runs is a per-run summary list including stepIdx and chainLen (T047).
+	// Empty (not null) when no runs are tracked.
+	Runs []RunSummaryDTO `json:"runs"`
 }

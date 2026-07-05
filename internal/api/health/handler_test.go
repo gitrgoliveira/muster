@@ -3,12 +3,16 @@ package health_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/api/health"
+	"github.com/gitrgoliveira/muster/internal/services"
 )
 
 func TestHealthz_Returns200_AndOK(t *testing.T) {
@@ -392,5 +396,380 @@ func mustHaveKey(t *testing.T, m map[string]json.RawMessage, key string) {
 	t.Helper()
 	if _, ok := m[key]; !ok {
 		t.Errorf("response missing key %q", key)
+	}
+}
+
+// ── T019/T020: SetCapacity handler ────────────────────────────────────────────
+
+type fakeCapacitySetter struct {
+	gotN     int
+	setErr   error
+	snapshot health.SchedulerSnapshotDTO
+}
+
+func (f *fakeCapacitySetter) SetCapacity(n int) error {
+	f.gotN = n
+	if f.setErr != nil {
+		return f.setErr
+	}
+	return nil
+}
+
+func (f *fakeCapacitySetter) SchedulerSnapshot() health.SchedulerSnapshotDTO {
+	return f.snapshot
+}
+
+// ── T047: per-run stepIdx/chainLen in status DTO ─────────────────────────────
+
+// fakeRunLister implements RunLister for handler tests.
+type fakeRunLister struct {
+	runs []health.RunSummaryDTO
+}
+
+func (f *fakeRunLister) ListRuns() []health.RunSummaryDTO { return f.runs }
+
+// TestOrchestratorStatus_T047_RunsField verifies that the "runs" field carries
+// per-run stepIdx and chainLen (additive field; nil RunLister → empty/absent).
+func TestOrchestratorStatus_T047_RunsField(t *testing.T) {
+	lister := &fakeRunLister{
+		runs: []health.RunSummaryDTO{
+			{BeadID: "mp-aaa", StepIdx: 1, ChainLen: 3, State: "active"},
+			{BeadID: "mp-bbb", StepIdx: 0, ChainLen: 0, State: "active"},
+		},
+	}
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		RunLister:     lister,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Runs) != 2 {
+		t.Fatalf("want 2 runs got %d", len(body.Runs))
+	}
+	r0 := body.Runs[0]
+	if r0.BeadID != "mp-aaa" {
+		t.Errorf("runs[0].beadID want mp-aaa got %q", r0.BeadID)
+	}
+	if r0.StepIdx != 1 {
+		t.Errorf("runs[0].stepIdx want 1 got %d", r0.StepIdx)
+	}
+	if r0.ChainLen != 3 {
+		t.Errorf("runs[0].chainLen want 3 got %d", r0.ChainLen)
+	}
+	if r0.State != "active" {
+		t.Errorf("runs[0].state want active got %q", r0.State)
+	}
+}
+
+// TestOrchestratorStatus_T047_NilRunLister verifies nil RunLister produces
+// an empty/absent runs array (no regression for prior-milestone config).
+func TestOrchestratorStatus_T047_NilRunLister(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "1.0.0",
+		SchemaVersion: 1,
+		// RunLister intentionally nil.
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Runs) != 0 {
+		t.Errorf("want empty runs got %v", body.Runs)
+	}
+}
+
+// TestOrchestratorStatus_T047_M4FieldsIntact verifies all M4 fields remain
+// present when RunLister is also wired (additive surface check).
+func TestOrchestratorStatus_T047_M4FieldsIntact(t *testing.T) {
+	lister := &fakeRunLister{
+		runs: []health.RunSummaryDTO{
+			{BeadID: "mp-aaa", StepIdx: 0, ChainLen: 2, State: "active"},
+		},
+	}
+	cfg := health.StatusConfig{
+		BeadsVersion:  "2.0.0",
+		SchemaVersion: 2,
+		TmuxAvailable: true,
+		RunCounter:    &fakeRunCounter{count: 1},
+		VCS: health.VCSStatus{
+			DefaultVCS: "git",
+			Git:        health.VCSAvailability{Available: true},
+		},
+		SchedulerSnapshotter: &fakeSchedulerSnapshotter{snap: health.SchedulerSnapshotDTO{
+			Capacity: 4, ActiveCount: 1, Waiting: []string{},
+		}},
+		RunLister: lister,
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(w.Result().Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// New T047 field.
+	mustHaveKey(t, raw, "runs")
+	// Prior fields still present.
+	mustHaveKey(t, raw, "capacity")
+	mustHaveKey(t, raw, "activeCount")
+	mustHaveKey(t, raw, "waiting")
+	mustHaveKey(t, raw, "vcs")
+	mustHaveKey(t, raw, "worktreeCount")
+}
+
+// ── T019/T020: SetCapacity handler ────────────────────────────────────────────
+
+func TestSetCapacityHandler_ValidCapacity(t *testing.T) {
+	fake := &fakeCapacitySetter{snapshot: health.SchedulerSnapshotDTO{Capacity: 5, ActiveCount: 1, Waiting: []string{}}}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":5}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 got %d", res.StatusCode)
+	}
+	if fake.gotN != 5 {
+		t.Errorf("want capacity=5 got %d", fake.gotN)
+	}
+	var snap health.SchedulerSnapshotDTO
+	if err := json.NewDecoder(res.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.Capacity != 5 {
+		t.Errorf("response capacity want 5 got %d", snap.Capacity)
+	}
+}
+
+func TestSetCapacityHandler_MissingBody(t *testing.T) {
+	fake := &fakeCapacitySetter{}
+	h := health.NewOrchestratorHandler(fake)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("want 400 got %d", w.Result().StatusCode)
+	}
+}
+
+func TestSetCapacityHandler_InvalidCapacity(t *testing.T) {
+	fake := &fakeCapacitySetter{setErr: fmt.Errorf("capacity must be > 0")}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":0}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("want 400 got %d", w.Result().StatusCode)
+	}
+}
+
+func TestSetCapacityHandler_UnknownField_Returns400(t *testing.T) {
+	fake := &fakeCapacitySetter{}
+	h := health.NewOrchestratorHandler(fake)
+
+	// Sends an unknown field — DisallowUnknownFields should reject this.
+	body := `{"capacity":3,"unknown_field":"oops"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("unknown field: want 400 got %d", res.StatusCode)
+	}
+	// Verify error code is CodeInvalidRequest (envelope: {"error":{"code":"..."}}).
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Error.Code != "INVALID_REQUEST" {
+		t.Errorf("unknown field: want code INVALID_REQUEST got %q", errBody.Error.Code)
+	}
+}
+
+// ── T021: M4 scheduler fields in status DTO ────────────────────────────────────
+
+type fakeSchedulerSnapshotter struct {
+	snap health.SchedulerSnapshotDTO
+}
+
+func (f *fakeSchedulerSnapshotter) SetCapacity(_ int) error { return nil }
+func (f *fakeSchedulerSnapshotter) SchedulerSnapshot() health.SchedulerSnapshotDTO {
+	return f.snap
+}
+
+func TestOrchestratorStatus_M4_SchedulerFields(t *testing.T) {
+	snap := health.SchedulerSnapshotDTO{
+		Capacity:    4,
+		ActiveCount: 2,
+		Waiting:     []string{"bd-001", "bd-002"},
+	}
+	cfg := health.StatusConfig{
+		BeadsVersion:         "1.0.0",
+		SchemaVersion:        1,
+		SchedulerSnapshotter: &fakeSchedulerSnapshotter{snap: snap},
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var body health.OrchestratorStatusResponse
+	if err := json.NewDecoder(w.Result().Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Capacity != 4 {
+		t.Errorf("capacity want 4 got %d", body.Capacity)
+	}
+	if body.ActiveCount != 2 {
+		t.Errorf("activeCount want 2 got %d", body.ActiveCount)
+	}
+	if len(body.Waiting) != 2 || body.Waiting[0] != "bd-001" {
+		t.Errorf("waiting want [bd-001 bd-002] got %v", body.Waiting)
+	}
+}
+
+// TestOrchestratorStatus_NoSnapshotter_WaitingIsEmptyArray is the regression for
+// the Copilot finding: with no SchedulerSnapshotter wired, `waiting` must
+// serialize as [] (not null), consistent with `runs`.
+func TestOrchestratorStatus_NoSnapshotter_WaitingIsEmptyArray(t *testing.T) {
+	cfg := health.StatusConfig{BeadsVersion: "1.0.0", SchemaVersion: 1} // no snapshotter
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	raw, _ := io.ReadAll(w.Result().Body)
+	if !strings.Contains(string(raw), `"waiting":[]`) || strings.Contains(string(raw), `"waiting":null`) {
+		t.Errorf("waiting must serialize as [] not null; got: %s", raw)
+	}
+}
+
+func TestOrchestratorStatus_M4_M3FieldsIntact(t *testing.T) {
+	cfg := health.StatusConfig{
+		BeadsVersion:  "2.0.0",
+		BeadsDir:      "/data/beads",
+		SchemaVersion: 2,
+		TmuxAvailable: true,
+		TmuxVersion:   "3.6",
+		RunCounter:    &fakeRunCounter{count: 1},
+		VCS: health.VCSStatus{
+			DefaultVCS: "git",
+			Git:        health.VCSAvailability{Available: true},
+		},
+		WorktreeCount: 2,
+		SchedulerSnapshotter: &fakeSchedulerSnapshotter{snap: health.SchedulerSnapshotDTO{
+			Capacity: 4, ActiveCount: 1, Waiting: []string{},
+		}},
+	}
+	handler := health.OrchestratorStatusHandler(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(w.Result().Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// M4 additions.
+	mustHaveKey(t, raw, "capacity")
+	mustHaveKey(t, raw, "activeCount")
+	mustHaveKey(t, raw, "waiting")
+	// Prior-milestone fields still present.
+	mustHaveKey(t, raw, "build")
+	mustHaveKey(t, raw, "vcs")
+	mustHaveKey(t, raw, "worktreeCount")
+}
+
+// ── Fix B: error code must match services.CodeInvalidCapacity ─────────────────
+// These tests verify that SetCapacity returns the canonical INVALID_CAPACITY
+// code from services rather than a locally-defined duplicate that could drift.
+
+func TestSetCapacityHandler_ZeroCapacity_ReturnsServicesCode(t *testing.T) {
+	fake := &fakeCapacitySetter{}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":0}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 got %d", res.StatusCode)
+	}
+
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	// Must match the canonical constant — not a local copy that could drift.
+	if errBody.Error.Code != services.CodeInvalidCapacity {
+		t.Errorf("want code %q got %q", services.CodeInvalidCapacity, errBody.Error.Code)
+	}
+}
+
+func TestSetCapacityHandler_SetCapacityError_ReturnsServicesCode(t *testing.T) {
+	fake := &fakeCapacitySetter{setErr: fmt.Errorf("scheduler not configured")}
+	h := health.NewOrchestratorHandler(fake)
+
+	body := `{"capacity":3}`
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/orchestrator/capacity", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.SetCapacity(w, req)
+
+	res := w.Result()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400 got %d", res.StatusCode)
+	}
+
+	var errBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	// Must match the canonical constant — not a local copy that could drift.
+	if errBody.Error.Code != services.CodeInvalidCapacity {
+		t.Errorf("want code %q got %q", services.CodeInvalidCapacity, errBody.Error.Code)
 	}
 }

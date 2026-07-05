@@ -44,11 +44,48 @@ case "$1" in
             add)
                 echo "Created workspace in \"$3\""
                 ;;
+            forget)
+                echo "Forgot workspace $3"
+                ;;
             *)
                 echo "workspace: unknown subcommand $2" >&2
                 exit 1
                 ;;
         esac
+        ;;
+    bookmark)
+        case "$2" in
+            set)
+                echo "bookmark set: $3"
+                ;;
+            create)
+                echo "bookmark create: $3"
+                ;;
+            *)
+                echo "bookmark: unknown subcommand $2" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    git)
+        case "$2" in
+            export)
+                echo "Exporting bookmarks to git"
+                ;;
+            remote)
+                echo "git remote $3 $4 $5"
+                ;;
+            *)
+                echo "git: unknown subcommand $2" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    describe)
+        echo "Working copy now at: (described)"
+        ;;
+    new)
+        echo "Working copy now at: (empty)"
         ;;
     diff)
         case "$2" in

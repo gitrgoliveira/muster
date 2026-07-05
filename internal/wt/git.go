@@ -15,6 +15,23 @@ import (
 	"github.com/gitrgoliveira/muster/internal/worktree"
 )
 
+// checkWorktreeDir verifies path exists and is a directory, returning
+// ErrWorktreeNotFound for absent/non-dir paths. Used by Finalize, Push, and
+// Remove to DRY the repeated lstat/IsNotExist/IsDir guard before each git op.
+func checkWorktreeDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrWorktreeNotFound
+		}
+		return fmt.Errorf("wt git: lstat worktree %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return ErrWorktreeNotFound
+	}
+	return nil
+}
+
 // gitBackend implements Backend using the git VCS. It optionally stores a
 // worktreesDir so that the interface methods Status/DiffSummary/Diff can resolve
 // the worktree path without requiring the caller to pass it on every call.
@@ -34,6 +51,7 @@ type gitBackend struct {
 // NewGitBackend returns a git Backend with worktreesDir baked in. The resulting
 // backend's Status/DiffSummary/Diff methods resolve paths from worktreesDir
 // without an extra parameter. Use this from the orchestrator after reading config.
+// Push uses the default "origin" remote.
 func NewGitBackend(worktreesDir string) Backend {
 	return &gitBackend{worktreesDir: worktreesDir}
 }
@@ -76,19 +94,151 @@ func (g *gitBackend) Diff(ctx context.Context, beadID, path string) (io.ReadClos
 	return GitDiffAt(ctx, g.worktreesDir, beadID, path)
 }
 
-// Finalize returns ErrNotImplemented in M3.
-func (g *gitBackend) Finalize(_ context.Context, _, _ string) error {
-	return ErrNotImplemented
+// Finalize commits all changes in the bead's worktree with the given message.
+// If the worktree has no changes (git status --porcelain is empty), this is a
+// no-op and returns (false, nil) — no commit is created (FR-010).
+// On non-empty changes: git add -A + git commit -m <message>; returns (true, nil).
+// Requires the backend was constructed with NewGitBackend(worktreesDir).
+func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) (bool, error) {
+	if g.worktreesDir == "" {
+		return false, fmt.Errorf("wt git: Finalize requires worktreesDir — use NewGitBackend")
+	}
+	path := filepath.Join(g.worktreesDir, beadID)
+
+	// Verify the worktree exists and is a directory.
+	if err := checkWorktreeDir(path); err != nil {
+		return false, err
+	}
+
+	// Check for changes using `git status --porcelain`.
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = path
+	out, err := statusCmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, fmt.Errorf("wt git: finalize status aborted: %w", ctx.Err())
+		}
+		return false, fmt.Errorf("wt git: git status in %q: %w\n%s", path, err, out)
+	}
+
+	// No changes — no-op success (no commit created).
+	if strings.TrimSpace(string(out)) == "" {
+		return false, nil
+	}
+
+	// Stage all changes.
+	addCmd := exec.CommandContext(ctx, "git", "add", "-A")
+	addCmd.Dir = path
+	if addOut, err := addCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return false, fmt.Errorf("wt git: finalize add aborted: %w", ctx.Err())
+		}
+		return false, fmt.Errorf("wt git: git add -A in %q: %w\n%s", path, err, addOut)
+	}
+
+	// Commit with the provided message.
+	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
+	commitCmd.Dir = path
+	if commitOut, err := commitCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return false, fmt.Errorf("wt git: finalize commit aborted: %w", ctx.Err())
+		}
+		return false, fmt.Errorf("wt git: git commit in %q: %w\n%s", path, err, commitOut)
+	}
+
+	return true, nil
 }
 
-// Push returns ErrNotImplemented in M3.
-func (g *gitBackend) Push(_ context.Context, _ string) error {
-	return ErrNotImplemented
+// Push pushes the bead's branch (muster/<beadID>) to remote (resolved via
+// ResolveRemote — empty defaults to "origin"). A non-zero git exit (no remote,
+// auth failure, rejected) returns an explicit typed error — never silent
+// success (FR-007). Requires the backend was constructed with NewGitBackend(worktreesDir).
+func (g *gitBackend) Push(ctx context.Context, beadID, remote string) error {
+	if g.worktreesDir == "" {
+		return fmt.Errorf("wt git: Push requires worktreesDir — use NewGitBackend")
+	}
+	path := filepath.Join(g.worktreesDir, beadID)
+
+	// Verify the worktree exists and is a directory.
+	if err := checkWorktreeDir(path); err != nil {
+		return err
+	}
+
+	resolvedRemote, err := ResolveRemote(remote)
+	if err != nil {
+		return err
+	}
+	branch := BranchName(beadID)
+
+	cmd := exec.CommandContext(ctx, "git", "push", resolvedRemote, branch)
+	cmd.Dir = path
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: push aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git push %s %s in %q: %w\n%s", resolvedRemote, branch, path, err, out)
+	}
+	return nil
 }
 
-// Remove returns ErrNotImplemented in M3.
-func (g *gitBackend) Remove(_ context.Context, _ string) error {
-	return ErrNotImplemented
+// Remove tears down the per-bead git worktree. It runs
+// `git worktree remove <path>` (which handles the git metadata cleanup) and
+// then `git worktree prune` to remove stale refs. After Remove, a subsequent
+// Status call will report the worktree as absent.
+// Requires the backend was constructed with NewGitBackend(worktreesDir).
+func (g *gitBackend) Remove(ctx context.Context, beadID string) error {
+	if g.worktreesDir == "" {
+		return fmt.Errorf("wt git: Remove requires worktreesDir — use NewGitBackend")
+	}
+	path := filepath.Join(g.worktreesDir, beadID)
+
+	// Verify the worktree exists and is a directory.
+	if err := checkWorktreeDir(path); err != nil {
+		return err
+	}
+
+	// Refuse removal when the worktree has uncommitted changes (tracked or
+	// untracked) to avoid silently discarding the agent's work. `git status
+	// --porcelain` returns non-empty output for any pending change.
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = path
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: remove status aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git status in %q: %w\n%s", path, err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		return fmt.Errorf("%w: %q has uncommitted changes; finalize or reset before removing", ErrWorktreeDirty, path)
+	}
+
+	// `git worktree remove` needs to run from within any git-associated directory.
+	// Running it with the worktree path as an argument from the worktree itself is
+	// valid; git resolves paths relative to the main repo.
+	removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", path)
+	removeCmd.Dir = path
+	if removeOut, err := removeCmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: remove aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git worktree remove %q: %w\n%s", path, err, removeOut)
+	}
+
+	// No `git worktree prune` is needed here. `git worktree remove` (used
+	// without --force on a complete, clean worktree) already deletes the main
+	// repo's .git/worktrees/<name> admin entry on success, and the failure
+	// branch above returns early — so a prune could only ever run after a
+	// SUCCESSFUL remove, with nothing left to prune.
+	//
+	// (internal/worktree.cleanupFailedCreate does run prune, but only because it
+	// falls back to os.RemoveAll for a HALF-created worktree whose admin entry
+	// `git worktree remove` couldn't drop — a different situation from this
+	// complete-worktree removal. The earlier prune-from-filepath.Dir(path) here
+	// ran in worktreesDir, which is not a git context, so it was a silent no-op:
+	// Copilot PR #7 / tri-review 5.)
+	return nil
 }
 
 // ── Package-level helpers (bypass Backend interface) ──────────────────────

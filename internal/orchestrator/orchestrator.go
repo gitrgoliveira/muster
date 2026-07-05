@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -56,16 +57,21 @@ var ErrVCSUnavailable = errors.New("VCS binary unavailable")
 // The registry is rebuilt on restart from tmux.List().
 //
 // Field mutability contract:
-//   - Immutable after Dispatch/recoverSession populate them and launch
-//     watchRun (the Go memory model's happens-before on the `go` statement
-//     ensures the watcher goroutine sees these): BeadID, StepIdx, Loop, Agent,
-//     Mode, PermissionMode, Worktree, Session, StartedAt, cancel, pipe. These
-//     may be read (e.g. by finishRun) without holding o.mu.
-//   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt.
+//   - Immutable after Dispatch/recoverSession populate them: BeadID, BeadTitle,
+//     BeadDesc, Agent, Mode, PermissionMode, Worktree, StartedAt, Chain. Safe to
+//     read without o.mu.
+//   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt, Quota,
+//     pendingAdvance, pendingTargetIdx, and — since M4's Advance/LoopBack/
+//     relaunchNextStep — StepIdx, Loop, Session, Pane, cancel, pipe. In M2 the latter group was
+//     "immutable after launch," but the multi-step chain now rewrites them under
+//     the write lock, so readers (finishRun, doLaunch) MUST snapshot them under
+//     o.mu.RLock() rather than reading the live fields (tri-review 2 HIGH).
 type Run struct {
 	BeadID         string
-	StepIdx        int // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
-	Loop           int // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
+	BeadTitle      string // preserved for queued runs so launchAdmittedRun can build the prompt
+	BeadDesc       string // preserved for queued runs so launchAdmittedRun can build the prompt
+	StepIdx        int    // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
+	Loop           int    // 0 for runs Dispatch creates in M2; recovery preserves whatever the session name encodes
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode
@@ -83,6 +89,30 @@ type Run struct {
 	// pipe is the pane output reader (tmux FIFO or fallback stdout). Closed in
 	// finishRun so the real tmux manager removes the FIFO + temp dir (no leak).
 	pipe io.ReadCloser
+
+	// M4 additions (additive; immutable after Dispatch populates them).
+
+	// Chain is the ordered step pipeline for this run. nil means single-step
+	// (M2 default behaviour is preserved). Set at dispatch time; US3 advances
+	// a per-bead pointer through the chain.
+	Chain *StepChain
+
+	// Quota holds the token/cost usage captured at run end. Known=false until
+	// US5 wires the on-disk quota reader; runs before US5 leave it zero.
+	// Mutable under o.mu (set in finishRun once the session exits).
+	Quota QuotaUsage
+
+	// pendingAdvance is true while an Advance/LoopBack is in progress for this
+	// run. When true, finishRun skips eviction and instead relaunches the run at
+	// pendingTargetIdx (see below) under the same beadID key. Mutable under o.mu.
+	pendingAdvance bool
+
+	// pendingTargetIdx is the step index the run will move to once the current
+	// step's session is finished. Advance/LoopBack set it WITHOUT mutating
+	// StepIdx/Session, so finishRun can still kill the OLD session and report the
+	// OLD step; relaunchNextStep applies it (StepIdx = pendingTargetIdx) after
+	// cleanup. Valid only while pendingAdvance is true. Mutable under o.mu.
+	pendingTargetIdx int
 }
 
 // DispatchRequest carries the inputs for Orchestrator.Dispatch.
@@ -93,7 +123,28 @@ type DispatchRequest struct {
 	Agent          core.AgentID
 	Mode           core.Mode
 	PermissionMode core.PermissionMode // empty = use DefaultPermissionMode
+
+	// Chain is an optional step chain override for this dispatch. When non-nil
+	// it takes precedence over the orchestrator's configured default chain.
+	// nil means: use the configured default chain, or single implicit step 0
+	// (M2 behaviour) if no default chain is set. Per-step PermissionMode is
+	// never silently defaulted (FR-012a).
+	Chain *StepChain
 }
+
+// DispatchResult is the return value of Orchestrator.Dispatch.
+// Joined is true when the bead was already in-flight (idempotent join, M4 US4).
+// Queued is true when the bead was accepted but is waiting for a capacity slot
+// (M4 US1). A Joined result with Queued true means the bead is joining a waiter.
+// Bead is always the active *core.Bead (existing run on join, new run otherwise).
+type DispatchResult struct {
+	Bead   *core.Bead
+	Joined bool // true when joining an in-flight run (idempotent dispatch)
+	Queued bool // true when admitted to the waiting queue (capacity full)
+}
+
+// defaultSchedulerCapacity is the capacity used when Config.MaxConcurrent is unset.
+const defaultSchedulerCapacity = 4
 
 // Publisher is a function that broadcasts a WS frame to connected clients.
 type Publisher func(frame ws.Frame)
@@ -102,6 +153,11 @@ type Publisher func(frame ws.Frame)
 type Orchestrator struct {
 	mu   sync.RWMutex
 	runs map[string]*Run // keyed by beadID
+
+	// sched is the capacity-gated FIFO scheduler (M4 US1). All sched methods
+	// must be called with mu held (write lock). setCapacity acquires the lock
+	// internally.
+	sched *scheduler
 
 	adapters        *adapter.Registry
 	transport       tmux.Manager // may be a fallback transport
@@ -122,6 +178,19 @@ type Orchestrator struct {
 	// in_progress per the beads mapper), so completion is recorded via a bead
 	// note + a bead.updated WS frame rather than a column move.
 	onComplete func(beadID string, exitCode int, success bool)
+
+	// defaultChain is the per-orchestrator default step chain applied to all
+	// dispatches that do not supply an explicit chain (nil DispatchRequest.Chain).
+	// nil means single implicit step 0 (M2 behaviour). Set at construction via
+	// Config.DefaultChain. Per-step PermissionMode is NEVER silently defaulted
+	// (FR-012a) — a chain with an empty PermissionMode on any step will cause
+	// an ErrNoPermissionMode when that step is launched.
+	defaultChain *StepChain
+
+	// quotaHomeDir is the home directory used to locate Claude Code's on-disk
+	// per-session JSONL transcripts. Empty string means os.UserHomeDir() is
+	// called at run end. Overridable via Config.QuotaHomeDir for testing (T063).
+	quotaHomeDir string
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -136,6 +205,24 @@ func (m RepoMap) Resolve(beadID string) (string, error) {
 		return "", ErrUnmappedPrefix
 	}
 	return path, nil
+}
+
+// repoMapValues returns the values of a RepoMap as a slice. Used to populate
+// the jj backend's allow-list (tri-review 5) so the fallback srcRepo resolution is
+// restricted to operator-declared paths. Returns nil when m is empty so the
+// jj backend treats the allow-list as disabled (open set).
+func repoMapValues(m RepoMap) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	vals := make([]string, 0, len(m))
+	for _, v := range m {
+		// Clean each path: the jj backend compares the allow-list against a
+		// filepath.Clean'd resolved path, so an uncleaned operator value (e.g.
+		// trailing slash) would falsely reject a legitimate repo.
+		vals = append(vals, filepath.Clean(v))
+	}
+	return vals
 }
 
 // Config holds Orchestrator constructor options.
@@ -162,6 +249,23 @@ type Config struct {
 	// Wired in main.go to record the agent-run outcome on the bead (FR-013):
 	// a note + bead.updated frame. It runs on the watcher goroutine.
 	OnComplete func(beadID string, exitCode int, success bool)
+
+	// MaxConcurrent is the maximum number of concurrently active runs (M4 US1).
+	// 0 or negative defaults to 4 (defaultSchedulerCapacity). Use SetCapacity
+	// to change it at runtime; Dispatch enforces it via the FIFO scheduler.
+	MaxConcurrent int
+
+	// DefaultChain is the default step chain applied to dispatches that do not
+	// supply an explicit chain. nil means single implicit step 0 (M2 behaviour).
+	// Per-step PermissionMode is NEVER silently defaulted (FR-012a).
+	DefaultChain *StepChain
+
+	// QuotaHomeDir is the home directory used to locate Claude Code's on-disk
+	// per-session JSONL transcripts (~/.claude/projects/<encoded-cwd>/).
+	// Empty string means os.UserHomeDir() is called at run end.
+	// Set in tests to inject a fake home directory so quota capture can be
+	// exercised without a real claude installation (T063).
+	QuotaHomeDir string
 }
 
 // defaultRunRetention is used when Config.RunRetention is unset (0).
@@ -201,13 +305,25 @@ func New(cfg Config) *Orchestrator {
 	if backend == nil {
 		switch defaultVCS {
 		case wt.VCSJJ:
-			backend = wt.NewJJBackend(cfg.WorktreesDir)
+			// Pass the repo-map values as the fallback allow-list so that a
+			// compromised agent cannot redirect Push/Remove to an arbitrary directory
+			// by tampering with the agent-writable .jj/repo file (tri-review 5).
+			backend = wt.NewJJBackendAllowed(cfg.WorktreesDir, repoMapValues(cfg.RepoMap))
 		default:
 			backend = wt.NewGitBackend(cfg.WorktreesDir)
 		}
 	}
+
+	// Initialise the FIFO scheduler (M4 US1). Default to 4 concurrent runs
+	// when MaxConcurrent is unset (0) or negative.
+	schedCap := cfg.MaxConcurrent
+	if schedCap <= 0 {
+		schedCap = defaultSchedulerCapacity
+	}
+
 	return &Orchestrator{
 		runs:            make(map[string]*Run),
+		sched:           newScheduler(schedCap),
 		adapters:        cfg.Adapters,
 		transport:       transport,
 		repoMap:         cfg.RepoMap,
@@ -220,6 +336,8 @@ func New(cfg Config) *Orchestrator {
 		runTimeout:      cfg.RunTimeout,
 		runRetention:    runRetention,
 		onComplete:      cfg.OnComplete,
+		defaultChain:    cfg.DefaultChain,
+		quotaHomeDir:    cfg.QuotaHomeDir,
 	}
 }
 
@@ -234,6 +352,29 @@ func (o *Orchestrator) RunCount() int {
 		}
 	}
 	return count
+}
+
+// SetCapacity changes the scheduler's maximum concurrency at runtime.
+// n must be > 0; returns ErrInvalidCapacity otherwise. Lowering below the
+// number of currently active runs drains (never kills running agents).
+// Raising above the current active count immediately admits waiters FIFO.
+func (o *Orchestrator) SetCapacity(n int) error {
+	admitted, err := o.sched.setCapacity(&o.mu, n)
+	if err != nil {
+		return err
+	}
+	// Launch newly admitted runs outside the lock (slow IO: Detect/Ensure/Spawn).
+	for _, run := range admitted {
+		go o.launchAdmittedRun(run)
+	}
+	return nil
+}
+
+// SchedulerSnapshot returns a point-in-time view of the scheduler state.
+func (o *Orchestrator) SchedulerSnapshot() SchedulerSnapshot {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	return o.sched.snapshot()
 }
 
 // WorktreeCount returns the number of per-bead worktree directories currently
@@ -273,6 +414,42 @@ func (o *Orchestrator) VCSAvailability() wt.Availability {
 // DefaultVCSString returns the string form of the configured default VCS.
 func (o *Orchestrator) DefaultVCSString() string {
 	return string(o.defaultVCS)
+}
+
+// RunSummary is a lightweight point-in-time snapshot of a Run for status reporting.
+// It is returned by ListRunSummaries and consumed by the health status handler via
+// an adapter in main.go (which converts to health.RunSummaryDTO to avoid an
+// import cycle between orchestrator and api/health).
+type RunSummary struct {
+	BeadID   string
+	StepIdx  int
+	ChainLen int // 0 when no chain (single-step M2 run)
+	State    core.StepStatus
+	Quota    QuotaUsage // best-effort token/cost usage; Known=false when unavailable
+}
+
+// ListRunSummaries returns a snapshot of all currently-tracked runs, ordered
+// by BeadID for deterministic output. Callers may read the returned slice
+// without holding a lock.
+func (o *Orchestrator) ListRunSummaries() []RunSummary {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	summaries := make([]RunSummary, 0, len(o.runs))
+	for _, r := range o.runs {
+		chainLen := 0
+		if r.Chain != nil {
+			chainLen = len(*r.Chain)
+		}
+		summaries = append(summaries, RunSummary{
+			BeadID:   r.BeadID,
+			StepIdx:  r.StepIdx,
+			ChainLen: chainLen,
+			State:    r.State,
+			Quota:    r.Quota,
+		})
+	}
+	sort.Slice(summaries, func(i, j int) bool { return summaries[i].BeadID < summaries[j].BeadID })
+	return summaries
 }
 
 // GetRun returns a snapshot copy of the Run for a beadID, or nil if not found.
@@ -374,8 +551,14 @@ func (e *PermModeError) Error() string {
 	return "invalid permissionMode: " + string(e.Mode)
 }
 
-// promptFileName is the filename of the prompt file within the worktree.
-const promptFileName = ".muster-prompt-0.txt"
+// promptFileNameForStep returns the prompt filename for the given step index.
+// Each step gets its own file so step 1 does not overwrite step 0's prompt
+// (which may still be in use by the watcher goroutine or for debugging).
+// For step 0 this returns ".muster-prompt-0.txt" — byte-for-byte identical to
+// the M2 constant, preserving backward compatibility.
+func promptFileNameForStep(stepIdx int) string {
+	return fmt.Sprintf(".muster-prompt-%d.txt", stepIdx)
+}
 
 // modeSupported reports whether the adapter's Modes() table contains mode.
 func modeSupported(adp adapter.Adapter, mode core.Mode) bool {
@@ -404,23 +587,22 @@ var promptingModes = map[core.PermissionMode]bool{
 
 // Dispatch launches an agent run for the given bead. It:
 //  1. Validates inputs and checks for duplicate run.
-//  2. Resolves the repo from the RepoMap.
-//  3. Ensures the per-bead worktree exists.
-//  4. Writes the assembled prompt to <worktree>/.muster-prompt-0.txt.
-//  5. Calls adapter.Invoke to get the Spec.
-//  6. Spawns the tmux session.
-//  7. Registers the Run and starts the exit-watcher goroutine.
-//  8. Emits tmux.session.opened.
+//  2. Admits or enqueues the run via the FIFO scheduler.
+//  3. If admitted: resolves repo, ensures worktree, writes prompt, invokes adapter, spawns session.
+//  4. If queued: registers a StepPending run and returns immediately (Queued:true).
+//     The agent session is launched in launchAdmittedRun when a slot opens.
+//  5. On success, returns DispatchResult with Queued indicating whether the run
+//     is waiting for a capacity slot.
 //
-// Returns a stub *core.Bead with updated column (the caller publishes bead.updated).
-func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core.Bead, error) {
+// Returns a DispatchResult with the bead and its queuing status.
+func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (DispatchResult, error) {
 	// Defense in depth: validate the bead ID before it flows into a repo-map
 	// lookup, a tmux session name, and (via worktree.Ensure) a filesystem path
 	// + git branch name. The HTTP handler already allow-lists IDs, but Dispatch
 	// is a public entry point and must not trust its caller — the same reason
 	// recovery validates session-derived IDs.
 	if !core.ValidBeadID(req.BeadID) {
-		return nil, ErrInvalidBeadID
+		return DispatchResult{}, ErrInvalidBeadID
 	}
 
 	// A missing worktreesDir is a construction/wiring error (cmd/muster always
@@ -429,7 +611,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// working directory. Fail fast, before reserving a run, rather than
 	// scattering worktrees wherever the process happens to be running.
 	if o.worktreesDir == "" {
-		return nil, fmt.Errorf("orchestrator: worktreesDir is not configured")
+		return DispatchResult{}, fmt.Errorf("orchestrator: worktreesDir is not configured")
 	}
 
 	// Refuse dispatch when the configured VCS binary was absent at startup
@@ -438,18 +620,55 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	switch o.defaultVCS {
 	case wt.VCSJJ:
 		if !o.vcsAvailable.JJ {
-			return nil, fmt.Errorf("%w: jj not found on PATH", ErrVCSUnavailable)
+			return DispatchResult{}, fmt.Errorf("%w: jj not found on PATH", ErrVCSUnavailable)
 		}
 	default: // git
 		if !o.vcsAvailable.Git {
-			return nil, fmt.Errorf("%w: git not found on PATH", ErrVCSUnavailable)
+			return DispatchResult{}, fmt.Errorf("%w: git not found on PATH", ErrVCSUnavailable)
 		}
 	}
 
-	// Resolve permission mode.
-	pm, err := o.resolvePermMode(req.Mode, req.PermissionMode)
-	if err != nil {
-		return nil, err
+	// Resolve the step chain for this dispatch. M2 single-step behaviour
+	// (nil Chain) is preserved when no chain is supplied in the request and
+	// no default chain is configured. resolveChain only reads req.Chain and
+	// the immutable o.defaultChain (set once in New(), never mutated), so it
+	// is safe to call outside o.mu.
+	resolvedChain := o.resolveChain(req)
+
+	// Resolve the permission mode for the step that launches first (step 0).
+	//
+	// For a multi-step chain, the per-step mode comes directly from
+	// chain[0].PermissionMode — matching how relaunchNextStep drives steps 1+
+	// from (*run.Chain)[nextIdx].PermissionMode (RAW, not via resolvePermMode).
+	// The top-level req.PermissionMode / configured default is the single-step
+	// (no-chain) path only.
+	//
+	// resolvePermMode is deliberately NOT used for the chain case: it rejects
+	// PermPlan for a non-plan Mode, but a chain legitimately carries per-step
+	// "plan" profiles (the quickstart's canonical plan→build chain has
+	// chain[0].PermissionMode=plan under ModeAgent), and steps 1+ already
+	// accept them raw. Routing through resolvePermMode would reject that
+	// pattern and diverge from steps 1+.
+	//
+	// Without this branch, a chain-only dispatch that omits the top-level
+	// permissionMode is wrongly rejected with ErrNoPermissionMode, and step 0
+	// launches with the top-level/default mode instead of chain[0]
+	// (Copilot PR #7; FR-012a / US3 per-step permission profiles).
+	var pm core.PermissionMode
+	if resolvedChain != nil && len(*resolvedChain) > 0 {
+		pm = (*resolvedChain)[0].PermissionMode
+		// FR-021: never silently default per-step autonomy. The service layer
+		// validates the whole chain before dispatch, but Dispatch is a public
+		// entry point, so guard against an empty/invalid step-0 mode here too.
+		if pm == "" || !pm.Valid() {
+			return DispatchResult{}, fmt.Errorf("%w: chain step 0 permissionMode is missing or invalid", ErrNoPermissionMode)
+		}
+	} else {
+		var err error
+		pm, err = o.resolvePermMode(req.Mode, req.PermissionMode)
+		if err != nil {
+			return DispatchResult{}, err
+		}
 	}
 
 	// FR-021: under the tmux-absent fallback there is no attachable session to
@@ -463,21 +682,74 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// same lock to close the TOCTOU window. Without the reservation, two
 	// concurrent dispatches for the same bead could both pass the check, both
 	// do the slow Detect/Ensure/Invoke/Spawn work, and both spawn a session —
-	// leaking a goroutine and orphaning a tmux session. The reservation marks
-	// the bead StepActive up-front so the second caller gets ErrRunAlreadyActive.
+	// leaking a goroutine and orphaning a tmux session.
+	//
+	// M4 US1: the scheduler admits or enqueues the reservation under the same lock.
+	// An admitted run is marked StepActive; a queued run is marked StepPending.
 	o.mu.Lock()
-	if existing, ok := o.runs[req.BeadID]; ok && existing.State == core.StepActive {
+	if existing, ok := o.runs[req.BeadID]; ok && (existing.State == core.StepActive || existing.State == core.StepPending) {
+		// Idempotent join (M4 US4): a duplicate dispatch of an in-flight bead
+		// (active or waiting for capacity) returns the existing run rather than
+		// an error. The caller is joining the existing run, not racing a new one.
+		// Join is keyed on bead identity only (no parameter comparison).
+		joinedBead := &core.Bead{
+			ID:     existing.BeadID,
+			Title:  existing.BeadTitle,
+			Desc:   existing.BeadDesc,
+			Column: core.ColRunning,
+		}
+		isQueued := existing.State == core.StepPending
 		o.mu.Unlock()
-		return nil, ErrRunAlreadyActive
+		return DispatchResult{Bead: joinedBead, Joined: true, Queued: isQueued}, nil
 	}
+
 	reserved := &Run{
-		BeadID:    req.BeadID,
-		State:     core.StepActive,
-		StartedAt: time.Now(),
+		BeadID:         req.BeadID,
+		BeadTitle:      req.BeadTitle,
+		BeadDesc:       req.BeadDesc,
+		Agent:          req.Agent,
+		Mode:           req.Mode,
+		PermissionMode: pm,
+		State:          core.StepPending,
+		StartedAt:      time.Now(),
+		Chain:          resolvedChain,
+	}
+	// admitOrEnqueue returns the 0-based FIFO position when queued, so Dispatch
+	// need not reach into scheduler internals (tri-review 4).
+	queued, waitingPos := o.sched.admitOrEnqueue(reserved)
+	if !queued {
+		// Admitted: flip state to active now.
+		reserved.State = core.StepActive
+		// launching sentinel: blocks Advance/LoopBack until doLaunch arms run.cancel,
+		// closing the nil-cancel window between here and doLaunch:861 (tri-review 6).
+		reserved.pendingAdvance = true
 	}
 	o.registerRun(reserved)
+	// Capture StepIdx/Loop under the lock to pass to doLaunch (a concurrent
+	// Advance could write them once this run is active — tri-review 2 HIGH).
+	launchStepIdx, launchLoop := reserved.StepIdx, reserved.Loop
 	o.mu.Unlock()
 
+	// If queued, emit dispatch.queued WS event and return immediately.
+	// The agent session is launched in launchAdmittedRun when a slot opens.
+	if queued {
+		if o.publish != nil {
+			o.publish(ws.Frame{
+				Type:       ws.EventDispatchQueued,
+				BeadID:     req.BeadID,
+				WaitingPos: &waitingPos,
+			})
+		}
+		bead := &core.Bead{
+			ID:     req.BeadID,
+			Title:  req.BeadTitle,
+			Desc:   req.BeadDesc,
+			Column: core.ColRunning,
+		}
+		return DispatchResult{Bead: bead, Queued: true}, nil
+	}
+
+	// Admitted path: do the slow IO work outside the lock.
 	// On any early-return error, release the reservation (only if it's still
 	// ours — a later success replaces the pointer's fields in place, not the
 	// pointer itself, so identity holds; but a subsequent dispatch could have
@@ -487,13 +759,33 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		if success {
 			return
 		}
-		o.mu.Lock()
-		if cur, ok := o.runs[req.BeadID]; ok && cur == reserved {
-			delete(o.runs, req.BeadID)
+		// onRunEnd removes this bead from the active set AND pops the next FIFO
+		// waiter (promoting it to active). We MUST launch that waiter, else it is
+		// stranded in o.runs as a phantom StepPending run and its capacity slot
+		// leaks forever (tri-review 2 CRIT — sibling of the launchAdmittedRun
+		// error path). evictAndPopWaiter handles the removal + waiter pop.
+		if nextRun := o.evictAndPopWaiter(reserved); nextRun != nil {
+			go o.launchAdmittedRun(nextRun)
 		}
-		o.mu.Unlock()
 	}()
 
+	bead, err := o.doLaunch(ctx, reserved, req, pm, launchStepIdx, launchLoop)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	success = true
+	return DispatchResult{Bead: bead}, nil
+}
+
+// doLaunch performs the slow launch I/O for a run OUTSIDE o.mu: adapter detect,
+// worktree ensure, prompt write, adapter invoke, tmux spawn, watcher start.
+// Must NOT be called with o.mu held. stepIdx/loop are passed in (captured by the
+// caller under the lock)
+// rather than read from run.StepIdx/run.Loop here: a concurrent Advance/LoopBack
+// writes those fields under the write lock, and reading them unlocked during
+// this ~seconds-long path is a data race that would also pick the wrong prompt
+// file / session name / event index (tri-review 2 HIGH).
+func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchRequest, pm core.PermissionMode, stepIdx, loop int) (*core.Bead, error) {
 	// Resolve adapter.
 	if o.adapters == nil {
 		return nil, ErrAdapterNotFound
@@ -505,14 +797,12 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	// Detect adapter (installed + logged in). Bound the probe with an
 	// independent short deadline so a hung claude binary or slow HTTP client
-	// cannot pin the run reservation (`State=StepActive`, registered above)
-	// indefinitely — otherwise the bead would remain undispatchable until the
-	// server restarts. context.WithoutCancel detaches from ctx's cancellation
-	// (ctx is the HTTP request context; a client disconnect cancels it) so
-	// only OUR deadline can end the probe — a disconnecting client must not
-	// be able to SIGKILL an in-flight `claude` subprocess via
-	// exec.CommandContext, which would otherwise be indistinguishable from a
-	// hung probe.
+	// cannot pin the run reservation indefinitely — otherwise the bead would
+	// remain undispatchable until the server restarts.
+	// context.WithoutCancel detaches from ctx's cancellation (ctx is the HTTP
+	// request context; a client disconnect cancels it) so only OUR deadline can
+	// end the probe — a disconnecting client must not be able to SIGKILL an
+	// in-flight `claude` subprocess via exec.CommandContext.
 	detectCtx, detectCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	detectResult, err := adp.Detect(detectCtx)
 	detectCancel()
@@ -548,17 +838,9 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	// Ensure worktree. Bound the git subprocesses with an independent
 	// short deadline for the same reason as the Detect probe above: a hung
-	// `git rev-parse` / `git worktree add` (e.g. against a slow NFS mount or a
-	// stuck `.git` lock) would otherwise hold the run reservation forever.
-	// context.WithoutCancel detaches from ctx's cancellation for the same
-	// reason as the Detect probe above: a client disconnect must not
-	// SIGKILL a `git worktree add` mid-checkout via exec.CommandContext —
-	// git writes the worktree's `.git` gitlink file before the checkout
-	// completes, so a kill at the wrong moment would leave a directory that
-	// LOOKS like a complete worktree (isWorktreeDir returns true) but has an
-	// incomplete file checkout, and the backend's reuse fast-path has no way to
-	// distinguish that from a legitimately-reusable worktree. Only OUR
-	// deadline (a genuinely hung subprocess) should be able to trigger this.
+	// `git rev-parse` / `git worktree add` would otherwise hold the run
+	// reservation forever. context.WithoutCancel detaches from ctx's
+	// cancellation for the same reason as the Detect probe above.
 	ensureCtx, ensureCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	wtPath, err := o.backend.Create(ensureCtx, o.worktreesDir, repoPath, req.BeadID)
 	ensureCancel()
@@ -572,7 +854,10 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	// hard-coded "/") keeps this portable to Windows, where the adapter's own
 	// filepath.Rel(Worktree, PromptFile) contract check expects an OS-native
 	// separator throughout.
-	promptPath := filepath.Join(wtPath, promptFileName)
+	// Each step gets its own prompt file (.muster-prompt-<stepIdx>.txt) so
+	// step 1 does not overwrite step 0's file. For step 0 this is
+	// ".muster-prompt-0.txt" — M2 byte-for-byte identical.
+	promptPath := filepath.Join(wtPath, promptFileNameForStep(stepIdx))
 	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
@@ -590,32 +875,31 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	}
 
 	// Spawn tmux session.
-	sessionName := tmux.SessionName(req.BeadID, 0, 0)
+	sessionName := tmux.SessionName(req.BeadID, stepIdx, loop)
 	sess, err := o.transport.Spawn(sessionName, spec.Cwd, spec.Env, spec.Argv)
 	if err != nil {
 		return nil, fmt.Errorf("tmux spawn: %w", err)
 	}
 
-	// Fill the reserved run's fields in place (keeping the same pointer the
+	// Fill the run's fields in place (keeping the same pointer the
 	// reservation registered, so the TOCTOU guard's identity check holds).
-	// StepIdx and Loop are omitted: both are already zero-valued in the
-	// reservation allocation and M2 pins them at zero anyway (see the Run
-	// struct field comments).
 	runCtx, runCancel := context.WithCancel(context.Background())
-	run := reserved
 	o.mu.Lock()
-	run.Agent = req.Agent
-	run.Mode = req.Mode
-	run.PermissionMode = pm
 	run.Worktree = wtPath
 	run.Session = sess.Name
 	run.Pane = sess.Pane
 	run.State = core.StepActive
 	run.cancel = runCancel
+	// The new step's watcher is now armed (run.cancel set, go watchRun below).
+	// Clear the transition flag here — NOT in relaunchNextStep — so a step
+	// transition reads as in-flight (pendingAdvance true) for the entire window
+	// from Advance until the new session's cancel exists, closing the nil-cancel
+	// race (tri-review 3 HIGH #1). Also clears the launching sentinel set by ALL
+	// admit paths (Dispatch, finishRun, evictAndPopWaiter, setCapacity,
+	// relaunchNextStep), closing the nil-cancel window for Advance/LoopBack
+	// between the State=StepActive flip and this point (tri-review 6).
+	run.pendingAdvance = false
 	o.mu.Unlock()
-
-	// Mark success so the deferred reservation-cleanup is a no-op.
-	success = true
 
 	// Start pipe + exit watcher goroutine.
 	// Pipe the pane output to the WS hub as runlog.line frames. Use sess.Name
@@ -644,7 +928,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 		o.mu.Unlock()
 		streamer := &runlogStreamer{
 			beadID:  req.BeadID,
-			stepIdx: 0,
+			stepIdx: stepIdx,
 			publish: o.publish,
 		}
 		go streamer.stream(pipeReader)
@@ -652,12 +936,12 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 
 	go o.watchRun(runCtx, run)
 
-	// Emit tmux.session.opened.
+	// Emit tmux.session.opened and dispatch.admitted (if this was a queued run).
 	if o.publish != nil {
 		o.publish(ws.Frame{
 			Type:    ws.EventTmuxOpened,
 			BeadID:  req.BeadID,
-			StepIdx: intPtr(0),
+			StepIdx: intPtr(stepIdx),
 			Session: sess.Name,
 		})
 	}
@@ -672,12 +956,77 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (*core
 	return bead, nil
 }
 
+// launchAdmittedRun performs the slow IO work to start a previously-queued run
+// that has been admitted from the FIFO queue. It is called in a goroutine so it
+// doesn't block the finishRun/onRunEnd path.
+func (o *Orchestrator) launchAdmittedRun(run *Run) {
+	// Use a background context — the original request's context is long gone.
+	ctx := context.Background()
+
+	// Snapshot StepIdx/Loop under the read lock (a concurrent Advance/LoopBack
+	// may write them once this run is active) and pass them to doLaunch.
+	o.mu.RLock()
+	stepIdx := run.StepIdx
+	loop := run.Loop
+	o.mu.RUnlock()
+
+	// Emit dispatch.admitted event.
+	if o.publish != nil {
+		o.publish(ws.Frame{
+			Type:    ws.EventDispatchAdmitted,
+			BeadID:  run.BeadID,
+			StepIdx: intPtr(stepIdx),
+		})
+	}
+
+	req := DispatchRequest{
+		BeadID:         run.BeadID,
+		BeadTitle:      run.BeadTitle,
+		BeadDesc:       run.BeadDesc,
+		Agent:          run.Agent,
+		Mode:           run.Mode,
+		PermissionMode: run.PermissionMode,
+	}
+
+	_, err := o.doLaunch(ctx, run, req, run.PermissionMode, stepIdx, loop)
+	if err != nil {
+		slog.Error("launchAdmittedRun: failed to launch admitted queued run",
+			"bead", run.BeadID, "err", err)
+		// Emit run.failed so subscribers know this run will not produce output.
+		// dispatch.admitted was emitted before doLaunch; this closes the loop.
+		if o.publish != nil {
+			o.publish(ws.Frame{
+				Type:    ws.EventRunFailed,
+				BeadID:  run.BeadID,
+				StepIdx: intPtr(stepIdx),
+				Reason:  err.Error(),
+			})
+		}
+		// Remove from the registry and scheduler active set on failure. onRunEnd
+		// pops the next FIFO waiter and promotes it to active — we MUST launch it,
+		// otherwise it is stranded in o.runs as a phantom StepPending run and the
+		// capacity slot is permanently consumed (tri-review #2). Mirror the
+		// admit-and-launch pattern shared with Dispatch's error path.
+		if nextRun := o.evictAndPopWaiter(run); nextRun != nil {
+			go o.launchAdmittedRun(nextRun)
+		}
+	}
+}
+
 // watchRun monitors a run for exit via DeadStatus polling, then transitions
 // the bead and emits tmux.session.closed.
 func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
+	// Capture the cancel func once, under the read lock, immediately on entry.
+	// doLaunch sets run.cancel before calling go watchRun, so it is already set
+	// when this goroutine starts. We must NOT read run.cancel again after this
+	// point: relaunchNextStep resets it to nil under the write lock (the advance
+	// path), so any later bare read of run.cancel would race.
+	o.mu.RLock()
+	cancelFn := run.cancel
+	o.mu.RUnlock()
 	defer func() {
-		if run.cancel != nil {
-			run.cancel()
+		if cancelFn != nil {
+			cancelFn()
 		}
 	}()
 
@@ -710,7 +1059,13 @@ func (o *Orchestrator) watchRun(ctx context.Context, run *Run) {
 		case <-ticker.C:
 		}
 
-		code, dead, err := o.transport.DeadStatus(run.Session)
+		// Read run.Session under the lock: the M4 advance path (Advance/LoopBack)
+		// clears this field under the write lock so a bare read here would race.
+		o.mu.RLock()
+		sess := run.Session
+		o.mu.RUnlock()
+
+		code, dead, err := o.transport.DeadStatus(sess)
 		if err != nil {
 			// Session vanished (e.g. killed externally) — unknown exit, treat as
 			// a failure with code -1 (not 0, which would look successful).
@@ -740,39 +1095,100 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		state = core.StepFailed
 	}
 
+	// Snapshot session and pipe under the read lock. These fields were
+	// "immutable after launch" in M2 (set once in doLaunch), but the M4
+	// advance path (Advance/LoopBack in steps.go) now writes them under the
+	// write lock to clear them before relaunchNextStep sets new values. Reading
+	// them under the read lock here avoids a data race while preserving the
+	// Kill-before-state-flip ordering (Kill happens below, after this lock release,
+	// which is still before the write lock's state flip further down).
+	o.mu.RLock()
+	session := run.Session
+	pipe := run.pipe
+	// StepIdx is also written under the write lock by Advance/LoopBack (M4), so
+	// snapshot it here rather than reading run.StepIdx unlocked below
+	// (tri-review 2 HIGH — data race on the tmux.session.closed frame).
+	stepIdx := run.StepIdx
+	o.mu.RUnlock()
+
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
 	// Log a failure: a non-"session gone" error means the session may persist,
 	// and a later re-dispatch of this bead would then fail with a duplicate
 	// session whose root cause would otherwise be invisible.
-	if err := o.transport.Kill(run.Session); err != nil {
+	if err := o.transport.Kill(session); err != nil {
 		slog.Warn("finishRun: tmux Kill failed; session may persist and block re-dispatch",
-			"bead", run.BeadID, "session", run.Session, "err", err)
+			"bead", run.BeadID, "session", session, "err", err)
 	}
 
 	// Close the pane pipe so the real tmux manager removes its FIFO + temp dir.
 	// The session is killed above, so the stream goroutine has hit (or will hit)
 	// EOF; closing is idempotent-safe here as finishRun runs once per run.
-	if run.pipe != nil {
-		_ = run.pipe.Close()
+	if pipe != nil {
+		_ = pipe.Close()
 	}
 
 	// Only NOW flip the State off StepActive — see the ordering note above.
+	// Also admit the next FIFO waiter (if any) while still holding the lock,
+	// then launch it outside the lock (slow IO: Detect/Ensure/Spawn).
+	//
+	// INTERLOCK (T043b): when pendingAdvance is set, the bead is being advanced
+	// to the next step under the SAME beadID key. Do NOT call onRunEnd — that
+	// would free the scheduler capacity slot and potentially admit a waiter for
+	// a different bead, leaving the advancing bead un-counted. The slot stays
+	// occupied for the duration of the next step.
+	// Capture pendingAdvance under the lock. When set, this is a STEP TRANSITION,
+	// not a completion: the current step's session was cancelled by Advance/
+	// LoopBack so the next step can start. During a transition finishRun must do
+	// NOTHING observable — it must NOT flip State (leave it StepActive so a
+	// concurrent Dispatch still joins as in-flight — tri-review 3 HIGH #2), NOT
+	// free the scheduler slot, NOT record completion/quota (tri-review 3 MED #3).
+	// It only tears down the OLD session (Kill+pipe.Close already done above),
+	// emits the closed event, and relaunches. pendingAdvance stays true until the
+	// next step's doLaunch sets run.cancel — closing the window where a concurrent
+	// Advance could slip past the guards with a nil cancel (tri-review 3 HIGH #1).
 	o.mu.Lock()
-	run.State = state
-	run.ExitCode = exitCode
-	run.EndedAt = time.Now()
+	pending := run.pendingAdvance
+	var nextRun *Run
+	if !pending {
+		run.State = state
+		run.ExitCode = exitCode
+		run.EndedAt = time.Now()
+		nextRun = o.sched.onRunEnd(run.BeadID)
+		if nextRun != nil {
+			nextRun.State = core.StepActive
+			// launching sentinel: blocks Advance/LoopBack until doLaunch arms
+			// run.cancel, closing the nil-cancel window (tri-review 6).
+			nextRun.pendingAdvance = true
+		}
+	}
 	o.mu.Unlock()
 
-	// Emit tmux.session.closed.
+	// Launch the next waiter outside the lock (Detect/Ensure/Invoke/Spawn are slow).
+	if nextRun != nil {
+		go o.launchAdmittedRun(nextRun)
+	}
+
+	// Emit tmux.session.closed for the step whose session just ended. Use the
+	// local snapshots of session name + stepIdx (captured under the read lock
+	// above) so this reflects the OLD step, not one a concurrent Advance moved to.
 	if o.publish != nil {
 		ec := exitCode
 		o.publish(ws.Frame{
 			Type:     ws.EventTmuxClosed,
 			BeadID:   run.BeadID,
-			StepIdx:  intPtr(run.StepIdx),
-			Session:  run.Session,
+			StepIdx:  intPtr(stepIdx),
+			Session:  session,
 			ExitCode: &ec,
 		})
+	}
+
+	// STEP TRANSITION: skip completion/quota/eviction — just relaunch the next
+	// step. State stays StepActive and pendingAdvance stays true (cleared by
+	// doLaunch once the next watcher is up), so the bead reads as in-flight to
+	// any concurrent Advance (rejected) or Dispatch (joins) throughout.
+	if pending {
+		go o.relaunchNextStep(run)
+		return
 	}
 
 	// Record completion on the bead (FR-013 / SC-007). M2 limitation: review is
@@ -801,8 +1217,35 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		}()
 	}
 
-	// Evict this run from the registry after the retention window so a
-	// long-lived server doesn't accumulate an entry per bead ever dispatched.
+	// Capture quota usage from Claude Code's on-disk per-session JSONL (M4 US5 T063).
+	// Best-effort: never fails the run. quotaHomeDir is empty in production
+	// (os.UserHomeDir() is called here) and overridden in tests for isolation.
+	homeDir := o.quotaHomeDir
+	if homeDir == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			homeDir = h
+		}
+	}
+	quota := ReadSessionQuotaForWorktree(run.Worktree, homeDir)
+	o.mu.Lock()
+	run.Quota = quota
+	o.mu.Unlock()
+	if o.publish != nil {
+		o.publish(ws.Frame{
+			Type:   ws.EventRunQuota,
+			BeadID: run.BeadID,
+			Quota: &ws.QuotaPayload{
+				Known:        quota.Known,
+				InputTokens:  quota.InputTokens,
+				OutputTokens: quota.OutputTokens,
+				CostUSD:      quota.CostUSD,
+			},
+		})
+	}
+
+	// Normal completion (the transition path returned early above). Evict this
+	// run from the registry after the retention window so a long-lived server
+	// doesn't accumulate an entry per bead ever dispatched.
 	o.scheduleRunEviction(run)
 }
 

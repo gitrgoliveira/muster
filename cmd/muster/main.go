@@ -37,6 +37,58 @@ type repoFlags []string
 func (r *repoFlags) String() string     { return fmt.Sprintf("%v", *r) }
 func (r *repoFlags) Set(v string) error { *r = append(*r, v); return nil }
 
+// beadServiceSchedulerAdapter adapts *services.BeadService to the
+// health.SchedulerSnapshotter interface, converting services.SchedulerSnapshot
+// to health.SchedulerSnapshotDTO at the wiring layer (avoids a circular import
+// between api/health and services).
+type beadServiceSchedulerAdapter struct {
+	svc *services.BeadService
+}
+
+func (a *beadServiceSchedulerAdapter) SetCapacity(n int) error {
+	return a.svc.SetCapacity(n)
+}
+
+func (a *beadServiceSchedulerAdapter) SchedulerSnapshot() health.SchedulerSnapshotDTO {
+	snap := a.svc.SchedulerSnapshot()
+	return health.SchedulerSnapshotDTO{
+		Capacity:    snap.Capacity,
+		ActiveCount: snap.ActiveCount,
+		Waiting:     snap.Waiting,
+	}
+}
+
+// orchestratorRunListerAdapter adapts *orchestrator.Orchestrator to the
+// health.RunLister interface, converting orchestrator.RunSummary to
+// health.RunSummaryDTO at the wiring layer (avoids a circular import between
+// api/health and orchestrator).
+type orchestratorRunListerAdapter struct {
+	orc *orchestrator.Orchestrator
+}
+
+func (a *orchestratorRunListerAdapter) ListRuns() []health.RunSummaryDTO {
+	summaries := a.orc.ListRunSummaries()
+	dtos := make([]health.RunSummaryDTO, len(summaries))
+	for i, s := range summaries {
+		dto := health.RunSummaryDTO{
+			BeadID:   s.BeadID,
+			StepIdx:  s.StepIdx,
+			ChainLen: s.ChainLen,
+			State:    string(s.State),
+		}
+		if s.Quota.Known {
+			dto.Quota = &health.RunQuotaDTO{
+				Known:        s.Quota.Known,
+				InputTokens:  s.Quota.InputTokens,
+				OutputTokens: s.Quota.OutputTokens,
+				CostUSD:      s.Quota.CostUSD,
+			}
+		}
+		dtos[i] = dto
+	}
+	return dtos
+}
+
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		fmt.Fprintf(os.Stderr, "Usage: muster serve [--addr HOST:PORT] [--beads-dir DIR] [--bd-bin PATH]\n")
@@ -74,6 +126,7 @@ func main() {
 	runTimeoutFlag := fs.Duration("run-timeout", runTimeoutDefault, "optional per-run timeout (e.g. 30m); 0 = no timeout (env: MUSTER_RUN_TIMEOUT)")
 	defaultPermModeFlag := fs.String("default-permission-mode", os.Getenv("MUSTER_DEFAULT_PERMISSION_MODE"), "default claude permission mode (acceptEdits, dontAsk, etc.)")
 	defaultVCSFlag := fs.String("default-vcs", os.Getenv("MUSTER_DEFAULT_VCS"), "default VCS backend for per-bead worktrees: git (default) or jj (env: MUSTER_DEFAULT_VCS)")
+	maxConcurrentFlag := fs.String("max-concurrent-dispatches", os.Getenv("MUSTER_MAX_CONCURRENT_DISPATCHES"), "maximum concurrent agent dispatches (default 4; env: MUSTER_MAX_CONCURRENT_DISPATCHES)")
 
 	fs.Parse(os.Args[2:]) //nolint:errcheck // ExitOnError handles the error
 
@@ -91,6 +144,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", vcsErr)
 		os.Exit(1)
 	}
+
+	// Validate --max-concurrent-dispatches; empty defaults to 4.
+	maxConcurrent, concErr := config.ParseMaxConcurrent(*maxConcurrentFlag)
+	if concErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", concErr)
+		os.Exit(1)
+	}
+	slog.Info("scheduler capacity", "maxConcurrent", maxConcurrent)
 
 	// Validate addr format.
 	if _, _, err := net.SplitHostPort(*addr); err != nil {
@@ -301,6 +362,7 @@ func main() {
 		Publish:         func(f ws.Frame) { hub.Broadcast(f) },
 		RunTimeout:      *runTimeoutFlag,
 		OnComplete:      onComplete,
+		MaxConcurrent:   maxConcurrent, // M4 US1: capacity-gated FIFO scheduler
 	})
 
 	var svcCLI services.CLIRunner
@@ -312,8 +374,10 @@ func main() {
 	// single WS source there.
 	svc := services.NewBeadServiceWithRepo(backend, svcCLI, hub.Broadcast, cfg.DoltDatabase, cfg.Mode == "remote").
 		WithOrchestrator(orc.AsServiceDispatcher()).
+		WithScheduler(orc.AsSchedulerManager()).
 		WithAttacher(orc.AsSessionAttacher()).
-		WithWorktreeAccessor(orc.AsWorktreeAccessor())
+		WithWorktreeAccessor(orc.AsWorktreeAccessor()).
+		WithStepAdvancer(orc.AsStepAdvancer())
 
 	// M2: Recovery scan — re-discover running sessions from before restart.
 	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -375,6 +439,10 @@ func main() {
 			JJ:         health.VCSAvailability{Available: vcsAvail.JJ, Version: vcsAvail.JJVer},
 		},
 		WorktreeCounter: orc,
+		// M4 additions (US1): live scheduler state for status + capacity management.
+		SchedulerSnapshotter: &beadServiceSchedulerAdapter{svc: svc},
+		// M4 T047: per-run step chain progress for status DTO.
+		RunLister: &orchestratorRunListerAdapter{orc: orc},
 	}
 
 	handler := api.NewRouter(svc, hub, UI, statusCfg)

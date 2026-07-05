@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/ws"
+	"github.com/gitrgoliveira/muster/internal/wt"
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -442,16 +444,25 @@ func TestComment_501_CLIMissing(t *testing.T) {
 type fakeOrchestratorDispatcher struct {
 	dispatchErr error
 	result      *core.Bead
+	joined      bool
+	queued      bool
+	lastReq     services.OrchestratorDispatchRequest
 }
 
-func (f *fakeOrchestratorDispatcher) Dispatch(_ context.Context, _ services.OrchestratorDispatchRequest) (*core.Bead, error) {
+func (f *fakeOrchestratorDispatcher) Dispatch(_ context.Context, req services.OrchestratorDispatchRequest) (services.OrchestratorDispatchResult, error) {
+	f.lastReq = req
 	if f.dispatchErr != nil {
-		return nil, f.dispatchErr
+		return services.OrchestratorDispatchResult{}, f.dispatchErr
 	}
-	if f.result != nil {
-		return f.result, nil
+	bead := f.result
+	if bead == nil {
+		bead = &core.Bead{ID: "mp-aaa", Column: core.ColRunning}
 	}
-	return &core.Bead{ID: "mp-aaa", Column: core.ColRunning}, nil
+	return services.OrchestratorDispatchResult{
+		Bead:   bead,
+		Joined: f.joined,
+		Queued: f.queued,
+	}, nil
 }
 
 // newTestServerWithOrchestrator creates a test server wired with a fake orchestrator.
@@ -486,9 +497,18 @@ func TestDispatch_202_WithOrchestrator(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
-func TestDispatch_409_RunAlreadyActive(t *testing.T) {
+// TestDispatch_200_JoinedRun asserts the idempotent dispatch contract (M4 US4 T048
+// migration): a duplicate dispatch of an in-flight bead returns 200 OK with the
+// existing run and joined:true, NOT 409. This test replaces the former
+// TestDispatch_409_RunAlreadyActive.
+func TestDispatch_200_JoinedRun(t *testing.T) {
+	activeBead := &core.Bead{
+		ID:     "mp-aaa",
+		Column: core.ColRunning,
+	}
 	orch := &fakeOrchestratorDispatcher{
-		dispatchErr: &services.ServiceError{Code: services.CodeRunAlreadyActive, Message: "run already active for bead"},
+		result: activeBead,
+		joined: true,
 	}
 	srv := newTestServerWithOrchestrator(t, orch)
 
@@ -497,8 +517,11 @@ func TestDispatch_409_RunAlreadyActive(t *testing.T) {
 		"mode":           "agent",
 		"permissionMode": "acceptEdits",
 	})
-	assert.Equal(t, http.StatusConflict, resp.StatusCode)
-	assert.Equal(t, "RUN_ALREADY_ACTIVE", errorCode(t, resp))
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]interface{}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, true, body["joined"], "joined field must be true for idempotent dispatch")
 }
 
 func TestDispatch_422_UnmappedPrefix(t *testing.T) {
@@ -529,6 +552,41 @@ func TestDispatch_501_AdapterNotFound(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 	assert.Equal(t, "ADAPTER_NOT_FOUND", errorCode(t, resp))
+}
+
+// TestDispatch_Chain_ReachesService verifies that a "chain" array in the
+// dispatch request body reaches services.DispatchInput.Chain — and from
+// there OrchestratorDispatcher.Dispatch — with matching fields, in order.
+// This is the HTTP-layer half of the wiring that makes the per-dispatch
+// step-chain override (contract http-endpoints.md line 9) actually reachable;
+// without it, the orchestrator's resolveChain always saw nil.
+func TestDispatch_Chain_ReachesService(t *testing.T) {
+	orch := &fakeOrchestratorDispatcher{}
+	srv := newTestServerWithOrchestrator(t, orch)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/dispatch", map[string]interface{}{
+		"agent":          "claude",
+		"mode":           "agent",
+		"permissionMode": "acceptEdits",
+		"chain": []map[string]interface{}{
+			{"name": "plan", "permissionMode": "plan"},
+			{"name": "build", "permissionMode": "acceptEdits", "promptRef": "build-ref"},
+		},
+	})
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	if len(orch.lastReq.Chain) != 2 {
+		t.Fatalf("orchestrator received Chain of length %d, want 2", len(orch.lastReq.Chain))
+	}
+	want := []services.ChainStepInput{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits, PromptRef: "build-ref"},
+	}
+	for i, w := range want {
+		if orch.lastReq.Chain[i] != w {
+			t.Errorf("Chain[%d] = %+v, want %+v", i, orch.lastReq.Chain[i], w)
+		}
+	}
 }
 
 func TestDispatch_400_InvalidPermissionMode(t *testing.T) {
@@ -566,12 +624,16 @@ func TestAttach_404_WrongBead(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
-func TestAttach_404_NonZeroIdx(t *testing.T) {
+// TestAttach_200_NonZeroIdx verifies that idx≥1 is accepted by the widened
+// parseStepIdx (T045). With no orchestrator/attacher wired, the service returns
+// {available:false} (200 OK) — the 404 only fires for an unknown bead, not an
+// unknown step index (step index validation is service-layer, not handler-layer).
+func TestAttach_200_NonZeroIdx(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 
 	resp := doGet(t, srv, "/beads/mp-aaa/steps/1/attach")
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 // TestAttach_404_NonCanonicalZeroIdx verifies the step-index route requires
@@ -600,12 +662,14 @@ func TestSend_400_BadBody(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-func TestSend_404_NonZeroIdx(t *testing.T) {
+// TestSend_501_NonZeroIdx verifies that idx≥1 is accepted by the widened
+// parseStepIdx (T045). With no attacher, the service returns 501 ATTACH_UNAVAILABLE.
+func TestSend_501_NonZeroIdx(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 
 	resp := doPost(t, srv, "/beads/mp-aaa/steps/2/send", map[string]string{"keys": "y\n"})
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, http.StatusNotImplemented, resp.StatusCode)
 }
 
 func TestSend_400_EmptyKeys(t *testing.T) {
@@ -622,4 +686,196 @@ func TestSend_400_KeysTooLarge(t *testing.T) {
 
 	resp := doPost(t, srv, "/beads/mp-aaa/steps/0/send", map[string]string{"keys": strings.Repeat("y", 4097)})
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// ── Advance / LoopBack (T046) ─────────────────────────────────────────────────
+
+// fakeStepAdvancer is a minimal services.StepAdvancer for handler tests.
+type fakeStepAdvancer struct {
+	advanceErr  error
+	loopbackErr error
+	stepIdx     int
+	chainLen    int
+}
+
+func (f *fakeStepAdvancer) Advance(_ context.Context, beadID string) (stepIdx, chainLen int, err error) {
+	if f.advanceErr != nil {
+		return 0, 0, f.advanceErr
+	}
+	return f.stepIdx, f.chainLen, nil
+}
+
+func (f *fakeStepAdvancer) LoopBack(_ context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error) {
+	if f.loopbackErr != nil {
+		return 0, 0, f.loopbackErr
+	}
+	return toIdx, f.chainLen, nil
+}
+
+// newTestServerWithStepAdvancer creates a test server wired with a fake step advancer.
+func newTestServerWithStepAdvancer(t *testing.T, adv services.StepAdvancer) *httptest.Server {
+	t.Helper()
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	pub := services.Publisher(func(f ws.Frame) {})
+	svc := services.NewBeadService(backend, nil, pub).WithStepAdvancer(adv)
+	h := beads.NewHandlers(svc)
+	r := chi.NewRouter()
+	r.Post("/beads/{id}/steps/advance", h.AdvanceStep)
+	r.Post("/beads/{id}/steps/loopback", h.LoopBackStep)
+	r.Get("/beads/{id}/steps/{idx}/attach", h.Attach)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestAdvance_200 verifies the happy path: 200 with {stepIdx, chainLen}.
+func TestAdvance_200(t *testing.T) {
+	adv := &fakeStepAdvancer{stepIdx: 1, chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/advance", map[string]interface{}{})
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		StepIdx  int `json:"stepIdx"`
+		ChainLen int `json:"chainLen"`
+	}
+	decodeBody(t, resp, &body)
+	assert.Equal(t, 1, body.StepIdx)
+	assert.Equal(t, 3, body.ChainLen)
+}
+
+// TestAdvance_400_OutOfRange verifies that ErrStepOutOfRange maps to 400 STEP_OUT_OF_RANGE.
+func TestAdvance_400_OutOfRange(t *testing.T) {
+	adv := &fakeStepAdvancer{
+		advanceErr: &services.ServiceError{Code: services.CodeStepOutOfRange, Message: "already at last step"},
+	}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/advance", map[string]interface{}{})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, services.CodeStepOutOfRange, errorCode(t, resp))
+}
+
+// TestAdvance_404_UnknownBead verifies that an unknown bead returns 404.
+func TestAdvance_404_UnknownBead(t *testing.T) {
+	adv := &fakeStepAdvancer{stepIdx: 1, chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-zzzz/steps/advance", map[string]interface{}{})
+	// bead not found in the store → 404 before advancer is called
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestLoopBack_200 verifies the happy path: 200 with {stepIdx, chainLen}.
+func TestLoopBack_200(t *testing.T) {
+	adv := &fakeStepAdvancer{chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/loopback", map[string]interface{}{"toIdx": 0})
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		StepIdx  int `json:"stepIdx"`
+		ChainLen int `json:"chainLen"`
+	}
+	decodeBody(t, resp, &body)
+	assert.Equal(t, 0, body.StepIdx)
+	assert.Equal(t, 3, body.ChainLen)
+}
+
+// TestLoopBack_400_MissingToIdx verifies that a missing/invalid toIdx returns 400.
+func TestLoopBack_400_MissingToIdx(t *testing.T) {
+	adv := &fakeStepAdvancer{chainLen: 3}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	// Body with no toIdx field.
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/loopback", map[string]interface{}{})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestLoopBack_400_OutOfRange verifies that ErrStepOutOfRange maps to 400.
+func TestLoopBack_400_OutOfRange(t *testing.T) {
+	adv := &fakeStepAdvancer{
+		loopbackErr: &services.ServiceError{Code: services.CodeStepOutOfRange, Message: "toIdx out of range"},
+	}
+	srv := newTestServerWithStepAdvancer(t, adv)
+
+	resp := doPost(t, srv, "/beads/mp-aaa/steps/loopback", map[string]interface{}{"toIdx": 5})
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, services.CodeStepOutOfRange, errorCode(t, resp))
+}
+
+// ── FIX D: NUL byte in finalize message → 400 INVALID_REQUEST ───────────────
+
+// newTestServerWithWorktreeAccessor creates a test server wired with a WorktreeAccessor.
+// Routes: POST /beads/{id}/worktree/finalize, POST /beads/{id}/worktree/push,
+// DELETE /beads/{id}/worktree.
+func newTestServerWithWorktreeAccessor(t *testing.T, wa services.WorktreeAccessor) *httptest.Server {
+	t.Helper()
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	pub := services.Publisher(func(f ws.Frame) {})
+	svc := services.NewBeadService(backend, nil, pub).WithWorktreeAccessor(wa)
+	h := beads.NewHandlers(svc)
+	r := chi.NewRouter()
+	r.Post("/beads/{id}/worktree/finalize", h.FinalizeWorktree)
+	r.Post("/beads/{id}/worktree/push", h.PushWorktree)
+	r.Delete("/beads/{id}/worktree", h.RemoveWorktree)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fakeHandlerWorktreeAccessor is a full WorktreeAccessor implementation for
+// handler tests. Finalize returns (true, nil) by default.
+type fakeHandlerWorktreeAccessor struct {
+	finalizeErr error
+}
+
+func (f *fakeHandlerWorktreeAccessor) WorktreeStatus(_ context.Context, _ string) (wt.WorktreeStatus, error) {
+	return wt.WorktreeStatus{Exists: true, Clean: true}, nil
+}
+func (f *fakeHandlerWorktreeAccessor) DiffSummary(_ context.Context, _ string) ([]wt.FileChange, error) {
+	return nil, nil
+}
+func (f *fakeHandlerWorktreeAccessor) Diff(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (f *fakeHandlerWorktreeAccessor) DefaultVCS() string { return "git" }
+func (f *fakeHandlerWorktreeAccessor) BeadRunState(_ string) core.StepStatus {
+	return core.StepDone
+}
+func (f *fakeHandlerWorktreeAccessor) Finalize(_ context.Context, _, _ string) (bool, error) {
+	if f.finalizeErr != nil {
+		return false, f.finalizeErr
+	}
+	return true, nil
+}
+func (f *fakeHandlerWorktreeAccessor) Push(_ context.Context, _, _ string) error { return nil }
+func (f *fakeHandlerWorktreeAccessor) Remove(_ context.Context, _ string) error  { return nil }
+
+var _ services.WorktreeAccessor = (*fakeHandlerWorktreeAccessor)(nil)
+
+// TestFinalizeWorktree_400_NULInMessage verifies that POST /beads/{id}/worktree/finalize
+// with a NUL byte in the message body returns 400 INVALID_REQUEST.
+func TestFinalizeWorktree_400_NULInMessage(t *testing.T) {
+	wa := &fakeHandlerWorktreeAccessor{}
+	srv := newTestServerWithWorktreeAccessor(t, wa)
+
+	// mp-aaa is in SeedIssues.
+	body := map[string]string{"message": "bad\x00msg"}
+	resp := doPost(t, srv, "/beads/mp-aaa/worktree/finalize", body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "INVALID_REQUEST", errorCode(t, resp))
+}
+
+// TestFinalizeWorktree_200_MultilineMessage verifies that a multiline commit
+// message succeeds (guards against someone later "hardening" with validateField).
+func TestFinalizeWorktree_200_MultilineMessage(t *testing.T) {
+	wa := &fakeHandlerWorktreeAccessor{}
+	srv := newTestServerWithWorktreeAccessor(t, wa)
+
+	body := map[string]string{"message": "subject line\n\nbody paragraph"}
+	resp := doPost(t, srv, "/beads/mp-aaa/worktree/finalize", body)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }

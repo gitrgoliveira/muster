@@ -4,8 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/store"
@@ -237,11 +242,119 @@ func TestPublishOnWrite_EmbeddedModeSilent(t *testing.T) {
 // fakeOrchestrator is an OrchestratorDispatcher that returns a fixed stub
 // bead, mirroring what orchestrator.Dispatch actually returns (an in-memory
 // stub, not a store write).
-type fakeOrchestrator struct{ dispatchCalled bool }
+type fakeOrchestrator struct {
+	dispatchCalled bool
+	joined         bool // when true, Dispatch returns Joined:true (idempotent join)
+	queued         bool // when true, Dispatch returns Queued:true (capacity-waiting)
+	lastReq        OrchestratorDispatchRequest
+}
 
-func (f *fakeOrchestrator) Dispatch(context.Context, OrchestratorDispatchRequest) (*core.Bead, error) {
+func (f *fakeOrchestrator) Dispatch(_ context.Context, req OrchestratorDispatchRequest) (OrchestratorDispatchResult, error) {
 	f.dispatchCalled = true
-	return &core.Bead{ID: "mp-aaa", Column: core.ColRunning}, nil
+	f.lastReq = req
+	return OrchestratorDispatchResult{
+		Bead:   &core.Bead{ID: "mp-aaa", Column: core.ColRunning},
+		Joined: f.joined,
+		Queued: f.queued,
+	}, nil
+}
+
+// ── Dispatch chain (per-dispatch step-chain override) ──────────────────
+
+// TestDispatch_Chain_MissingPermissionMode verifies that an explicit chain
+// with a step missing PermissionMode is rejected with CodeInvalidRequest
+// before the orchestrator is ever called. FR-012a is explicit that
+// per-step permission mode is never silently defaulted, so this must be a
+// hard 400, not a fallback to DefaultPermissionMode.
+func TestDispatch_Chain_MissingPermissionMode(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	svc := NewBeadService(backend, nil, nil).WithOrchestrator(orch)
+
+	_, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{
+		Agent: core.AgentClaude,
+		Mode:  core.ModeAgent,
+		Chain: []ChainStepInput{
+			{Name: "plan", PermissionMode: core.PermPlan},
+			{Name: "build"}, // missing PermissionMode
+		},
+	})
+	if err == nil {
+		t.Fatal("Dispatch should reject a chain step with no PermissionMode")
+	}
+	var se *ServiceError
+	if !errors.As(err, &se) {
+		t.Fatalf("want *ServiceError, got %T: %v", err, err)
+	}
+	if se.Code != CodeInvalidRequest {
+		t.Errorf("code = %q, want %q", se.Code, CodeInvalidRequest)
+	}
+	if orch.dispatchCalled {
+		t.Error("orchestrator.Dispatch must not be called when chain validation fails")
+	}
+}
+
+// TestDispatch_Chain_EmptyName verifies that an explicit chain with a step
+// whose Name is empty is rejected with CodeInvalidRequest before the
+// orchestrator is called.
+func TestDispatch_Chain_EmptyName(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	svc := NewBeadService(backend, nil, nil).WithOrchestrator(orch)
+
+	_, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{
+		Agent: core.AgentClaude,
+		Mode:  core.ModeAgent,
+		Chain: []ChainStepInput{
+			{Name: "", PermissionMode: core.PermPlan},
+		},
+	})
+	if err == nil {
+		t.Fatal("Dispatch should reject a chain step with an empty Name")
+	}
+	var se *ServiceError
+	if !errors.As(err, &se) {
+		t.Fatalf("want *ServiceError, got %T: %v", err, err)
+	}
+	if se.Code != CodeInvalidRequest {
+		t.Errorf("code = %q, want %q", se.Code, CodeInvalidRequest)
+	}
+	if orch.dispatchCalled {
+		t.Error("orchestrator.Dispatch must not be called when chain validation fails")
+	}
+}
+
+// TestDispatch_Chain_ForwardedVerbatim verifies that a valid chain is
+// forwarded, in order and unmodified, into OrchestratorDispatchRequest.Chain
+// — this is the wiring the rest of M4's step-chain feature (advance/loopback)
+// depends on; without it resolveChain always sees nil and every dispatch is
+// forced into the M2 single-step path.
+func TestDispatch_Chain_ForwardedVerbatim(t *testing.T) {
+	backend := store.NewMemoryBackend(store.SeedIssues())
+	orch := &fakeOrchestrator{}
+	svc := NewBeadService(backend, nil, nil).WithOrchestrator(orch)
+
+	chain := []ChainStepInput{
+		{Name: "plan", PermissionMode: core.PermPlan, PromptRef: "plan-ref"},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+	_, err := svc.Dispatch(context.Background(), "mp-aaa", DispatchInput{
+		Agent: core.AgentClaude,
+		Mode:  core.ModeAgent,
+		Chain: chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !orch.dispatchCalled {
+		t.Fatal("orchestrator.Dispatch was not called")
+	}
+	if len(orch.lastReq.Chain) != 2 {
+		t.Fatalf("forwarded Chain length = %d, want 2", len(orch.lastReq.Chain))
+	}
+	if orch.lastReq.Chain[0] != chain[0] || orch.lastReq.Chain[1] != chain[1] {
+		t.Errorf("forwarded Chain = %+v, want %+v", orch.lastReq.Chain, chain)
+	}
 }
 
 // TestDispatch_OrchestratorPath_PersistsRunningState verifies that
@@ -278,8 +391,8 @@ func TestDispatch_OrchestratorPath_PersistsRunningState(t *testing.T) {
 	if dispatchCalls != 1 {
 		t.Errorf("bd CLI Dispatch (claim) call count want 1 got %d", dispatchCalls)
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 
 	if len(frames) == 0 {
@@ -310,8 +423,8 @@ func TestDispatch_OrchestratorPath_CLIUnavailable(t *testing.T) {
 	if !orch.dispatchCalled {
 		t.Fatal("orchestrator.Dispatch was not called")
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 }
 
@@ -333,8 +446,8 @@ func TestDispatch_OrchestratorPath_CLIClaimFails(t *testing.T) {
 	if !orch.dispatchCalled {
 		t.Fatal("orchestrator.Dispatch was not called")
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 }
 
@@ -357,8 +470,8 @@ func TestDispatch_OrchestratorPath_EmbeddedMode_ForcesPublishWhenNotPersisted(t 
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	if got.Column != core.ColRunning {
-		t.Errorf("returned bead Column want running got %q", got.Column)
+	if got.Bead.Column != core.ColRunning {
+		t.Errorf("returned bead Column want running got %q", got.Bead.Column)
 	}
 	if len(frames) == 0 {
 		t.Fatal("expected a forced bead.updated frame despite publishOnWrite=false, since no real bd write occurred")
@@ -427,6 +540,210 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
+// ── T009: OrchestratorDispatchResult service-layer mirror ────────────────────
+
+// TestOrchestratorDispatchResult_ZeroValueSane verifies that the service-layer
+// DispatchResult mirror has sane zero values and the expected fields, mirroring
+// the OrchestratorDispatchRequest pattern.
+func TestOrchestratorDispatchResult_ZeroValueSane(t *testing.T) {
+	var r OrchestratorDispatchResult
+
+	if r.Bead != nil {
+		t.Errorf("OrchestratorDispatchResult.Bead zero value: want nil, got %v", r.Bead)
+	}
+	if r.Joined {
+		t.Error("OrchestratorDispatchResult.Joined zero value: want false")
+	}
+	if r.Queued {
+		t.Error("OrchestratorDispatchResult.Queued zero value: want false")
+	}
+
+	// Exercise the struct with non-zero values to confirm field names compile.
+	b := &core.Bead{ID: "mp-001"}
+	r2 := OrchestratorDispatchResult{Bead: b, Joined: true, Queued: false}
+	if r2.Bead != b {
+		t.Error("Bead field assignment failed")
+	}
+	if !r2.Joined {
+		t.Error("Joined field assignment failed")
+	}
+}
+
+// ── T003: M4 additive service error codes ────────────────────────────────────
+
+// TestM4ErrorCodes verifies that CodeStepOutOfRange and CodeInvalidCapacity are
+// distinct non-empty strings that do not collide with any existing code.
+func TestM4ErrorCodes(t *testing.T) {
+	existing := []string{
+		CodeInvalidRequest,
+		CodeInvalidState,
+		CodeNotFound,
+		CodeInternal,
+		CodeCLIMissing,
+		CodeCLIValidation,
+		CodeCLIUnavailable,
+		CodeCLITimeout,
+		CodeRunAlreadyActive,
+		CodeUnmappedPrefix,
+		CodeAdapterNotFound,
+		CodeAdapterNotInstalled,
+		CodeAdapterNotLoggedIn,
+		CodeAttachUnavailable,
+		CodeWorktreeNotFound,
+		CodeVCSUnavailable,
+	}
+	newCodes := []string{CodeStepOutOfRange, CodeInvalidCapacity}
+
+	for _, code := range newCodes {
+		if code == "" {
+			t.Errorf("new code must not be empty")
+		}
+	}
+
+	// Build a set of existing codes and check no collision.
+	set := make(map[string]struct{}, len(existing))
+	for _, c := range existing {
+		set[c] = struct{}{}
+	}
+	for _, nc := range newCodes {
+		if _, ok := set[nc]; ok {
+			t.Errorf("new code %q collides with an existing code", nc)
+		}
+	}
+
+	// The two new codes must themselves be distinct.
+	if CodeStepOutOfRange == CodeInvalidCapacity {
+		t.Errorf("CodeStepOutOfRange and CodeInvalidCapacity must be distinct, both are %q", CodeStepOutOfRange)
+	}
+
+	// Verify they form valid ServiceErrors.
+	for _, code := range newCodes {
+		se := &ServiceError{Code: code, Message: "test"}
+		if se.Error() == "" {
+			t.Errorf("ServiceError with code %q must have non-empty Error()", code)
+		}
+	}
+}
+
+// T018: SetCapacity and SchedulerSnapshot service-layer wiring tests.
+
+// fakeSchedulerManager is a test double for SchedulerManager.
+type fakeSchedulerManager struct {
+	capacity    int
+	activeCount int
+	waiting     []string
+	setErr      error // non-nil causes SetCapacity to fail
+}
+
+func (f *fakeSchedulerManager) SetCapacity(n int) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
+	f.capacity = n
+	return nil
+}
+
+func (f *fakeSchedulerManager) SchedulerSnapshot() SchedulerSnapshot {
+	return SchedulerSnapshot{
+		Capacity:    f.capacity,
+		ActiveCount: f.activeCount,
+		Waiting:     f.waiting,
+	}
+}
+
+func TestT018_SetCapacity_NoScheduler(t *testing.T) {
+	svc := NewBeadService(nil, nil, nil)
+	err := svc.SetCapacity(4)
+	if err == nil {
+		t.Fatal("expected error when scheduler not configured")
+	}
+	se, ok := err.(*ServiceError)
+	if !ok {
+		t.Fatalf("expected *ServiceError, got %T", err)
+	}
+	if se.Code != CodeInvalidCapacity {
+		t.Errorf("code want %q got %q", CodeInvalidCapacity, se.Code)
+	}
+}
+
+func TestT018_SetCapacity_ValidCapacity(t *testing.T) {
+	fake := &fakeSchedulerManager{capacity: 2}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	if err := svc.SetCapacity(5); err != nil {
+		t.Fatalf("SetCapacity(5): %v", err)
+	}
+	if fake.capacity != 5 {
+		t.Errorf("capacity want 5 got %d", fake.capacity)
+	}
+}
+
+func TestT018_SetCapacity_InvalidCapacity(t *testing.T) {
+	fake := &fakeSchedulerManager{setErr: fmt.Errorf("capacity must be > 0")}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	err := svc.SetCapacity(0)
+	if err == nil {
+		t.Fatal("expected error for capacity 0")
+	}
+	se, ok := err.(*ServiceError)
+	if !ok {
+		t.Fatalf("expected *ServiceError, got %T", err)
+	}
+	if se.Code != CodeInvalidCapacity {
+		t.Errorf("code want %q got %q", CodeInvalidCapacity, se.Code)
+	}
+}
+
+// TestT018_SetCapacity_NoDoubleWrap verifies that when the SchedulerManager
+// adapter returns a pre-wrapped *ServiceError (mimicking the orchestrator adapter
+// returning a raw error that BeadService then wraps once), the final error
+// message does not contain the code string twice. This guards against the
+// double-wrapping anti-pattern where both the adapter and BeadService each wrap
+// the same error in ServiceError{CodeInvalidCapacity}.
+func TestT018_SetCapacity_NoDoubleWrap(t *testing.T) {
+	// Simulate the adapter returning a pre-wrapped *ServiceError — this is what
+	// the old (buggy) schedulerManagerAdapter did. BeadService.SetCapacity must
+	// not wrap it a second time.
+	preWrapped := &ServiceError{Code: CodeInvalidCapacity, Message: "capacity must be > 0"}
+	fake := &fakeSchedulerManager{setErr: preWrapped}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	err := svc.SetCapacity(0)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	// The code must not appear more than once in the message.
+	if count := strings.Count(msg, CodeInvalidCapacity); count > 1 {
+		t.Errorf("error message contains %q %d times (double-wrap): %s", CodeInvalidCapacity, count, msg)
+	}
+}
+
+func TestT018_SchedulerSnapshot_NoScheduler(t *testing.T) {
+	svc := NewBeadService(nil, nil, nil)
+	snap := svc.SchedulerSnapshot()
+	if snap.Capacity != 0 || snap.ActiveCount != 0 || len(snap.Waiting) != 0 {
+		t.Errorf("zero-value snapshot expected when no scheduler; got %+v", snap)
+	}
+}
+
+func TestT018_SchedulerSnapshot_WithScheduler(t *testing.T) {
+	fake := &fakeSchedulerManager{
+		capacity:    3,
+		activeCount: 2,
+		waiting:     []string{"bd-1", "bd-2"},
+	}
+	svc := NewBeadService(nil, nil, nil).WithScheduler(fake)
+	snap := svc.SchedulerSnapshot()
+	if snap.Capacity != 3 {
+		t.Errorf("Capacity want 3 got %d", snap.Capacity)
+	}
+	if snap.ActiveCount != 2 {
+		t.Errorf("ActiveCount want 2 got %d", snap.ActiveCount)
+	}
+	if len(snap.Waiting) != 2 || snap.Waiting[0] != "bd-1" {
+		t.Errorf("Waiting want [bd-1 bd-2] got %v", snap.Waiting)
+	}
+}
+
 func TestMapWorktreeReadError(t *testing.T) {
 	// A REAL missing-binary error, wrapped the way the wt backend wraps exec
 	// failures. In modern Go *exec.Error unwraps to exec.ErrNotFound, so this
@@ -455,5 +772,601 @@ func TestMapWorktreeReadError(t *testing.T) {
 				t.Errorf("code = %q, want %q", se.Code, tc.wantCode)
 			}
 		})
+	}
+}
+
+// ── T036a/T037: FinalizeWorktree, PushWorktree, RemoveWorktree service methods
+
+// fakeWriteableWorktreeAccessor is a test double implementing WorktreeAccessor
+// with the write-side methods added in M4 T036a.
+type fakeWriteableWorktreeAccessor struct {
+	// read-side state
+	existingBeadID string
+	runState       core.StepStatus // BeadRunState result
+
+	// write-side capture
+	finalizeBeadID string
+	finalizeMsg    string
+	finalizeErr    error
+
+	pushBeadID string
+	pushErr    error
+
+	removeBeadID string
+	removeErr    error
+}
+
+func (f *fakeWriteableWorktreeAccessor) WorktreeStatus(_ context.Context, beadID string) (wt.WorktreeStatus, error) {
+	if beadID == f.existingBeadID {
+		return wt.WorktreeStatus{Exists: true, Clean: true}, nil
+	}
+	return wt.WorktreeStatus{}, wt.ErrWorktreeNotFound
+}
+func (f *fakeWriteableWorktreeAccessor) DiffSummary(_ context.Context, _ string) ([]wt.FileChange, error) {
+	return nil, nil
+}
+func (f *fakeWriteableWorktreeAccessor) Diff(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	return nil, nil
+}
+func (f *fakeWriteableWorktreeAccessor) DefaultVCS() string { return "git" }
+
+func (f *fakeWriteableWorktreeAccessor) BeadRunState(beadID string) core.StepStatus {
+	if beadID == f.existingBeadID {
+		return f.runState
+	}
+	return ""
+}
+
+func (f *fakeWriteableWorktreeAccessor) Finalize(_ context.Context, beadID, message string) (bool, error) {
+	f.finalizeBeadID = beadID
+	f.finalizeMsg = message
+	if f.finalizeErr != nil {
+		return false, f.finalizeErr
+	}
+	return true, nil
+}
+
+func (f *fakeWriteableWorktreeAccessor) Push(_ context.Context, beadID, _ string) error {
+	f.pushBeadID = beadID
+	return f.pushErr
+}
+
+func (f *fakeWriteableWorktreeAccessor) Remove(_ context.Context, beadID string) error {
+	f.removeBeadID = beadID
+	return f.removeErr
+}
+
+// Compile assertion: fakeWriteableWorktreeAccessor must satisfy WorktreeAccessor.
+var _ WorktreeAccessor = (*fakeWriteableWorktreeAccessor)(nil)
+
+// newSvcWithFakeWT returns a BeadService with a MemoryBackend, the given
+// worktreeAccessor, a pre-seeded bead, and a no-op publisher.
+func newSvcWithFakeWT(beadID string, wa WorktreeAccessor) *BeadService {
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: beadID, Title: "Test bead", Status: "open", IssueType: "task"},
+	})
+	svc := NewBeadService(backend, nil, func(ws.Frame) {})
+	return svc.WithWorktreeAccessor(wa)
+}
+
+// TestT037_FinalizeWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
+func TestT037_FinalizeWorktree_NoAccessor(t *testing.T) {
+	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_RunActive asserts CodeRunAlreadyActive when run is active.
+func TestT037_FinalizeWorktree_RunActive(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepActive,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_RunPending asserts CodeRunAlreadyActive when run is pending.
+func TestT037_FinalizeWorktree_RunPending(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepPending,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_TerminalState succeeds when run is in terminal state.
+func TestT037_FinalizeWorktree_TerminalState(t *testing.T) {
+	for _, state := range []core.StepStatus{core.StepDone, core.StepFailed, ""} {
+		t.Run(string(state)+"_or_none", func(t *testing.T) {
+			wa := &fakeWriteableWorktreeAccessor{
+				existingBeadID: "bd-1",
+				runState:       state,
+			}
+			svc := newSvcWithFakeWT("bd-1", wa)
+
+			if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
+				t.Fatalf("expected success for state=%q, got %v", state, err)
+			}
+			if wa.finalizeBeadID != "bd-1" {
+				t.Errorf("Finalize not called with correct beadID: got %q", wa.finalizeBeadID)
+			}
+			if wa.finalizeMsg != "seal it" {
+				t.Errorf("Finalize not called with correct message: got %q", wa.finalizeMsg)
+			}
+		})
+	}
+}
+
+// TestT037_FinalizeWorktree_BackendError maps a backend error to CodeInternal.
+func TestT037_FinalizeWorktree_BackendError(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		finalizeErr:    errors.New("git commit failed"),
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeInternal {
+		t.Errorf("code want %q got %q", CodeInternal, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_VCSUnavailable maps ErrVCSUnavailable to CodeVCSUnavailable.
+func TestT037_FinalizeWorktree_VCSUnavailable(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		finalizeErr:    wt.ErrVCSUnavailable,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_FinalizeWorktree_NotFound when bead does not exist.
+func TestT037_FinalizeWorktree_NotFound(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{existingBeadID: "bd-other"}
+	// seed bead "bd-other", try finalize "bd-missing"
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: "bd-other", Title: "T", Status: "open", IssueType: "task"},
+	})
+	svc := NewBeadService(backend, nil, func(ws.Frame) {}).WithWorktreeAccessor(wa)
+
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-missing", "msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeNotFound {
+		t.Errorf("code want %q got %q", CodeNotFound, se.Code)
+	}
+}
+
+// ── FIX D: NUL byte in commit message → CodeInvalidRequest (not CodeInternal) ──
+
+// TestT037_FinalizeWorktree_NULMessage verifies that a message containing a NUL
+// byte returns CodeInvalidRequest before the accessor is called.
+func TestT037_FinalizeWorktree_NULMessage(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	_, err := svc.FinalizeWorktree(context.Background(), "bd-1", "bad\x00msg")
+	se := mustServiceError(t, err)
+	if se.Code != CodeInvalidRequest {
+		t.Errorf("code want %q got %q", CodeInvalidRequest, se.Code)
+	}
+	// The accessor must NOT have been called.
+	if wa.finalizeBeadID != "" {
+		t.Errorf("accessor Finalize was called despite NUL in message (beadID=%q)", wa.finalizeBeadID)
+	}
+}
+
+// TestT037_FinalizeWorktree_MultilineMessage verifies that a multiline commit
+// message (legitimate) reaches the accessor without being rejected.
+func TestT037_FinalizeWorktree_MultilineMessage(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	msg := "subject line\n\nbody paragraph"
+	if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", msg); err != nil {
+		t.Fatalf("FinalizeWorktree(multiline): unexpected error: %v", err)
+	}
+	if wa.finalizeMsg != msg {
+		t.Errorf("accessor received message %q, want %q", wa.finalizeMsg, msg)
+	}
+}
+
+// TestT037_PushWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
+func TestT037_PushWorktree_NoAccessor(t *testing.T) {
+	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
+	err := svc.PushWorktree(context.Background(), "bd-1", "")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_PushWorktree_Success verifies Push delegates to backend.
+func TestT037_PushWorktree_Success(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	if err := svc.PushWorktree(context.Background(), "bd-1", ""); err != nil {
+		t.Fatalf("PushWorktree: %v", err)
+	}
+	if wa.pushBeadID != "bd-1" {
+		t.Errorf("Push not called with correct beadID: got %q", wa.pushBeadID)
+	}
+}
+
+// TestT037_PushWorktree_BackendError maps a backend push error to CodeInternal.
+func TestT037_PushWorktree_BackendError(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		pushErr:        errors.New("authentication failed"),
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.PushWorktree(context.Background(), "bd-1", "")
+	se := mustServiceError(t, err)
+	if se.Code != CodeInternal {
+		t.Errorf("code want %q got %q", CodeInternal, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
+func TestT037_RemoveWorktree_NoAccessor(t *testing.T) {
+	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_RunActive asserts CodeRunAlreadyActive when run is active.
+func TestT037_RemoveWorktree_RunActive(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepActive,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_RunPending asserts CodeRunAlreadyActive when run is pending.
+func TestT037_RemoveWorktree_RunPending(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepPending,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeRunAlreadyActive {
+		t.Errorf("code want %q got %q", CodeRunAlreadyActive, se.Code)
+	}
+}
+
+// TestT037_RemoveWorktree_TerminalState succeeds when run is in terminal state.
+func TestT037_RemoveWorktree_TerminalState(t *testing.T) {
+	for _, state := range []core.StepStatus{core.StepDone, core.StepFailed, ""} {
+		t.Run(string(state)+"_or_none", func(t *testing.T) {
+			wa := &fakeWriteableWorktreeAccessor{
+				existingBeadID: "bd-1",
+				runState:       state,
+			}
+			svc := newSvcWithFakeWT("bd-1", wa)
+
+			if err := svc.RemoveWorktree(context.Background(), "bd-1"); err != nil {
+				t.Fatalf("expected success for state=%q, got %v", state, err)
+			}
+			if wa.removeBeadID != "bd-1" {
+				t.Errorf("Remove not called with correct beadID: got %q", wa.removeBeadID)
+			}
+		})
+	}
+}
+
+// TestT037_RemoveWorktree_BackendVCSUnavailable maps ErrVCSUnavailable properly.
+func TestT037_RemoveWorktree_BackendVCSUnavailable(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		removeErr:      wt.ErrVCSUnavailable,
+	}
+	svc := newSvcWithFakeWT("bd-1", wa)
+
+	err := svc.RemoveWorktree(context.Background(), "bd-1")
+	se := mustServiceError(t, err)
+	if se.Code != CodeVCSUnavailable {
+		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
+	}
+}
+
+// mustServiceError asserts err is a *ServiceError and returns it.
+func mustServiceError(t *testing.T, err error) *ServiceError {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se := &ServiceError{}
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *ServiceError, got %T: %v", err, err)
+	}
+	return se
+}
+
+// ── T040: WS event emission for worktree write-side ──────────────────────────
+
+// newSvcWithFakeWTAndPub returns a BeadService with the given WorktreeAccessor
+// and a pub function that captures emitted frames.
+func newSvcWithFakeWTAndPub(beadID string, wa WorktreeAccessor) (*BeadService, *[]ws.Frame) {
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: beadID, Title: "Test bead", Status: "open", IssueType: "task"},
+	})
+	var frames []ws.Frame
+	pub := func(f ws.Frame) { frames = append(frames, f) }
+	svc := NewBeadServiceWithRepo(backend, nil, pub, "muster", true).
+		WithWorktreeAccessor(wa)
+	return svc, &frames
+}
+
+// TestT040_FinalizeWorktree_EmitsEvent verifies worktree.finalized is published
+// on successful Finalize, with the committed field set.
+func TestT040_FinalizeWorktree_EmitsEvent(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", "seal it"); err != nil {
+		t.Fatalf("FinalizeWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Type != ws.EventWorktreeFinalized {
+		t.Errorf("frame type = %q, want %q", f.Type, ws.EventWorktreeFinalized)
+	}
+	if f.BeadID != "bd-1" {
+		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
+	}
+	// Committed field must be set (not nil) and reflect the backend's return value.
+	if f.Committed == nil {
+		t.Error("frame Committed is nil, want non-nil *bool")
+	} else if !*f.Committed {
+		t.Errorf("frame Committed = false, want true (fake returns committed=true)")
+	}
+}
+
+// TestT040_PushWorktree_EmitsEvent verifies worktree.pushed is published on
+// successful Push, with branch and remote populated.
+func TestT040_PushWorktree_EmitsEvent(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.PushWorktree(context.Background(), "bd-1", ""); err != nil {
+		t.Fatalf("PushWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Type != ws.EventWorktreePushed {
+		t.Errorf("frame type = %q, want %q", f.Type, ws.EventWorktreePushed)
+	}
+	if f.BeadID != "bd-1" {
+		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
+	}
+	if f.Branch != wt.BranchName("bd-1") {
+		t.Errorf("frame branch = %q, want %q", f.Branch, wt.BranchName("bd-1"))
+	}
+	if f.Remote != "origin" {
+		t.Errorf("frame remote = %q, want origin", f.Remote)
+	}
+}
+
+// TestT040_PushWorktree_EmitsEvent_CustomRemote verifies the pushed event carries
+// the caller-supplied remote name (not always "origin").
+func TestT040_PushWorktree_EmitsEvent_CustomRemote(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.PushWorktree(context.Background(), "bd-1", "upstream"); err != nil {
+		t.Fatalf("PushWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Remote != "upstream" {
+		t.Errorf("frame remote = %q, want upstream", f.Remote)
+	}
+}
+
+// TestT040_RemoveWorktree_EmitsEvent verifies worktree.removed is published on
+// successful Remove.
+func TestT040_RemoveWorktree_EmitsEvent(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.RemoveWorktree(context.Background(), "bd-1"); err != nil {
+		t.Fatalf("RemoveWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Type != ws.EventWorktreeRemoved {
+		t.Errorf("frame type = %q, want %q", f.Type, ws.EventWorktreeRemoved)
+	}
+	if f.BeadID != "bd-1" {
+		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
+	}
+}
+
+// TestT040_FinalizeWorktree_NoEventOnError verifies no WS event on failure.
+func TestT040_FinalizeWorktree_NoEventOnError(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+		finalizeErr:    errors.New("git commit failed"),
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if _, err := svc.FinalizeWorktree(context.Background(), "bd-1", "msg"); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(*frames) != 0 {
+		t.Errorf("expected no WS frames on error, got %d", len(*frames))
+	}
+}
+
+// ── T041: per-bead operation mutex (tri-review 5 — TOCTOU) ─────────────────────────
+
+// slowWorktreeAccessor wraps fakeWriteableWorktreeAccessor and inserts a
+// configurable delay inside Finalize and Remove so concurrent callers have a
+// real opportunity to interleave. It also maintains an atomic in-flight counter
+// so the test can assert mutual exclusion.
+type slowWorktreeAccessor struct {
+	fakeWriteableWorktreeAccessor
+	delay    time.Duration
+	inFlight atomic.Int32 // incremented during Finalize/Remove; must never exceed 1
+	maxSeen  atomic.Int32 // peak in-flight value observed
+}
+
+func (s *slowWorktreeAccessor) Finalize(ctx context.Context, beadID, message string) (bool, error) {
+	cur := s.inFlight.Add(1)
+	defer s.inFlight.Add(-1)
+	// Record peak.
+	for {
+		prev := s.maxSeen.Load()
+		if cur <= prev || s.maxSeen.CompareAndSwap(prev, cur) {
+			break
+		}
+	}
+	time.Sleep(s.delay)
+	return s.fakeWriteableWorktreeAccessor.Finalize(ctx, beadID, message)
+}
+
+func (s *slowWorktreeAccessor) Remove(ctx context.Context, beadID string) error {
+	cur := s.inFlight.Add(1)
+	defer s.inFlight.Add(-1)
+	for {
+		prev := s.maxSeen.Load()
+		if cur <= prev || s.maxSeen.CompareAndSwap(prev, cur) {
+			break
+		}
+	}
+	time.Sleep(s.delay)
+	return s.fakeWriteableWorktreeAccessor.Remove(ctx, beadID)
+}
+
+// TestT041_WtOp_Serialized verifies that concurrent FinalizeWorktree and
+// RemoveWorktree calls for the same bead are serialized by the per-bead
+// operation mutex: the in-flight counter inside the slow accessor must never
+// exceed 1, even though both goroutines start simultaneously.
+func TestT041_WtOp_Serialized(t *testing.T) {
+	t.Parallel()
+
+	slow := &slowWorktreeAccessor{
+		fakeWriteableWorktreeAccessor: fakeWriteableWorktreeAccessor{
+			existingBeadID: "bd-1",
+			runState:       core.StepDone,
+		},
+		delay: 20 * time.Millisecond,
+	}
+	backend := store.NewMemoryBackend([]store.Issue{
+		{ID: "bd-1", Title: "Test bead", Status: "open", IssueType: "task"},
+	})
+	svc := NewBeadService(backend, nil, func(ws.Frame) {}).WithWorktreeAccessor(slow)
+
+	ctx := context.Background()
+
+	// Launch both operations simultaneously.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var finalizeErr, removeErr error
+	go func() {
+		defer wg.Done()
+		<-start
+		_, finalizeErr = svc.FinalizeWorktree(ctx, "bd-1", "msg")
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		// Give Finalize a tiny head start so it enters the slow section first.
+		time.Sleep(2 * time.Millisecond)
+		removeErr = svc.RemoveWorktree(ctx, "bd-1")
+	}()
+
+	close(start)
+	wg.Wait()
+
+	// Both operations must succeed (the fake never returns an error here).
+	if finalizeErr != nil {
+		t.Errorf("FinalizeWorktree: %v", finalizeErr)
+	}
+	if removeErr != nil {
+		t.Errorf("RemoveWorktree: %v", removeErr)
+	}
+
+	// The critical assertion: the peak in-flight count must be exactly 1.
+	// If the mutex is absent, both goroutines enter the slow section together
+	// and maxSeen reaches 2.
+	if peak := slow.maxSeen.Load(); peak > 1 {
+		t.Errorf("concurrent operations detected: peak in-flight = %d, want ≤ 1", peak)
 	}
 }

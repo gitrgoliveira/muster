@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/wt"
 )
@@ -21,17 +20,38 @@ type serviceDispatcherAdapter struct {
 }
 
 // Dispatch implements services.OrchestratorDispatcher by translating the
-// import-cycle-avoiding request type into the orchestrator's own DispatchRequest.
-func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (*core.Bead, error) {
-	bead, err := a.o.Dispatch(ctx, DispatchRequest{
+// import-cycle-avoiding request type into the orchestrator's own DispatchRequest
+// and mirroring the result back into the services-layer type.
+func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.OrchestratorDispatchRequest) (services.OrchestratorDispatchResult, error) {
+	// nil means "no override" to resolveChain (which treats any non-nil
+	// req.Chain as explicit); only build a *StepChain when the caller
+	// actually supplied steps, so an empty-but-non-nil req.Chain doesn't
+	// spuriously short-circuit the orchestrator's configured default chain.
+	var chain *StepChain
+	if len(req.Chain) > 0 {
+		c := make(StepChain, len(req.Chain))
+		for i, s := range req.Chain {
+			c[i] = StepProfile{Name: s.Name, PermissionMode: s.PermissionMode, PromptRef: s.PromptRef}
+		}
+		chain = &c
+	}
+	res, err := a.o.Dispatch(ctx, DispatchRequest{
 		BeadID:         req.BeadID,
 		BeadTitle:      req.BeadTitle,
 		BeadDesc:       req.BeadDesc,
 		Agent:          req.Agent,
 		Mode:           req.Mode,
 		PermissionMode: req.PermissionMode,
+		Chain:          chain,
 	})
-	return bead, mapDispatchError(err)
+	if err != nil {
+		return services.OrchestratorDispatchResult{}, mapDispatchError(err)
+	}
+	return services.OrchestratorDispatchResult{
+		Bead:   res.Bead,
+		Joined: res.Joined,
+		Queued: res.Queued,
+	}, nil
 }
 
 // mapDispatchError translates orchestrator sentinel errors into typed
@@ -79,3 +99,91 @@ func (o *Orchestrator) AsSessionAttacher() services.SessionAttacher {
 
 // Verify Orchestrator implements services.SessionAttacher.
 var _ services.SessionAttacher = (*Orchestrator)(nil)
+
+// AsStepAdvancer returns a services.StepAdvancer backed by this Orchestrator.
+func (o *Orchestrator) AsStepAdvancer() services.StepAdvancer {
+	return &stepAdvancerAdapter{o: o}
+}
+
+// stepAdvancerAdapter adapts Orchestrator.Advance/LoopBack to services.StepAdvancer.
+type stepAdvancerAdapter struct {
+	o *Orchestrator
+}
+
+// Advance implements services.StepAdvancer.
+func (a *stepAdvancerAdapter) Advance(_ context.Context, beadID string) (stepIdx, chainLen int, err error) {
+	if err := a.o.Advance(beadID); err != nil {
+		return 0, 0, mapStepError(err)
+	}
+	// Report the TARGET stepIdx (the step being advanced to). run.StepIdx is not
+	// advanced until relaunchNextStep applies it after the old session is torn
+	// down (the transition is async), so read run.pendingTargetIdx — set by
+	// Advance under the lock and stable while pendingAdvance holds.
+	a.o.mu.RLock()
+	run, ok := a.o.runs[beadID]
+	if ok && run.Chain != nil {
+		stepIdx = run.pendingTargetIdx
+		chainLen = len(*run.Chain)
+	}
+	a.o.mu.RUnlock()
+	return stepIdx, chainLen, nil
+}
+
+// LoopBack implements services.StepAdvancer.
+func (a *stepAdvancerAdapter) LoopBack(_ context.Context, beadID string, toIdx int) (stepIdx, chainLen int, err error) {
+	if err := a.o.LoopBack(beadID, toIdx); err != nil {
+		return 0, 0, mapStepError(err)
+	}
+	// Read back the chainLen under the lock.
+	a.o.mu.RLock()
+	run, ok := a.o.runs[beadID]
+	if ok && run.Chain != nil {
+		chainLen = len(*run.Chain)
+	}
+	a.o.mu.RUnlock()
+	return toIdx, chainLen, nil
+}
+
+// mapStepError translates orchestrator step errors into typed *services.ServiceError.
+// Advance and LoopBack only ever return ErrStepOutOfRange-wrapped errors, so the
+// mapping is straightforward: match that sentinel or fall back to CodeInternal.
+func mapStepError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrStepOutOfRange) {
+		return &services.ServiceError{Code: services.CodeStepOutOfRange, Message: err.Error()}
+	}
+	return &services.ServiceError{Code: services.CodeInternal, Message: err.Error()}
+}
+
+// AsSchedulerManager returns a services.SchedulerManager that delegates to
+// this Orchestrator's capacity-gated FIFO scheduler. Use this when wiring
+// into services.BeadService.WithScheduler.
+func (o *Orchestrator) AsSchedulerManager() services.SchedulerManager {
+	return &schedulerManagerAdapter{o: o}
+}
+
+// schedulerManagerAdapter adapts Orchestrator to services.SchedulerManager.
+type schedulerManagerAdapter struct {
+	o *Orchestrator
+}
+
+// SetCapacity implements services.SchedulerManager.
+func (a *schedulerManagerAdapter) SetCapacity(n int) error {
+	if err := a.o.SetCapacity(n); err != nil {
+		return &services.ServiceError{Code: services.CodeInvalidCapacity, Message: err.Error()}
+	}
+	return nil
+}
+
+// SchedulerSnapshot implements services.SchedulerManager, converting from
+// orchestrator.SchedulerSnapshot to services.SchedulerSnapshot.
+func (a *schedulerManagerAdapter) SchedulerSnapshot() services.SchedulerSnapshot {
+	snap := a.o.SchedulerSnapshot()
+	return services.SchedulerSnapshot{
+		Capacity:    snap.Capacity,
+		ActiveCount: snap.ActiveCount,
+		Waiting:     snap.Waiting,
+	}
+}
