@@ -105,14 +105,10 @@ type Run struct {
 	Waiting bool
 
 	// pendingAdvance is true while an Advance/LoopBack is in progress for this
-	// run. When true, finishRun skips eviction and instead relaunches the next
-	// step (at pendingAdvanceNextIdx) under the same beadID key.
-	// Mutable under o.mu.
+	// run. When true, finishRun skips eviction and instead relaunches the run
+	// at the already-updated StepIdx (the target step) under the same beadID
+	// key. Mutable under o.mu.
 	pendingAdvance bool
-
-	// pendingAdvanceNextIdx is the target step index set by Advance/LoopBack.
-	// Valid only when pendingAdvance is true. Mutable under o.mu.
-	pendingAdvanceNextIdx int
 }
 
 // DispatchRequest carries the inputs for Orchestrator.Dispatch.
@@ -912,13 +908,24 @@ func (o *Orchestrator) launchAdmittedRun(run *Run) {
 	if err != nil {
 		slog.Error("launchAdmittedRun: failed to launch admitted queued run",
 			"bead", run.BeadID, "err", err)
-		// Remove from the registry and scheduler active set on failure.
+		// Remove from the registry and scheduler active set on failure. onRunEnd
+		// pops the next FIFO waiter and promotes it to active — we MUST launch it,
+		// otherwise it is stranded in o.runs as a phantom StepPending run and the
+		// capacity slot is permanently consumed (tri-review #2). Mirror the
+		// admit-and-launch pattern used by relaunchNextStep.
 		o.mu.Lock()
+		var nextRun *Run
 		if cur, ok := o.runs[run.BeadID]; ok && cur == run {
 			delete(o.runs, run.BeadID)
-			o.sched.onRunEnd(run.BeadID)
+			nextRun = o.sched.onRunEnd(run.BeadID)
+			if nextRun != nil {
+				nextRun.State = core.StepActive
+			}
 		}
 		o.mu.Unlock()
+		if nextRun != nil {
+			go o.launchAdmittedRun(nextRun)
+		}
 	}
 }
 

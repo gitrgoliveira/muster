@@ -428,6 +428,61 @@ func TestStepIdx_SessionAndPromptNamesDistinct(t *testing.T) {
 
 // ── T043b: advance/finish interlock -race test ───────────────────────────────
 
+// TestAdvance_ErrStepOutOfRange_QueuedRun is the regression for tri-review #1/#3:
+// advancing a StepPending (queued, not-yet-launched) run must be rejected, not
+// silently mutate its StepIdx — which would make the scheduler later launch it
+// at step 1, skipping step 0 and double-running step 1.
+func TestAdvance_ErrStepOutOfRange_QueuedRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	transport := &fakeTransport{deadDead: false} // keep the active run alive
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+		MaxConcurrent:   1, // one active slot → the second dispatch queues
+	})
+	chain := orchestrator.StepChain{
+		{Name: "plan", PermissionMode: core.PermPlan},
+		{Name: "build", PermissionMode: core.PermAcceptEdits},
+	}
+
+	// First dispatch fills the single active slot.
+	if _, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-active", BeadTitle: "active", Agent: core.AgentClaude,
+		Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits, Chain: &chain,
+	}); err != nil {
+		t.Fatalf("Dispatch active: %v", err)
+	}
+	// Second dispatch queues (StepPending) — never launched.
+	res, err := o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+		BeadID: "mp-queued", BeadTitle: "queued", Agent: core.AgentClaude,
+		Mode: core.ModeAgent, PermissionMode: core.PermAcceptEdits, Chain: &chain,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch queued: %v", err)
+	}
+	if !res.Queued {
+		t.Fatalf("second dispatch: want Queued=true (at capacity), got %+v", res)
+	}
+
+	// Advancing the queued run must be rejected and must NOT mutate its pointer.
+	if err := o.Advance("mp-queued"); !errors.Is(err, orchestrator.ErrStepOutOfRange) {
+		t.Errorf("Advance on queued run: want ErrStepOutOfRange, got %v", err)
+	}
+	if run := o.GetRun("mp-queued"); run == nil || run.StepIdx != 0 {
+		t.Errorf("queued run StepIdx must remain 0 after rejected Advance, got %v", run)
+	}
+}
+
 // TestAdvance_WhileWatcherFinishing is a -race test that verifies Advance does
 // not race with a concurrently finishing step's watcher goroutine. Specifically,
 // finishRun must NOT evict a bead whose chain has a pending advance.

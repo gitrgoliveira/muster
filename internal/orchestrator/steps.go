@@ -49,6 +49,16 @@ func (o *Orchestrator) Advance(beadID string) error {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: no run for bead %q", ErrStepOutOfRange, beadID)
 	}
+	// A step transition is only valid on a live (running) step. A StepPending
+	// (queued, not yet launched) run has not started step 0 — advancing its
+	// pointer would skip step 0 and double-run the advanced step when the
+	// scheduler later launches it (tri-review #1/#3). A terminal run (Done/
+	// Failed) has no watcher to relaunch, so an advance would silently no-op
+	// (tri-review #4). Guard both here.
+	if run.State != core.StepActive {
+		o.mu.Unlock()
+		return fmt.Errorf("%w: bead %q run is not active (state=%s)", ErrStepOutOfRange, beadID, run.State)
+	}
 	if run.Chain == nil || len(*run.Chain) == 0 {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: bead %q has no chain (single-step)", ErrStepOutOfRange, beadID)
@@ -58,19 +68,23 @@ func (o *Orchestrator) Advance(beadID string) error {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: bead %q is already at the last step (%d)", ErrStepOutOfRange, beadID, run.StepIdx)
 	}
+	// Re-entrancy guard: a transition is already in flight (finishRun has not
+	// yet run relaunchNextStep). A second Advance would advance StepIdx again
+	// before the first relaunch, skipping a step (tri-review #5).
+	if run.pendingAdvance {
+		o.mu.Unlock()
+		return fmt.Errorf("%w: bead %q already has a step transition in progress", ErrStepOutOfRange, beadID)
+	}
 
 	nextIdx := run.StepIdx + 1
 	chainLen := len(chain)
-	// Set the interlock flags AND advance StepIdx now (synchronously) under
-	// the lock. This ensures subsequent Advance/LoopBack calls see the new
-	// index immediately, and prevents a double-advance race where two callers
-	// both see StepIdx=0 and both succeed. relaunchNextStep will not reset
-	// StepIdx since we set it here.
+	// Set the interlock flag AND advance StepIdx now (synchronously) under
+	// the lock, so subsequent Advance/LoopBack calls see the new index and the
+	// pendingAdvance guard immediately. relaunchNextStep reads run.StepIdx.
 	// Clear Session so observers can tell that the old session is gone and the
 	// new one is not yet established (avoids seeing stale step-0 session
 	// name while StepIdx is already 1).
 	run.pendingAdvance = true
-	run.pendingAdvanceNextIdx = nextIdx
 	run.StepIdx = nextIdx
 	run.Loop = 0     // reset loop counter for the new step
 	run.Session = "" // clear now so GetRun observers don't see stale step-0 name
@@ -122,6 +136,11 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: no run for bead %q", ErrStepOutOfRange, beadID)
 	}
+	// Only a live (running) step can loop back (tri-review #3/#4) — see Advance.
+	if run.State != core.StepActive {
+		o.mu.Unlock()
+		return fmt.Errorf("%w: bead %q run is not active (state=%s)", ErrStepOutOfRange, beadID, run.State)
+	}
 	if run.Chain == nil || len(*run.Chain) == 0 {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: bead %q has no chain (single-step)", ErrStepOutOfRange, beadID)
@@ -130,17 +149,19 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 		o.mu.Unlock()
 		return fmt.Errorf("%w: toIdx %d must be < current stepIdx %d", ErrStepOutOfRange, toIdx, run.StepIdx)
 	}
-	if toIdx >= len(*run.Chain) {
+	// No separate "toIdx >= len(chain)" check needed: the invariant StepIdx <
+	// len(chain) (upheld by Advance) plus toIdx < StepIdx implies toIdx is in
+	// range (tri-review #8, dead code removed).
+	// Re-entrancy guard (tri-review #5), same as Advance.
+	if run.pendingAdvance {
 		o.mu.Unlock()
-		return fmt.Errorf("%w: toIdx %d out of chain range [0,%d)", ErrStepOutOfRange, toIdx, len(*run.Chain))
+		return fmt.Errorf("%w: bead %q already has a step transition in progress", ErrStepOutOfRange, beadID)
 	}
 	chainLen := len(*run.Chain)
 
-	// Set interlock flags AND update StepIdx synchronously (same rationale as
-	// Advance: prevents double-loopback and ensures range checks are consistent).
-	// Clear Session for the same reason as Advance (see above).
+	// Set the interlock flag AND update StepIdx synchronously (same rationale as
+	// Advance). Clear Session for the same reason as Advance (see above).
 	run.pendingAdvance = true
-	run.pendingAdvanceNextIdx = toIdx
 	run.StepIdx = toIdx
 	run.Loop = 0     // reset loop counter for the new step
 	run.Session = "" // clear now; safe because all readers use o.mu.RLock()
@@ -173,18 +194,17 @@ func (o *Orchestrator) LoopBack(beadID string, toIdx int) error {
 // watcher goroutine can exit promptly.
 func (o *Orchestrator) relaunchNextStep(run *Run) {
 	o.mu.Lock()
-	nextIdx := run.pendingAdvanceNextIdx // already set by Advance/LoopBack
+	// StepIdx is already the target index (Advance/LoopBack set it synchronously),
+	// so it IS the next step to launch (tri-review #6: no separate field needed).
+	nextIdx := run.StepIdx
 
-	// StepIdx and Loop are already updated by Advance/LoopBack synchronously.
-	// Clear the interlock flags and reset session-local fields so doLaunch
+	// Clear the interlock flag and reset session-local fields so doLaunch
 	// can set fresh ones.
 	run.State = core.StepActive // semantic pre-set; doLaunch will confirm
 	run.pendingAdvance = false
-	run.pendingAdvanceNextIdx = 0
-	// Session/Pane/pipe/cancel are immutable after launch. finishRun has
-	// already read them (Kill/pipe.Close) and returned; no concurrent reader
-	// holds them now. Safe to reset before doLaunch sets new ones.
-	run.Session = ""
+	// Session already cleared by Advance/LoopBack and not re-set since; Pane/
+	// pipe/cancel are immutable after launch — finishRun already read them
+	// (Kill/pipe.Close) and returned, so no concurrent reader holds them.
 	run.Pane = ""
 	run.pipe = nil
 	run.cancel = nil
