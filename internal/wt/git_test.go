@@ -691,7 +691,7 @@ func TestGitBackend_WriteMethodsNotImplemented(t *testing.T) {
 	if _, err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
 		t.Errorf("Finalize: M3 stub still in place (ErrNotImplemented), want real error")
 	}
-	if err := b.Push(ctx, "bead"); err == wt.ErrNotImplemented {
+	if err := b.Push(ctx, "bead", ""); err == wt.ErrNotImplemented {
 		t.Errorf("Push: M3 stub still in place (ErrNotImplemented), want real error")
 	}
 	if err := b.Remove(ctx, "bead"); err == wt.ErrNotImplemented {

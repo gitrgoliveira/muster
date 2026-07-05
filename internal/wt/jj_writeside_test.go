@@ -213,7 +213,7 @@ func TestJJPush_ToBarePushable(t *testing.T) {
 		t.Fatalf("Finalize: %v", err)
 	}
 
-	if err := b.Push(ctx, beadID); err != nil {
+	if err := b.Push(ctx, beadID, ""); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestJJPush_NoRemote(t *testing.T) {
 	ctx := context.Background()
 
 	// Push without a remote configured — must fail with an error.
-	err := b.Push(ctx, beadID)
+	err := b.Push(ctx, beadID, "")
 	if err == nil {
 		t.Fatal("Push with no remote: expected error, got nil")
 	}
@@ -361,7 +361,7 @@ func TestJJSrcRepoCache_PopulatedByCreate(t *testing.T) {
 	}
 
 	// Push via the same backend instance (cache path).
-	if err := bPrimary.Push(ctx, beadID); err != nil {
+	if err := bPrimary.Push(ctx, beadID, ""); err != nil {
 		t.Fatalf("Push via cached backend: %v", err)
 	}
 
@@ -388,7 +388,7 @@ func TestJJWriteMethods_NotErrNotImplemented(t *testing.T) {
 	if _, err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
 		t.Error("Finalize: M3 stub still in place (ErrNotImplemented)")
 	}
-	if err := b.Push(ctx, "bead"); err == wt.ErrNotImplemented {
+	if err := b.Push(ctx, "bead", ""); err == wt.ErrNotImplemented {
 		t.Error("Push: M3 stub still in place (ErrNotImplemented)")
 	}
 	if err := b.Remove(ctx, "bead"); err == wt.ErrNotImplemented {

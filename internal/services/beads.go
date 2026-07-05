@@ -48,6 +48,7 @@ const (
 	// M3 worktree codes.
 	CodeWorktreeNotFound = "WORKTREE_NOT_FOUND" // 404 — bead exists but has no worktree
 	CodeVCSUnavailable   = "VCS_UNAVAILABLE"    // 412 — VCS binary absent or wrong VCS type
+	CodeWorktreeDirty    = "WORKTREE_DIRTY"     // 409 — worktree has uncommitted changes; finalize first
 
 	// M4 dispatcher codes (additive).
 	CodeStepOutOfRange  = "STEP_OUT_OF_RANGE" // 422 — step index outside [0, chainLen)
@@ -740,8 +741,9 @@ type WorktreeAccessor interface {
 	// Returns (true, nil) when a commit was created; (false, nil) for a no-op
 	// (clean worktree). A no-change worktree succeeds as a no-op (idempotent).
 	Finalize(ctx context.Context, beadID, message string) (bool, error)
-	// Push pushes branch muster/<beadID> to the default remote.
-	Push(ctx context.Context, beadID string) error
+	// Push pushes branch muster/<beadID> to remote (resolved via wt.ResolveRemote —
+	// empty defaults to "origin").
+	Push(ctx context.Context, beadID, remote string) error
 	// Remove deregisters and deletes the per-bead worktree directory.
 	Remove(ctx context.Context, beadID string) error
 
@@ -795,6 +797,8 @@ func mapWorktreeReadError(err error, id, op string) *ServiceError {
 		return &ServiceError{Code: CodeWorktreeNotFound, Message: "no worktree for bead " + id}
 	case errors.Is(err, wt.ErrVCSUnavailable), errors.Is(err, exec.ErrNotFound):
 		return &ServiceError{Code: CodeVCSUnavailable, Message: op + ": vcs backend unavailable: " + err.Error()}
+	case errors.Is(err, wt.ErrWorktreeDirty):
+		return &ServiceError{Code: CodeWorktreeDirty, Message: op + ": " + err.Error()}
 	default:
 		return &ServiceError{Code: CodeInternal, Message: op + " failed: " + err.Error()}
 	}
@@ -898,15 +902,16 @@ func (svc *BeadService) FinalizeWorktree(ctx context.Context, id, message string
 		return false, mapWorktreeReadError(err, id, "finalize")
 	}
 	if svc.publish != nil {
-		svc.publish(ws.Frame{Type: ws.EventWorktreeFinalized, BeadID: id})
+		svc.publish(ws.Frame{Type: ws.EventWorktreeFinalized, BeadID: id, Committed: &committed})
 	}
 	return committed, nil
 }
 
-// PushWorktree pushes branch muster/<beadID> to the default remote.
+// PushWorktree pushes branch muster/<beadID> to remote (resolved via
+// wt.ResolveRemote — empty defaults to "origin").
 // Push is permitted regardless of the current run state (the run may be finished
 // but the branch not yet pushed). Push failures map to CodeInternal.
-func (svc *BeadService) PushWorktree(ctx context.Context, id string) error {
+func (svc *BeadService) PushWorktree(ctx context.Context, id, remote string) error {
 	if svc.wtAccessor == nil {
 		return &ServiceError{Code: CodeVCSUnavailable, Message: "worktree access not configured"}
 	}
@@ -914,11 +919,11 @@ func (svc *BeadService) PushWorktree(ctx context.Context, id string) error {
 	if _, err := svc.GetBead(ctx, id); err != nil {
 		return err
 	}
-	if err := svc.wtAccessor.Push(ctx, id); err != nil {
+	if err := svc.wtAccessor.Push(ctx, id, remote); err != nil {
 		return mapWorktreeReadError(err, id, "push")
 	}
 	if svc.publish != nil {
-		svc.publish(ws.Frame{Type: ws.EventWorktreePushed, BeadID: id})
+		svc.publish(ws.Frame{Type: ws.EventWorktreePushed, BeadID: id, Branch: wt.BranchName(id), Remote: wt.ResolveRemote(remote)})
 	}
 	return nil
 }

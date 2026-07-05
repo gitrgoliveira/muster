@@ -723,7 +723,7 @@ func (f *fakeWriteableWorktreeAccessor) Finalize(_ context.Context, beadID, mess
 	return true, nil
 }
 
-func (f *fakeWriteableWorktreeAccessor) Push(_ context.Context, beadID string) error {
+func (f *fakeWriteableWorktreeAccessor) Push(_ context.Context, beadID, _ string) error {
 	f.pushBeadID = beadID
 	return f.pushErr
 }
@@ -860,7 +860,7 @@ func TestT037_FinalizeWorktree_NotFound(t *testing.T) {
 // TestT037_PushWorktree_NoAccessor asserts VCS_UNAVAILABLE when no accessor.
 func TestT037_PushWorktree_NoAccessor(t *testing.T) {
 	svc := NewBeadService(store.NewMemoryBackend(nil), nil, nil)
-	err := svc.PushWorktree(context.Background(), "bd-1")
+	err := svc.PushWorktree(context.Background(), "bd-1", "")
 	se := mustServiceError(t, err)
 	if se.Code != CodeVCSUnavailable {
 		t.Errorf("code want %q got %q", CodeVCSUnavailable, se.Code)
@@ -875,7 +875,7 @@ func TestT037_PushWorktree_Success(t *testing.T) {
 	}
 	svc := newSvcWithFakeWT("bd-1", wa)
 
-	if err := svc.PushWorktree(context.Background(), "bd-1"); err != nil {
+	if err := svc.PushWorktree(context.Background(), "bd-1", ""); err != nil {
 		t.Fatalf("PushWorktree: %v", err)
 	}
 	if wa.pushBeadID != "bd-1" {
@@ -892,7 +892,7 @@ func TestT037_PushWorktree_BackendError(t *testing.T) {
 	}
 	svc := newSvcWithFakeWT("bd-1", wa)
 
-	err := svc.PushWorktree(context.Background(), "bd-1")
+	err := svc.PushWorktree(context.Background(), "bd-1", "")
 	se := mustServiceError(t, err)
 	if se.Code != CodeInternal {
 		t.Errorf("code want %q got %q", CodeInternal, se.Code)
@@ -1004,7 +1004,7 @@ func newSvcWithFakeWTAndPub(beadID string, wa WorktreeAccessor) (*BeadService, *
 }
 
 // TestT040_FinalizeWorktree_EmitsEvent verifies worktree.finalized is published
-// on successful Finalize.
+// on successful Finalize, with the committed field set.
 func TestT040_FinalizeWorktree_EmitsEvent(t *testing.T) {
 	wa := &fakeWriteableWorktreeAccessor{
 		existingBeadID: "bd-1",
@@ -1026,10 +1026,16 @@ func TestT040_FinalizeWorktree_EmitsEvent(t *testing.T) {
 	if f.BeadID != "bd-1" {
 		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
 	}
+	// Committed field must be set (not nil) and reflect the backend's return value.
+	if f.Committed == nil {
+		t.Error("frame Committed is nil, want non-nil *bool")
+	} else if !*f.Committed {
+		t.Errorf("frame Committed = false, want true (fake returns committed=true)")
+	}
 }
 
 // TestT040_PushWorktree_EmitsEvent verifies worktree.pushed is published on
-// successful Push.
+// successful Push, with branch and remote populated.
 func TestT040_PushWorktree_EmitsEvent(t *testing.T) {
 	wa := &fakeWriteableWorktreeAccessor{
 		existingBeadID: "bd-1",
@@ -1037,7 +1043,7 @@ func TestT040_PushWorktree_EmitsEvent(t *testing.T) {
 	}
 	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
 
-	if err := svc.PushWorktree(context.Background(), "bd-1"); err != nil {
+	if err := svc.PushWorktree(context.Background(), "bd-1", ""); err != nil {
 		t.Fatalf("PushWorktree: %v", err)
 	}
 
@@ -1050,6 +1056,34 @@ func TestT040_PushWorktree_EmitsEvent(t *testing.T) {
 	}
 	if f.BeadID != "bd-1" {
 		t.Errorf("frame beadID = %q, want bd-1", f.BeadID)
+	}
+	if f.Branch != wt.BranchName("bd-1") {
+		t.Errorf("frame branch = %q, want %q", f.Branch, wt.BranchName("bd-1"))
+	}
+	if f.Remote != "origin" {
+		t.Errorf("frame remote = %q, want origin", f.Remote)
+	}
+}
+
+// TestT040_PushWorktree_EmitsEvent_CustomRemote verifies the pushed event carries
+// the caller-supplied remote name (not always "origin").
+func TestT040_PushWorktree_EmitsEvent_CustomRemote(t *testing.T) {
+	wa := &fakeWriteableWorktreeAccessor{
+		existingBeadID: "bd-1",
+		runState:       core.StepDone,
+	}
+	svc, frames := newSvcWithFakeWTAndPub("bd-1", wa)
+
+	if err := svc.PushWorktree(context.Background(), "bd-1", "upstream"); err != nil {
+		t.Fatalf("PushWorktree: %v", err)
+	}
+
+	if len(*frames) != 1 {
+		t.Fatalf("expected 1 WS frame, got %d", len(*frames))
+	}
+	f := (*frames)[0]
+	if f.Remote != "upstream" {
+		t.Errorf("frame remote = %q, want upstream", f.Remote)
 	}
 }
 

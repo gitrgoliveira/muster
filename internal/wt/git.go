@@ -139,11 +139,11 @@ func (g *gitBackend) Finalize(ctx context.Context, beadID, message string) (bool
 	return true, nil
 }
 
-// Push pushes the bead's branch (muster/<beadID>) to the "origin" remote.
-// A non-zero git exit (no remote, auth failure, rejected) returns an explicit
-// typed error — never silent success (FR-007).
-// Requires the backend was constructed with NewGitBackend(worktreesDir).
-func (g *gitBackend) Push(ctx context.Context, beadID string) error {
+// Push pushes the bead's branch (muster/<beadID>) to remote (resolved via
+// ResolveRemote — empty defaults to "origin"). A non-zero git exit (no remote,
+// auth failure, rejected) returns an explicit typed error — never silent
+// success (FR-007). Requires the backend was constructed with NewGitBackend(worktreesDir).
+func (g *gitBackend) Push(ctx context.Context, beadID, remote string) error {
 	if g.worktreesDir == "" {
 		return fmt.Errorf("wt git: Push requires worktreesDir — use NewGitBackend")
 	}
@@ -161,17 +161,17 @@ func (g *gitBackend) Push(ctx context.Context, beadID string) error {
 		return ErrWorktreeNotFound
 	}
 
-	remote := ResolveRemote("")
+	resolvedRemote := ResolveRemote(remote)
 	branch := BranchName(beadID)
 
-	cmd := exec.CommandContext(ctx, "git", "push", remote, branch)
+	cmd := exec.CommandContext(ctx, "git", "push", resolvedRemote, branch)
 	cmd.Dir = path
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("wt git: push aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt git: git push %s %s in %q: %w\n%s", remote, branch, path, err, out)
+		return fmt.Errorf("wt git: git push %s %s in %q: %w\n%s", resolvedRemote, branch, path, err, out)
 	}
 	return nil
 }
@@ -199,10 +199,26 @@ func (g *gitBackend) Remove(ctx context.Context, beadID string) error {
 		return ErrWorktreeNotFound
 	}
 
+	// Refuse removal when the worktree has uncommitted changes (tracked or
+	// untracked) to avoid silently discarding the agent's work. `git status
+	// --porcelain` returns non-empty output for any pending change.
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = path
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("wt git: remove status aborted: %w", ctx.Err())
+		}
+		return fmt.Errorf("wt git: git status in %q: %w\n%s", path, err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		return fmt.Errorf("%w: %q has uncommitted changes; finalize or reset before removing", ErrWorktreeDirty, path)
+	}
+
 	// `git worktree remove` needs to run from within any git-associated directory.
 	// Running it with the worktree path as an argument from the worktree itself is
 	// valid; git resolves paths relative to the main repo.
-	removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", path)
+	removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", path)
 	removeCmd.Dir = path
 	if removeOut, err := removeCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {

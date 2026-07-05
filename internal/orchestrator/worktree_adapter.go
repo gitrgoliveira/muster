@@ -48,8 +48,8 @@ func (a *worktreeAccessorAdapter) Finalize(ctx context.Context, beadID, message 
 }
 
 // Push delegates to the orchestrator's selected wt.Backend.
-func (a *worktreeAccessorAdapter) Push(ctx context.Context, beadID string) error {
-	return a.o.backend.Push(ctx, beadID)
+func (a *worktreeAccessorAdapter) Push(ctx context.Context, beadID, remote string) error {
+	return a.o.backend.Push(ctx, beadID, remote)
 }
 
 // Remove delegates to the orchestrator's selected wt.Backend.

@@ -73,6 +73,15 @@ type Frame struct {
 	// M4: step.advanced / step.loopedback
 	ChainLen *int `json:"chainLen,omitempty"` // total number of steps in the chain
 
+	// M4: worktree.finalized — whether a commit was actually created.
+	// *bool (pointer) so false is not silently dropped by omitempty; nil on all
+	// other frame types (same rationale as StepIdx/*int above).
+	Committed *bool `json:"committed,omitempty"`
+
+	// M4: worktree.pushed — the branch name and remote that were pushed to.
+	Branch string `json:"branch,omitempty"`
+	Remote string `json:"remote,omitempty"`
+
 	// M4 US5: run.quota — best-effort token/cost record captured at run end.
 	// Non-nil only on run.quota frames; nil on all other frame types.
 	Quota *QuotaPayload `json:"quota,omitempty"`

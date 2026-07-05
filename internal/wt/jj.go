@@ -211,18 +211,19 @@ func (j *jjBackend) Finalize(ctx context.Context, beadID, message string) (bool,
 	return true, nil
 }
 
-// Push pushes the bead's sealed revision to the default remote.
+// Push pushes the bead's sealed revision to remote (resolved via
+// ResolveRemote — empty defaults to "origin").
 //
 // Algorithm (pinned in research.md R6):
 //  1. Create a bookmark muster/<beadID> at the sealed parent revision (@-).
 //  2. Export jj bookmarks to git refs via `jj git export`.
-//  3. Resolve the shared srcrepo and push the branch via `git push origin <branch>`.
+//  3. Resolve the shared srcrepo and push the branch via `git push <remote> <branch>`.
 //
 // jj's `jj git push --bookmark` is avoided because it requires a user identity
 // in the jj config (fails with no-author error when JJ_CONFIG=/dev/null or
 // in environments without jj user config). Doing the export+git push directly
 // sidesteps this requirement.
-func (j *jjBackend) Push(ctx context.Context, beadID string) error {
+func (j *jjBackend) Push(ctx context.Context, beadID, remote string) error {
 	wtPath := filepath.Join(j.worktreesDir, beadID)
 
 	// Verify workspace exists.
@@ -263,14 +264,14 @@ func (j *jjBackend) Push(ctx context.Context, beadID string) error {
 	}
 
 	// 4. Use `git push` from the srcrepo (colocated .git is there).
-	remote := ResolveRemote("")
-	pushCmd := exec.CommandContext(ctx, "git", "push", remote, branch)
+	resolvedRemote := ResolveRemote(remote)
+	pushCmd := exec.CommandContext(ctx, "git", "push", resolvedRemote, branch)
 	pushCmd.Dir = srcRepo
 	if out, err := pushCmd.CombinedOutput(); err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("wt jj: git push aborted: %w", ctx.Err())
 		}
-		return fmt.Errorf("wt jj: git push %s %s: %w\n%s", remote, branch, err, out)
+		return fmt.Errorf("wt jj: git push %s %s: %w\n%s", resolvedRemote, branch, err, out)
 	}
 	return nil
 }
@@ -282,6 +283,11 @@ func (j *jjBackend) Push(ctx context.Context, beadID string) error {
 //  2. Resolve the srcrepo via `jj root` (needed for `jj workspace forget`).
 //  3. Run `jj workspace forget <beadID>` from the srcrepo to deregister it.
 //  4. Remove the directory with os.RemoveAll.
+//
+// Note: unlike the git backend, jj Remove does NOT check for uncommitted changes
+// before removing. jj auto-snapshots all file changes into a "working copy commit"
+// on every command, so there is no uncommitted-index concept in jj workspaces.
+// ErrWorktreeDirty is only applicable to git worktrees.
 func (j *jjBackend) Remove(ctx context.Context, beadID string) error {
 	wtPath := filepath.Join(j.worktreesDir, beadID)
 

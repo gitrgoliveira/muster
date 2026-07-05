@@ -73,6 +73,13 @@ var (
 	// the source repo is not native to the selected VCS. Maps to HTTP 412
 	// VCS_UNAVAILABLE.
 	ErrVCSUnavailable = errors.New("wt: selected VCS backend unavailable")
+
+	// ErrWorktreeDirty is returned by Remove (git backend) when the worktree has
+	// uncommitted changes. Maps to HTTP 409 so the caller can surface a clear
+	// error rather than silently discarding the agent's work. jj Remove does NOT
+	// return this error: jj auto-snapshots all changes on every operation, so
+	// there is no uncommitted-index concept — that asymmetry is intentional.
+	ErrWorktreeDirty = errors.New("wt: worktree has uncommitted changes")
 )
 
 // Backend is the VCS-agnostic per-bead worktree interface. Two concrete
@@ -109,9 +116,10 @@ type Backend interface {
 	// (false, nil) when the worktree was already clean (no-op). Implemented in M4 (git + jj).
 	Finalize(ctx context.Context, beadID, msg string) (committed bool, err error)
 
-	// Push pushes the worktree's branch (muster/<beadID>) upstream; failures are
-	// explicit errors, never silent. Implemented in M4 (git + jj).
-	Push(ctx context.Context, beadID string) error
+	// Push pushes the worktree's branch (muster/<beadID>) to remote; failures are
+	// explicit errors, never silent. remote is passed to ResolveRemote (empty →
+	// "origin"). Implemented in M4 (git + jj).
+	Push(ctx context.Context, beadID, remote string) error
 
 	// Remove tears down the per-bead worktree; a later Status reports it absent.
 	// Implemented in M4 (git + jj).

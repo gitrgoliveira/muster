@@ -50,9 +50,9 @@ func (a *worktreeTestAccessor) DefaultVCS() string { return a.defaultVCS }
 func (a *worktreeTestAccessor) Finalize(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
 }
-func (a *worktreeTestAccessor) Push(_ context.Context, _ string) error   { return nil }
-func (a *worktreeTestAccessor) Remove(_ context.Context, _ string) error { return nil }
-func (a *worktreeTestAccessor) BeadRunState(_ string) core.StepStatus    { return "" }
+func (a *worktreeTestAccessor) Push(_ context.Context, _, _ string) error { return nil }
+func (a *worktreeTestAccessor) Remove(_ context.Context, _ string) error  { return nil }
+func (a *worktreeTestAccessor) BeadRunState(_ string) core.StepStatus     { return "" }
 
 // TestIntegration_WorktreeAndDiff is the T020 end-to-end integration test.
 // It:

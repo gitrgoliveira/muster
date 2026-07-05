@@ -6,6 +6,7 @@ package wt_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,7 +252,7 @@ func TestGitPush_ToBarePushable(t *testing.T) {
 	}
 
 	// Push to the bare remote.
-	if err := b.Push(ctx, beadID); err != nil {
+	if err := b.Push(ctx, beadID, ""); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 
@@ -275,7 +276,7 @@ func TestGitPush_NoRemote(t *testing.T) {
 	ctx := context.Background()
 
 	// Push without a remote configured — must fail with an error.
-	err := b.Push(ctx, beadID)
+	err := b.Push(ctx, beadID, "")
 	if err == nil {
 		t.Fatal("Push with no remote: expected error, got nil")
 	}
@@ -347,6 +348,35 @@ func TestGitRemove_CleanWorktreeSucceeds(t *testing.T) {
 	}
 }
 
+// TestGitRemove_DirtyWorktree_ReturnsDirtyError verifies that Remove on a
+// worktree with uncommitted changes returns ErrWorktreeDirty and leaves the
+// directory intact (Fix B: dirty-remove guard).
+func TestGitRemove_DirtyWorktree_ReturnsDirtyError(t *testing.T) {
+	srcRepo := initGitRepoForWrite(t)
+	worktreesDir := t.TempDir()
+	beadID := "bead-remove-dirty"
+
+	wtPath := createGitWorktree(t, srcRepo, worktreesDir, beadID)
+
+	// Write an uncommitted file to make the worktree dirty.
+	if err := os.WriteFile(filepath.Join(wtPath, "uncommitted.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write uncommitted file: %v", err)
+	}
+
+	b := wt.NewGitBackend(worktreesDir)
+	ctx := context.Background()
+
+	err := b.Remove(ctx, beadID)
+	if !errors.Is(err, wt.ErrWorktreeDirty) {
+		t.Fatalf("Remove dirty worktree: want ErrWorktreeDirty, got %v", err)
+	}
+
+	// Directory must still exist — Remove must not discard the dirty changes.
+	if _, statErr := os.Lstat(wtPath); os.IsNotExist(statErr) {
+		t.Error("worktree directory was deleted despite dirty changes (data loss)")
+	}
+}
+
 // TestGitWriteMethods_VCSUnavailable verifies ErrVCSUnavailable behavior when
 // the git binary is removed from PATH. This simulates the runtime-missing case.
 func TestGitWriteMethods_VCSUnavailable(t *testing.T) {
@@ -368,7 +398,7 @@ func TestGitWriteMethods_VCSUnavailable(t *testing.T) {
 		fn   func() error
 	}{
 		{"Finalize", func() error { _, err := b.Finalize(ctx, "any", "msg"); return err }},
-		{"Push", func() error { return b.Push(ctx, "any") }},
+		{"Push", func() error { return b.Push(ctx, "any", "") }},
 		{"Remove", func() error { return b.Remove(ctx, "any") }},
 	} {
 		if err := op.fn(); err == nil {
@@ -388,7 +418,7 @@ func TestGitWriteMethods_NotErrNotImplemented(t *testing.T) {
 	if _, err := b.Finalize(ctx, "bead", "msg"); err == wt.ErrNotImplemented {
 		t.Error("Finalize: still returning ErrNotImplemented (M3 stub not replaced)")
 	}
-	if err := b.Push(ctx, "bead"); err == wt.ErrNotImplemented {
+	if err := b.Push(ctx, "bead", ""); err == wt.ErrNotImplemented {
 		t.Error("Push: still returning ErrNotImplemented (M3 stub not replaced)")
 	}
 	if err := b.Remove(ctx, "bead"); err == wt.ErrNotImplemented {

@@ -44,6 +44,7 @@ type fakeWorktreeAccessor struct {
 	finalizeBeadID string
 	finalizeMsg    string
 	pushBeadID     string
+	pushRemote     string
 	removeBeadID   string
 }
 
@@ -75,8 +76,9 @@ func (f *fakeWorktreeAccessor) Finalize(_ context.Context, beadID, message strin
 	return f.finalizeCommitted, nil
 }
 
-func (f *fakeWorktreeAccessor) Push(_ context.Context, beadID string) error {
+func (f *fakeWorktreeAccessor) Push(_ context.Context, beadID, remote string) error {
 	f.pushBeadID = beadID
+	f.pushRemote = remote
 	return f.pushErr
 }
 
@@ -542,6 +544,37 @@ func TestPushWorktreeHandler_412_NoAccessor(t *testing.T) {
 	}
 }
 
+// TestPushWorktreeHandler_200_CustomRemote verifies that {"remote":"upstream"} body
+// causes the handler to resolve and return "upstream" in the response (Fix A).
+func TestPushWorktreeHandler_200_CustomRemote(t *testing.T) {
+	acc := &fakeWorktreeAccessor{vcs: "git", runState: core.StepDone}
+	srv := newWorktreeTestServer(t, acc)
+
+	body := bytes.NewBufferString(`{"remote":"upstream"}`)
+	resp, err := http.Post(srv.URL+"/beads/mp-aaa/worktree/push", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, b)
+	}
+
+	var result beads.PushResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result.Remote != "upstream" {
+		t.Errorf("remote = %q, want upstream", result.Remote)
+	}
+	// The fake should have received "upstream" (not resolved to "origin").
+	if acc.pushRemote != "upstream" {
+		t.Errorf("Push called with remote=%q, want upstream", acc.pushRemote)
+	}
+}
+
 // TestPushWorktreeHandler_500_BackendError verifies that a push backend error
 // maps to 500.
 func TestPushWorktreeHandler_500_BackendError(t *testing.T) {
@@ -592,6 +625,32 @@ func TestRemoveWorktreeHandler_200(t *testing.T) {
 	}
 	if acc.removeBeadID != "mp-aaa" {
 		t.Errorf("Remove called with beadID=%q, want mp-aaa", acc.removeBeadID)
+	}
+}
+
+// TestRemoveWorktreeHandler_409_DirtyWorktree verifies 409 with WORKTREE_DIRTY
+// when the backend returns ErrWorktreeDirty (Fix B: dirty-remove guard).
+func TestRemoveWorktreeHandler_409_DirtyWorktree(t *testing.T) {
+	acc := &fakeWorktreeAccessor{
+		vcs:       "git",
+		runState:  core.StepDone,
+		removeErr: wt.ErrWorktreeDirty,
+	}
+	srv := newWorktreeTestServer(t, acc)
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/beads/mp-aaa/worktree", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409 (dirty worktree)", resp.StatusCode)
+	}
+	code := errorCode(t, resp)
+	if code != services.CodeWorktreeDirty {
+		t.Errorf("error code = %q, want %q", code, services.CodeWorktreeDirty)
 	}
 }
 

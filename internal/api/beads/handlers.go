@@ -2,6 +2,7 @@ package beads
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -70,6 +71,8 @@ func mapServiceError(w http.ResponseWriter, r *http.Request, err error) bool {
 		render.WriteError(w, r, http.StatusNotFound, se.Code, se.Message)
 	case services.CodeVCSUnavailable:
 		render.WriteError(w, r, http.StatusPreconditionFailed, se.Code, se.Message)
+	case services.CodeWorktreeDirty:
+		render.WriteError(w, r, http.StatusConflict, se.Code, se.Message)
 	// M4 step-chain error codes.
 	case services.CodeStepOutOfRange:
 		render.WriteError(w, r, http.StatusBadRequest, se.Code, se.Message)
@@ -470,6 +473,12 @@ type FinalizeResponse struct {
 	Message   string `json:"message"`
 }
 
+// PushRequest is the optional body for POST /beads/{id}/worktree/push.
+// An absent or empty body defaults Remote to "" (resolved to "origin" by wt.ResolveRemote).
+type PushRequest struct {
+	Remote string `json:"remote"`
+}
+
 // PushResponse is the JSON body returned by PushWorktree.
 type PushResponse struct {
 	Pushed bool   `json:"pushed"`
@@ -513,21 +522,44 @@ func (h *Handlers) FinalizeWorktree(w http.ResponseWriter, r *http.Request) {
 }
 
 // PushWorktree handles POST /beads/{id}/worktree/push.
-// Pushes branch muster/<id> to the default remote (origin).
+// Accepts an optional JSON body: {"remote":"<name>"}. When the body is absent
+// or remote is empty, the remote defaults to "origin" via wt.ResolveRemote.
 func (h *Handlers) PushWorktree(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !validateID(w, r, id) {
 		return
 	}
 
-	if err := h.svc.PushWorktree(r.Context(), id); mapServiceError(w, r, err) {
+	// Decode the optional request body. An absent or empty body (io.EOF) is
+	// fine — remote defaults to "". Unknown fields are rejected per the
+	// BodyLimit-safe decode pattern used by other handlers.
+	var req PushRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		msg := err.Error()
+		if strings.Contains(msg, "unknown field") {
+			const prefix = `json: unknown field "`
+			if idx := strings.Index(msg, prefix); idx >= 0 {
+				rest := msg[idx+len(prefix):]
+				if end := strings.Index(rest, `"`); end >= 0 {
+					field := rest[:end]
+					msg = "unknown field: " + field
+				}
+			}
+		}
+		render.WriteError(w, r, http.StatusBadRequest, render.CodeInvalidRequest, msg)
+		return
+	}
+
+	if err := h.svc.PushWorktree(r.Context(), id, req.Remote); mapServiceError(w, r, err) {
 		return
 	}
 
 	render.WriteJSON(w, http.StatusOK, PushResponse{
 		Pushed: true,
 		Branch: wt.BranchName(id),
-		Remote: wt.ResolveRemote(""),
+		Remote: wt.ResolveRemote(req.Remote),
 	})
 }
 
