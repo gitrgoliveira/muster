@@ -56,12 +56,15 @@ var ErrVCSUnavailable = errors.New("VCS binary unavailable")
 // The registry is rebuilt on restart from tmux.List().
 //
 // Field mutability contract:
-//   - Immutable after Dispatch/recoverSession populate them and launch
-//     watchRun (the Go memory model's happens-before on the `go` statement
-//     ensures the watcher goroutine sees these): BeadID, StepIdx, Loop, Agent,
-//     Mode, PermissionMode, Worktree, Session, StartedAt, cancel, pipe. These
-//     may be read (e.g. by finishRun) without holding o.mu.
-//   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt.
+//   - Immutable after Dispatch/recoverSession populate them: BeadID, BeadTitle,
+//     BeadDesc, Agent, Mode, PermissionMode, Worktree, StartedAt, Chain. Safe to
+//     read without o.mu.
+//   - Mutable; must be read/written under o.mu: State, ExitCode, EndedAt, Quota,
+//     Waiting, pendingAdvance, and — since M4's Advance/LoopBack/relaunchNextStep
+//     — StepIdx, Loop, Session, Pane, cancel, pipe. In M2 the latter group was
+//     "immutable after launch," but the multi-step chain now rewrites them under
+//     the write lock, so readers (finishRun, doLaunch) MUST snapshot them under
+//     o.mu.RLock() rather than reading the live fields (tri-review 2 HIGH).
 type Run struct {
 	BeadID         string
 	BeadTitle      string // preserved for queued runs so launchAdmittedRun can build the prompt
@@ -661,6 +664,9 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		reserved.State = core.StepActive
 	}
 	o.registerRun(reserved)
+	// Capture StepIdx/Loop under the lock to pass to doLaunch (a concurrent
+	// Advance could write them once this run is active — tri-review 2 HIGH).
+	launchStepIdx, launchLoop := reserved.StepIdx, reserved.Loop
 
 	// Capture the waiting position for the queued event (0-based FIFO index).
 	var waitingPos int
@@ -698,15 +704,27 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		if success {
 			return
 		}
+		// onRunEnd removes this bead from the active set AND pops the next FIFO
+		// waiter (promoting it to active). We MUST launch that waiter, else it is
+		// stranded in o.runs as a phantom StepPending run and its capacity slot
+		// leaks forever (tri-review 2 CRIT — sibling of the launchAdmittedRun
+		// error path). Capture and launch outside the lock.
 		o.mu.Lock()
+		var nextRun *Run
 		if cur, ok := o.runs[req.BeadID]; ok && cur == reserved {
 			delete(o.runs, req.BeadID)
-			o.sched.onRunEnd(req.BeadID) // remove from active set
+			nextRun = o.sched.onRunEnd(req.BeadID)
+			if nextRun != nil {
+				nextRun.State = core.StepActive
+			}
 		}
 		o.mu.Unlock()
+		if nextRun != nil {
+			go o.launchAdmittedRun(nextRun)
+		}
 	}()
 
-	bead, err := o.doLaunch(ctx, reserved, req, pm)
+	bead, err := o.doLaunch(ctx, reserved, req, pm, launchStepIdx, launchLoop)
 	if err != nil {
 		return DispatchResult{}, err
 	}
@@ -717,7 +735,13 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 // doLaunch performs the slow IO work for an admitted run: adapter detect,
 // worktree ensure, prompt write, adapter invoke, tmux spawn, watcher start.
 // Must NOT be called with o.mu held.
-func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchRequest, pm core.PermissionMode) (*core.Bead, error) {
+// doLaunch performs the slow launch I/O (Detect/Create/Invoke/Spawn) OUTSIDE
+// o.mu. stepIdx/loop are passed in (captured by the caller under the lock)
+// rather than read from run.StepIdx/run.Loop here: a concurrent Advance/LoopBack
+// writes those fields under the write lock, and reading them unlocked during
+// this ~seconds-long path is a data race that would also pick the wrong prompt
+// file / session name / event index (tri-review 2 HIGH).
+func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchRequest, pm core.PermissionMode, stepIdx, loop int) (*core.Bead, error) {
 	// Resolve adapter.
 	if o.adapters == nil {
 		return nil, ErrAdapterNotFound
@@ -789,7 +813,7 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	// Each step gets its own prompt file (.muster-prompt-<stepIdx>.txt) so
 	// step 1 does not overwrite step 0's file. For step 0 this is
 	// ".muster-prompt-0.txt" — M2 byte-for-byte identical.
-	promptPath := filepath.Join(wtPath, promptFileNameForStep(run.StepIdx))
+	promptPath := filepath.Join(wtPath, promptFileNameForStep(stepIdx))
 	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
@@ -807,7 +831,7 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	}
 
 	// Spawn tmux session.
-	sessionName := tmux.SessionName(req.BeadID, run.StepIdx, run.Loop)
+	sessionName := tmux.SessionName(req.BeadID, stepIdx, loop)
 	sess, err := o.transport.Spawn(sessionName, spec.Cwd, spec.Env, spec.Argv)
 	if err != nil {
 		return nil, fmt.Errorf("tmux spawn: %w", err)
@@ -851,7 +875,7 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 		o.mu.Unlock()
 		streamer := &runlogStreamer{
 			beadID:  req.BeadID,
-			stepIdx: run.StepIdx,
+			stepIdx: stepIdx,
 			publish: o.publish,
 		}
 		go streamer.stream(pipeReader)
@@ -864,7 +888,7 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 		o.publish(ws.Frame{
 			Type:    ws.EventTmuxOpened,
 			BeadID:  req.BeadID,
-			StepIdx: intPtr(run.StepIdx),
+			StepIdx: intPtr(stepIdx),
 			Session: sess.Name,
 		})
 	}
@@ -886,12 +910,19 @@ func (o *Orchestrator) launchAdmittedRun(run *Run) {
 	// Use a background context — the original request's context is long gone.
 	ctx := context.Background()
 
+	// Snapshot StepIdx/Loop under the read lock (a concurrent Advance/LoopBack
+	// may write them once this run is active) and pass them to doLaunch.
+	o.mu.RLock()
+	stepIdx := run.StepIdx
+	loop := run.Loop
+	o.mu.RUnlock()
+
 	// Emit dispatch.admitted event.
 	if o.publish != nil {
 		o.publish(ws.Frame{
 			Type:    ws.EventDispatchAdmitted,
 			BeadID:  run.BeadID,
-			StepIdx: intPtr(run.StepIdx),
+			StepIdx: intPtr(stepIdx),
 		})
 	}
 
@@ -904,7 +935,7 @@ func (o *Orchestrator) launchAdmittedRun(run *Run) {
 		PermissionMode: run.PermissionMode,
 	}
 
-	_, err := o.doLaunch(ctx, run, req, run.PermissionMode)
+	_, err := o.doLaunch(ctx, run, req, run.PermissionMode, stepIdx, loop)
 	if err != nil {
 		slog.Error("launchAdmittedRun: failed to launch admitted queued run",
 			"bead", run.BeadID, "err", err)
@@ -1021,6 +1052,10 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	o.mu.RLock()
 	session := run.Session
 	pipe := run.pipe
+	// StepIdx is also written under the write lock by Advance/LoopBack (M4), so
+	// snapshot it here rather than reading run.StepIdx unlocked below
+	// (tri-review 2 HIGH — data race on the tmux.session.closed frame).
+	stepIdx := run.StepIdx
 	o.mu.RUnlock()
 
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
@@ -1073,7 +1108,7 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 		o.publish(ws.Frame{
 			Type:     ws.EventTmuxClosed,
 			BeadID:   run.BeadID,
-			StepIdx:  intPtr(run.StepIdx),
+			StepIdx:  intPtr(stepIdx),
 			Session:  session,
 			ExitCode: &ec,
 		})

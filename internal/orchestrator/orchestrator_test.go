@@ -1147,3 +1147,60 @@ func TestRun_M4Fields_ZeroValueSane(t *testing.T) {
 		t.Error("Run.Waiting zero value: want false")
 	}
 }
+
+// TestDispatch_ErrorPath_DrainsWaiters is the regression for tri-review-2 CRIT:
+// when an admitted run's doLaunch fails while other dispatches are queued behind
+// it (capacity 1), the Dispatch error path must launch the next FIFO waiter
+// rather than stranding it. With every launch failing (spawnErr), the scheduler
+// must fully drain — a stranded waiter would leave activeCount>0 / waiting!=0
+// forever.
+func TestDispatch_ErrorPath_DrainsWaiters(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires unix shell")
+	}
+	repoPath := initGitRepo(t)
+	setupFakeClaude(t)
+	reg := adapter.NewRegistry()
+	reg.Register(claude.New(claude.Options{}))
+	transport := &fakeTransport{spawnErr: errors.New("simulated spawn failure")}
+
+	o := orchestrator.New(orchestrator.Config{
+		Adapters:        reg,
+		Transport:       transport,
+		RepoMap:         orchestrator.RepoMap{"mp": repoPath},
+		WorktreesDir:    t.TempDir(),
+		DefaultPermMode: core.PermAcceptEdits,
+		MaxConcurrent:   1, // one active slot → the rest queue behind it
+	})
+
+	// Fire several dispatches concurrently so some queue while the admitted one
+	// is in doLaunch (which fails at Spawn).
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			_, _ = o.Dispatch(context.Background(), orchestrator.DispatchRequest{
+				BeadID:         "mp-drain" + string(rune('a'+n)),
+				Agent:          core.AgentClaude,
+				Mode:           core.ModeAgent,
+				PermissionMode: core.PermAcceptEdits,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	// Poll until the scheduler fully drains (every launch failed, so nothing
+	// should remain active or waiting). A stranded waiter never drains.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		snap := o.SchedulerSnapshot()
+		if snap.ActiveCount == 0 && len(snap.Waiting) == 0 {
+			return // drained — fix works
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scheduler did not drain: activeCount=%d waiting=%v (stranded waiter — tri-review-2 CRIT)", snap.ActiveCount, snap.Waiting)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

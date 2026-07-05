@@ -196,7 +196,11 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 	o.mu.Lock()
 	// StepIdx is already the target index (Advance/LoopBack set it synchronously),
 	// so it IS the next step to launch (tri-review #6: no separate field needed).
+	// Capture StepIdx/Loop under the lock to pass to doLaunch — reading them
+	// unlocked during the slow launch would race a concurrent Advance that
+	// arrives after we clear pendingAdvance below (tri-review 2 HIGH).
 	nextIdx := run.StepIdx
+	nextLoop := run.Loop
 
 	// Clear the interlock flag and reset session-local fields so doLaunch
 	// can set fresh ones.
@@ -229,7 +233,7 @@ func (o *Orchestrator) relaunchNextStep(run *Run) {
 		Chain:          run.Chain,
 	}
 
-	_, err := o.doLaunch(context.Background(), run, req, stepPM)
+	_, err := o.doLaunch(context.Background(), run, req, stepPM, nextIdx, nextLoop)
 	if err != nil {
 		// doLaunch failed; mark the run as failed, free the scheduler slot
 		// (finishRun skipped onRunEnd because pendingAdvance was true), and
