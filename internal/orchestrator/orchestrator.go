@@ -102,6 +102,13 @@ type Run struct {
 	// Mutable under o.mu (set in finishRun once the session exits).
 	Quota QuotaUsage
 
+	// stepSummaries retains a bounded tail of each finished step's pane output
+	// plus its terminal status, so M6 assembly can include earlier-step
+	// summaries in the next step's prompt (FR-004). Disposable/reconstructable
+	// per Principle II — lives only for the run's lifetime. Guarded by o.mu:
+	// the streamer records the tail on EOF; finishRun records the status.
+	stepSummaries map[int]*stepSummary
+
 	// pendingAdvance is true while an Advance/LoopBack is in progress for this
 	// run. When true, finishRun skips eviction and instead relaunches the run at
 	// pendingTargetIdx (see below) under the same beadID key. Mutable under o.mu.
@@ -191,6 +198,11 @@ type Orchestrator struct {
 	// per-session JSONL transcripts. Empty string means os.UserHomeDir() is
 	// called at run end. Overridable via Config.QuotaHomeDir for testing (T063).
 	quotaHomeDir string
+
+	// constitution and skills are the M6 prompt-assembly providers (nil-safe).
+	// Set at construction from Config; read by assemblePrompt.
+	constitution ConstitutionProvider
+	skills       SkillProvider
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -236,6 +248,13 @@ type Config struct {
 	DefaultPermMode core.PermissionMode
 	Publish         Publisher
 	RunTimeout      time.Duration // 0 = no timeout (FR-017: opt-in only)
+
+	// Constitution and Skills are the M6 prompt-assembly providers. Both are
+	// optional and nil-safe: a nil Constitution yields an empty/v0 header, a nil
+	// Skills yields an empty loadout. Wired in main.go from the constitution
+	// service and skill registry so assemblePrompt can merge them.
+	Constitution ConstitutionProvider
+	Skills       SkillProvider
 
 	// RunRetention bounds how long a finished run's entry stays in the
 	// in-memory registry (o.runs) after completion, so a long-lived server
@@ -338,6 +357,8 @@ func New(cfg Config) *Orchestrator {
 		onComplete:      cfg.OnComplete,
 		defaultChain:    cfg.DefaultChain,
 		quotaHomeDir:    cfg.QuotaHomeDir,
+		constitution:    cfg.Constitution,
+		skills:          cfg.Skills,
 	}
 }
 
@@ -858,7 +879,13 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	// step 1 does not overwrite step 0's file. For step 0 this is
 	// ".muster-prompt-0.txt" — M2 byte-for-byte identical.
 	promptPath := filepath.Join(wtPath, promptFileNameForStep(stepIdx))
-	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
+	// M6: the full assembled prompt (constitution + step/provider framing + skill
+	// loadout + bead ticket + earlier-step summaries + resolved step prompt)
+	// replaces the M2 two-line buildPrompt. All launch paths (step 0, queued
+	// admission, advance, loop-back) funnel through doLaunch, so this single call
+	// covers the whole chain. skillIDs is nil until US4 threads bead.Skills ∪
+	// step.Skills.
+	prompt := o.assemblePrompt(run, req, req.Mode, stepIdx, nil)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
 	}
@@ -926,10 +953,16 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 		o.mu.Lock()
 		run.pipe = pipeReader // closed in finishRun (frees the FIFO/temp dir)
 		o.mu.Unlock()
+		// Capture the run + stepIdx so the streamer can record this step's tail
+		// for M6 earlier-step summaries (FR-004) when the pane hits EOF.
+		capturedRun, capturedStep := run, stepIdx
 		streamer := &runlogStreamer{
 			beadID:  req.BeadID,
 			stepIdx: stepIdx,
 			publish: o.publish,
+			onDone: func(tail string) {
+				o.recordStepTail(capturedRun, capturedStep, tail)
+			},
 		}
 		go streamer.stream(pipeReader)
 	}
@@ -1111,6 +1144,12 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	stepIdx := run.StepIdx
 	o.mu.RUnlock()
 
+	// M6: record this step's terminal status so the NEXT step's assembly can
+	// include an earlier-step summary (FR-004). The streamer records the tail on
+	// pane EOF; this records done/failed. Safe during a step transition — it is
+	// internal run state, not client-observable.
+	o.recordStepStatus(run, stepIdx, state)
+
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
 	// Log a failure: a non-"session gone" error means the session may persist,
 	// and a later re-dispatch of this bead would then fail with a duplicate
@@ -1247,13 +1286,4 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// run from the registry after the retention window so a long-lived server
 	// doesn't accumulate an entry per bead ever dispatched.
 	o.scheduleRunEviction(run)
-}
-
-// buildPrompt assembles the bead title and description into a prompt string.
-func buildPrompt(title, desc string) string {
-	prompt := "# " + title + "\n\n"
-	if desc != "" {
-		prompt += desc + "\n"
-	}
-	return prompt
 }
