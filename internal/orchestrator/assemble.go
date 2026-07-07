@@ -168,7 +168,14 @@ func (o *Orchestrator) priorSummaries(run *Run, stepIdx int) []priorStepSummary 
 // every advance/loop-back relaunch.
 func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.Mode, stepIdx int, skillIDs []string) string {
 	md, ver := o.constitutionSnapshot()
-	resolved, _ := o.resolveSkills(skillIDs) // unresolved → runlog.warning is wired in US4
+	resolved, unresolved := o.resolveSkills(skillIDs)
+	// FR-020: an unresolvable skill id is skipped with a visible warning, never a
+	// silent drop and never a blocked dispatch.
+	for _, id := range unresolved {
+		o.warn(req.BeadID, stepIdx, fmt.Sprintf("skill %q not found; skipped", id))
+	}
+	// FR-021: best-effort, non-blocking MCP-server verification.
+	o.verifyMCPServers(req.BeadID, stepIdx, resolved)
 
 	stepCount := 1
 	promptRef := ""

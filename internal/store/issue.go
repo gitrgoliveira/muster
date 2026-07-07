@@ -21,4 +21,9 @@ type Issue struct {
 	DependentCount  int        `json:"dependent_count"`
 	CommentCount    int        `json:"comment_count"`
 	Notes           string     `json:"notes,omitempty"`
+
+	// Labels are the bead's labels (M6). Not populated by the M1 read backends
+	// (Dolt/JSONL do not read the labels table); it is filled at dispatch time
+	// from `bd label list` so skill:<id> labels can be surfaced into the bead.
+	Labels []string `json:"labels,omitempty"`
 }

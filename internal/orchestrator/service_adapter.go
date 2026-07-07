@@ -43,6 +43,7 @@ func (a *serviceDispatcherAdapter) Dispatch(ctx context.Context, req services.Or
 		Mode:           req.Mode,
 		PermissionMode: req.PermissionMode,
 		Chain:          chain,
+		Skills:         req.Skills,
 	})
 	if err != nil {
 		return services.OrchestratorDispatchResult{}, mapDispatchError(err)

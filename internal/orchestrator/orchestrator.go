@@ -97,6 +97,11 @@ type Run struct {
 	// a per-bead pointer through the chain.
 	Chain *StepChain
 
+	// Skills is the effective skill loadout, preserved on the run so every step
+	// (including advance/loop-back relaunches) assembles the same loadout (M6
+	// US4). Immutable after Dispatch populates it.
+	Skills []string
+
 	// Quota holds the token/cost usage captured at run end. Known=false until
 	// US5 wires the on-disk quota reader; runs before US5 leave it zero.
 	// Mutable under o.mu (set in finishRun once the session exits).
@@ -137,6 +142,12 @@ type DispatchRequest struct {
 	// (M2 behaviour) if no default chain is set. Per-step PermissionMode is
 	// never silently defaulted (FR-012a).
 	Chain *StepChain
+
+	// Skills is the effective, de-duplicated skill loadout for this dispatch
+	// (M6 US4): the union of the bead's skill:<id> labels and any step-level
+	// override, resolved into "Skills loaded" in the assembled prompt. Unknown
+	// ids warn, never block (FR-020).
+	Skills []string
 }
 
 // DispatchResult is the return value of Orchestrator.Dispatch.
@@ -203,6 +214,10 @@ type Orchestrator struct {
 	// Set at construction from Config; read by assemblePrompt.
 	constitution ConstitutionProvider
 	skills       SkillProvider
+
+	// claudeConfigPath overrides the location of the claude CLI config used for
+	// best-effort MCP verification (default ~/.claude.json). Empty = default.
+	claudeConfigPath string
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -255,6 +270,10 @@ type Config struct {
 	// service and skill registry so assemblePrompt can merge them.
 	Constitution ConstitutionProvider
 	Skills       SkillProvider
+
+	// ClaudeConfigPath overrides the claude CLI config path used for best-effort
+	// MCP verification (default ~/.claude.json). Empty = default.
+	ClaudeConfigPath string
 
 	// RunRetention bounds how long a finished run's entry stays in the
 	// in-memory registry (o.runs) after completion, so a long-lived server
@@ -341,24 +360,25 @@ func New(cfg Config) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		runs:            make(map[string]*Run),
-		sched:           newScheduler(schedCap),
-		adapters:        cfg.Adapters,
-		transport:       transport,
-		repoMap:         cfg.RepoMap,
-		worktreesDir:    cfg.WorktreesDir,
-		backend:         backend,
-		defaultVCS:      defaultVCS,
-		vcsAvailable:    avail,
-		defaultPermMode: cfg.DefaultPermMode,
-		publish:         cfg.Publish,
-		runTimeout:      cfg.RunTimeout,
-		runRetention:    runRetention,
-		onComplete:      cfg.OnComplete,
-		defaultChain:    cfg.DefaultChain,
-		quotaHomeDir:    cfg.QuotaHomeDir,
-		constitution:    cfg.Constitution,
-		skills:          cfg.Skills,
+		runs:             make(map[string]*Run),
+		sched:            newScheduler(schedCap),
+		adapters:         cfg.Adapters,
+		transport:        transport,
+		repoMap:          cfg.RepoMap,
+		worktreesDir:     cfg.WorktreesDir,
+		backend:          backend,
+		defaultVCS:       defaultVCS,
+		vcsAvailable:     avail,
+		defaultPermMode:  cfg.DefaultPermMode,
+		publish:          cfg.Publish,
+		runTimeout:       cfg.RunTimeout,
+		runRetention:     runRetention,
+		onComplete:       cfg.OnComplete,
+		defaultChain:     cfg.DefaultChain,
+		quotaHomeDir:     cfg.QuotaHomeDir,
+		constitution:     cfg.Constitution,
+		skills:           cfg.Skills,
+		claudeConfigPath: cfg.ClaudeConfigPath,
 	}
 }
 
@@ -734,6 +754,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		State:          core.StepPending,
 		StartedAt:      time.Now(),
 		Chain:          resolvedChain,
+		Skills:         req.Skills,
 	}
 	// admitOrEnqueue returns the 0-based FIFO position when queued, so Dispatch
 	// need not reach into scheduler internals (tri-review 4).
@@ -884,8 +905,9 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	// replaces the M2 two-line buildPrompt. All launch paths (step 0, queued
 	// admission, advance, loop-back) funnel through doLaunch, so this single call
 	// covers the whole chain. skillIDs is nil until US4 threads bead.Skills ∪
-	// step.Skills.
-	prompt := o.assemblePrompt(run, req, req.Mode, stepIdx, nil)
+	// step.Skills. run.Skills is used (not req.Skills) so advance/loop-back
+	// relaunches assemble the same loadout.
+	prompt := o.assemblePrompt(run, req, req.Mode, stepIdx, run.Skills)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
 	}

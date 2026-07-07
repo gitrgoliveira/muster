@@ -108,6 +108,7 @@ func main() {
 	fs.Var(&repoFlagList, "repo", "repeatable: map bead-ID prefix to repo path (e.g. mp=/path/to/repo)")
 	worktreesDirFlag := fs.String("worktrees-dir", "", "directory for per-bead git worktrees (default: ~/.muster/worktrees)")
 	musterDirFlag := fs.String("muster-dir", "", "directory for muster's own config: constitution, imported skills, primed memories (default: ~/.muster; env MUSTER_DIR)")
+	claudeConfigFlag := fs.String("claude-config-path", "", "path to the claude CLI config for best-effort MCP verification (default: ~/.claude.json; env MUSTER_CLAUDE_CONFIG)")
 	// --run-timeout defaults from MUSTER_RUN_TIMEOUT when the flag is not given
 	// (parity with the other M2 flags, and with FR-017's documented env
 	// fallback). An unparseable env value is warned about and ignored rather
@@ -209,6 +210,13 @@ func main() {
 	// skills, primed memories). The M6 services that use it are constructed
 	// below, once the WS hub exists.
 	musterDir := config.ResolveMusterDir(*musterDirFlag)
+
+	// claude MCP-config path for best-effort verification: flag > env > default
+	// (the orchestrator resolves an empty value to ~/.claude.json).
+	claudeConfigPath := *claudeConfigFlag
+	if claudeConfigPath == "" {
+		claudeConfigPath = os.Getenv("MUSTER_CLAUDE_CONFIG")
+	}
 
 	// Validate default permission mode if set.
 	var defaultPermMode core.PermissionMode
@@ -374,18 +382,19 @@ func main() {
 	}
 
 	orc := orchestrator.New(orchestrator.Config{
-		Adapters:        reg,
-		Transport:       transport,
-		RepoMap:         orchestrator.RepoMap(repoMap),
-		WorktreesDir:    worktreesDir,
-		DefaultVCS:      wt.VCS(defaultVCS),
-		DefaultPermMode: defaultPermMode,
-		Publish:         func(f ws.Frame) { hub.Broadcast(f) },
-		RunTimeout:      *runTimeoutFlag,
-		OnComplete:      onComplete,
-		MaxConcurrent:   maxConcurrent, // M4 US1: capacity-gated FIFO scheduler
-		Constitution:    constitutionSvc,
-		Skills:          skillProvider,
+		Adapters:         reg,
+		Transport:        transport,
+		RepoMap:          orchestrator.RepoMap(repoMap),
+		WorktreesDir:     worktreesDir,
+		DefaultVCS:       wt.VCS(defaultVCS),
+		DefaultPermMode:  defaultPermMode,
+		Publish:          func(f ws.Frame) { hub.Broadcast(f) },
+		RunTimeout:       *runTimeoutFlag,
+		OnComplete:       onComplete,
+		MaxConcurrent:    maxConcurrent, // M4 US1: capacity-gated FIFO scheduler
+		Constitution:     constitutionSvc,
+		Skills:           skillProvider,
+		ClaudeConfigPath: claudeConfigPath,
 	})
 
 	var svcCLI services.CLIRunner

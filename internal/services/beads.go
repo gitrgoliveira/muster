@@ -150,6 +150,42 @@ type OrchestratorDispatcher interface {
 	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (OrchestratorDispatchResult, error)
 }
 
+// labelReader is the optional capability (satisfied by *bdshell.CLI) to read a
+// bead's labels. It is intentionally NOT part of CLIRunner, so existing fakes
+// are unaffected; a CLI without it simply yields no label-derived skills.
+type labelReader interface {
+	Labels(ctx context.Context, id string) ([]string, error)
+}
+
+// resolveBeadSkills computes the effective skill loadout for a dispatch: the
+// bead's reserved skill:<id> labels (read via bd, best-effort) unioned with any
+// skills already on the bead, de-duplicated. A label-read failure is
+// non-blocking — it yields no label-derived skills rather than failing dispatch.
+func (svc *BeadService) resolveBeadSkills(ctx context.Context, id string, bead *core.Bead) []string {
+	var ids []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			ids = append(ids, s)
+		}
+	}
+	if lr, ok := svc.cli.(labelReader); ok {
+		if labels, err := lr.Labels(ctx, id); err == nil {
+			skillIDs, _ := SplitSkillLabels(labels)
+			for _, s := range skillIDs {
+				add(s)
+			}
+		}
+	}
+	if bead != nil {
+		for _, s := range bead.Skills {
+			add(s)
+		}
+	}
+	return ids
+}
+
 // OrchestratorDispatchRequest is the input for OrchestratorDispatcher.Dispatch.
 // Mirrors orchestrator.DispatchRequest; defined here to avoid an import cycle.
 type OrchestratorDispatchRequest struct {
@@ -162,6 +198,11 @@ type OrchestratorDispatchRequest struct {
 	// Chain mirrors orchestrator.DispatchRequest.Chain (via ChainStepInput /
 	// orchestrator.StepProfile); nil/empty means no per-dispatch override.
 	Chain []ChainStepInput
+
+	// Skills mirrors orchestrator.DispatchRequest.Skills — the effective skill
+	// loadout for this dispatch (from the bead's skill:<id> labels ∪ any
+	// step-level selection). Unknown ids warn at assembly, never block (M6 US4).
+	Skills []string
 }
 
 // OrchestratorDispatchResult is the service-layer mirror of
@@ -632,6 +673,7 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			Mode:           input.Mode,
 			PermissionMode: input.PermissionMode,
 			Chain:          input.Chain,
+			Skills:         svc.resolveBeadSkills(ctx, id, bead),
 		}
 		orchResult, orchErr := svc.orchestrator.Dispatch(ctx, req)
 		if orchErr != nil {

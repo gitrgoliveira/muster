@@ -19,3 +19,15 @@ package bdshell
 // splits `skill:<id>` entries (each id passing skills.ValidateID) into
 // core.Bead.Skills and the rest into core.Bead.Labels. A dispatch-time read (not
 // per List row) avoids an N+1 on the beads list.
+
+import "context"
+
+// Labels reads a bead's labels via `bd label list <id> --json`, which returns a
+// JSON array of label strings ([] when none).
+func (c *CLI) Labels(ctx context.Context, id string) ([]string, error) {
+	var labels []string
+	if err := c.RunJSON(ctx, &labels, "label", "list", "--json", "--", id); err != nil {
+		return nil, err
+	}
+	return labels, nil
+}
