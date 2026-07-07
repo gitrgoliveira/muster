@@ -106,6 +106,7 @@ func main() {
 	var repoFlagList repoFlags
 	fs.Var(&repoFlagList, "repo", "repeatable: map bead-ID prefix to repo path (e.g. mp=/path/to/repo)")
 	worktreesDirFlag := fs.String("worktrees-dir", "", "directory for per-bead git worktrees (default: ~/.muster/worktrees)")
+	musterDirFlag := fs.String("muster-dir", "", "directory for muster's own config: constitution, imported skills, primed memories (default: ~/.muster; env MUSTER_DIR)")
 	// --run-timeout defaults from MUSTER_RUN_TIMEOUT when the flag is not given
 	// (parity with the other M2 flags, and with FR-017's documented env
 	// fallback). An unparseable env value is warned about and ignored rather
@@ -202,6 +203,11 @@ func main() {
 	if worktreesDir == "" {
 		worktreesDir = config.DefaultWorktreesDir()
 	}
+
+	// Resolve muster's own operating-config directory (constitution, imported
+	// skills, primed memories). The M6 services that use it are constructed
+	// below, once the WS hub exists.
+	musterDir := config.ResolveMusterDir(*musterDirFlag)
 
 	// Validate default permission mode if set.
 	var defaultPermMode core.PermissionMode
@@ -352,6 +358,11 @@ func main() {
 	// Build orchestrator. config.RepoMap and orchestrator.RepoMap share the
 	// identical underlying type (map[string]string), so this is a plain type
 	// conversion (no copy).
+	// M6 services (constructed here, once the hub exists). The constitution
+	// service is wired both as the orchestrator's assembly provider and as a
+	// router dependency.
+	constitutionSvc := services.NewConstitutionService(musterDir, hub.Broadcast)
+
 	orc := orchestrator.New(orchestrator.Config{
 		Adapters:        reg,
 		Transport:       transport,
@@ -363,6 +374,7 @@ func main() {
 		RunTimeout:      *runTimeoutFlag,
 		OnComplete:      onComplete,
 		MaxConcurrent:   maxConcurrent, // M4 US1: capacity-gated FIFO scheduler
+		Constitution:    constitutionSvc,
 	})
 
 	var svcCLI services.CLIRunner
@@ -445,7 +457,9 @@ func main() {
 		RunLister: &orchestratorRunListerAdapter{orc: orc},
 	}
 
-	handler := api.NewRouter(svc, hub, UI, statusCfg)
+	handler := api.NewRouter(svc, hub, UI, statusCfg, api.M6Services{
+		Constitution: constitutionSvc,
+	})
 
 	// Signal context — shared by the embedded-mode watcher below and by the
 	// graceful-shutdown wait at the end of main.

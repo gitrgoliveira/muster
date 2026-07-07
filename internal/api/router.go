@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gitrgoliveira/muster/internal/api/beads"
+	"github.com/gitrgoliveira/muster/internal/api/constitution"
 	"github.com/gitrgoliveira/muster/internal/api/health"
 	"github.com/gitrgoliveira/muster/internal/api/middleware"
 	"github.com/gitrgoliveira/muster/internal/api/render"
@@ -14,6 +15,14 @@ import (
 	"github.com/gitrgoliveira/muster/internal/ws"
 	"github.com/go-chi/chi/v5"
 )
+
+// M6Services carries the optional M6 service dependencies (constitution, and —
+// added in later increments — skills and memories). Each field is nil-safe: a
+// nil service means its routes are not registered. Threading them via a struct
+// keeps NewRouter's signature stable as M6 grows (additive, Principle V).
+type M6Services struct {
+	Constitution *services.ConstitutionService
+}
 
 // NewRouter constructs the application's HTTP handler.
 //
@@ -25,6 +34,7 @@ func NewRouter(
 	hub *ws.Hub,
 	uiFS fs.FS,
 	statusCfg health.StatusConfig,
+	m6 M6Services,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -74,6 +84,14 @@ func NewRouter(
 	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/worktree/finalize", h.FinalizeWorktree)
 	r.With(middleware.BodyLimit).Post("/api/v1/beads/{id}/worktree/push", h.PushWorktree)
 	r.Delete("/api/v1/beads/{id}/worktree", h.RemoveWorktree)
+
+	// M6 constitution endpoints (additive). Registered only when the service is
+	// wired.
+	if m6.Constitution != nil {
+		ch := constitution.NewHandlers(m6.Constitution)
+		r.Get("/api/v1/constitution", ch.Get)
+		r.With(middleware.BodyLimit).Put("/api/v1/constitution", ch.Put)
+	}
 
 	// Build the SPA file server.
 	subFS, err := fs.Sub(uiFS, "ui")
