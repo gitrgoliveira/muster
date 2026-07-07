@@ -22,6 +22,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/orchestrator"
 	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/skills"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/store/bdshell"
 	"github.com/gitrgoliveira/muster/internal/store/dolt"
@@ -358,10 +359,19 @@ func main() {
 	// Build orchestrator. config.RepoMap and orchestrator.RepoMap share the
 	// identical underlying type (map[string]string), so this is a plain type
 	// conversion (no copy).
-	// M6 services (constructed here, once the hub exists). The constitution
-	// service is wired both as the orchestrator's assembly provider and as a
-	// router dependency.
+	// M6 services (constructed here, once the hub exists). The constitution and
+	// skill registry are wired both as orchestrator assembly providers and as
+	// router dependencies. A failed skill-registry load is non-fatal — skills
+	// routes are simply not registered and assembly resolves an empty loadout.
 	constitutionSvc := services.NewConstitutionService(musterDir, hub.Broadcast)
+	var skillSvc *services.SkillService
+	var skillProvider orchestrator.SkillProvider
+	if reg, err := skills.NewRegistry(musterDir); err != nil {
+		slog.Warn("skill registry failed to load; skills disabled for this run", "err", err)
+	} else {
+		skillSvc = services.NewSkillService(reg)
+		skillProvider = reg
+	}
 
 	orc := orchestrator.New(orchestrator.Config{
 		Adapters:        reg,
@@ -375,6 +385,7 @@ func main() {
 		OnComplete:      onComplete,
 		MaxConcurrent:   maxConcurrent, // M4 US1: capacity-gated FIFO scheduler
 		Constitution:    constitutionSvc,
+		Skills:          skillProvider,
 	})
 
 	var svcCLI services.CLIRunner
@@ -459,6 +470,7 @@ func main() {
 
 	handler := api.NewRouter(svc, hub, UI, statusCfg, api.M6Services{
 		Constitution: constitutionSvc,
+		Skills:       skillSvc,
 	})
 
 	// Signal context — shared by the embedded-mode watcher below and by the

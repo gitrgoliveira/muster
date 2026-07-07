@@ -10,6 +10,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/api/health"
 	"github.com/gitrgoliveira/muster/internal/api/middleware"
 	"github.com/gitrgoliveira/muster/internal/api/render"
+	skillsapi "github.com/gitrgoliveira/muster/internal/api/skills"
 	"github.com/gitrgoliveira/muster/internal/api/stream"
 	"github.com/gitrgoliveira/muster/internal/services"
 	"github.com/gitrgoliveira/muster/internal/ws"
@@ -22,6 +23,7 @@ import (
 // keeps NewRouter's signature stable as M6 grows (additive, Principle V).
 type M6Services struct {
 	Constitution *services.ConstitutionService
+	Skills       *services.SkillService
 }
 
 // NewRouter constructs the application's HTTP handler.
@@ -91,6 +93,13 @@ func NewRouter(
 		ch := constitution.NewHandlers(m6.Constitution)
 		r.Get("/api/v1/constitution", ch.Get)
 		r.With(middleware.BodyLimit).Put("/api/v1/constitution", ch.Put)
+	}
+	if m6.Skills != nil {
+		sh := skillsapi.NewHandlers(m6.Skills)
+		r.Get("/api/v1/skills", sh.List)
+		r.Get("/api/v1/skills/categories", sh.Categories)
+		r.With(middleware.BodyLimit).Post("/api/v1/skills", sh.Import)
+		r.Delete("/api/v1/skills/{id}", sh.Delete)
 	}
 
 	// Build the SPA file server.
