@@ -3,10 +3,27 @@ package orchestrator
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/skills"
 )
+
+func TestOneLineSummary_StripsANSIAndIsRuneSafe(t *testing.T) {
+	// ANSI escapes on the last line are stripped.
+	if got := oneLineSummary("noise\n\x1b[32mdone: ok\x1b[0m\n"); got != "done: ok" {
+		t.Fatalf("ANSI not stripped: %q", got)
+	}
+	// Truncation never splits a multi-byte rune and never yields invalid UTF-8.
+	long := strings.Repeat("é", summaryMaxChars+10) // 2 bytes each
+	got := oneLineSummary(long)
+	if utf8.RuneCountInString(got) != summaryMaxChars {
+		t.Fatalf("rune count = %d, want %d", utf8.RuneCountInString(got), summaryMaxChars)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatal("truncation produced invalid UTF-8")
+	}
+}
 
 func TestBuildAssembledPrompt_Full_ByteVerifiable(t *testing.T) {
 	in := assemblyInput{

@@ -88,6 +88,12 @@ func (c *CLI) Forget(ctx context.Context, key string) error {
 		}
 		return err
 	}
+	// A successful delete prints `Forgot [<key>]: <value>`. Anchor on that prefix
+	// so a memory whose *value* contains the not-found sentinel can't be
+	// misreported as not-found.
+	if strings.HasPrefix(strings.TrimSpace(res.Stdout), "Forgot") {
+		return nil
+	}
 	if strings.Contains(res.Stdout, "No memory with key") || strings.Contains(res.Stderr, "No memory with key") {
 		return ErrMemoryNotFound
 	}

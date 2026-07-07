@@ -165,13 +165,15 @@ func (svc *BeadService) resolveBeadSkills(ctx context.Context, id string, bead *
 	var ids []string
 	seen := map[string]bool{}
 	add := func(s string) {
-		if s != "" && !seen[s] {
+		if !seen[s] {
 			seen[s] = true
 			ids = append(ids, s)
 		}
 	}
 	if lr, ok := svc.cli.(labelReader); ok {
 		if labels, err := lr.Labels(ctx, id); err == nil {
+			// A bare/malformed skill id (e.g. from a "skill:" label) is kept so
+			// assembly warns on it (FR-020) rather than dropping it silently.
 			skillIDs, _ := SplitSkillLabels(labels)
 			for _, s := range skillIDs {
 				add(s)
@@ -180,7 +182,9 @@ func (svc *BeadService) resolveBeadSkills(ctx context.Context, id string, bead *
 	}
 	if bead != nil {
 		for _, s := range bead.Skills {
-			add(s)
+			if s != "" {
+				add(s)
+			}
 		}
 	}
 	return ids

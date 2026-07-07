@@ -19,11 +19,15 @@ type Constitution struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// constMeta is the sidecar that persists the version/updatedAt next to the
-// human-editable constitution.md so a restart reports the same version (FR-010).
+// constMeta is the AUTHORITATIVE record of the constitution: it stores the
+// markdown together with its version/updatedAt in a single file, so the
+// version↔content correspondence is crash-consistent (a torn write across the
+// two files can never pair a new markdown with an old version — load always
+// reads the self-contained meta). constitution.md is a human-readable mirror.
 type constMeta struct {
 	Version   int       `json:"version"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	Markdown  string    `json:"markdown"`
 }
 
 // ConstitutionService owns the constitution file under <musterDir>. It is safe
@@ -56,16 +60,26 @@ func NewConstitutionService(musterDir string, publish Publisher) *ConstitutionSe
 // version 0. Never returns an error — assembly and startup must not fail on a
 // bad constitution (FR-011, corrupt-file edge case).
 func (s *ConstitutionService) load() {
+	// The meta sidecar is authoritative (self-contained markdown+version), so a
+	// torn write across the two files never yields a mismatched pair.
+	if b, err := os.ReadFile(s.metaPath); err == nil {
+		var meta constMeta
+		if err := json.Unmarshal(b, &meta); err == nil {
+			s.mu.Lock()
+			s.cur = Constitution{Markdown: meta.Markdown, Version: meta.Version, UpdatedAt: meta.UpdatedAt}
+			s.mu.Unlock()
+			return
+		}
+		// Corrupt meta: fall through to the markdown mirror at v0.
+	}
+	// No (or corrupt) meta — e.g. a hand-edited constitution.md or a fresh
+	// install. Use the markdown file if present, at version 0.
 	md, err := os.ReadFile(s.mdPath)
 	if err != nil {
 		md = nil
 	}
-	var meta constMeta
-	if b, err := os.ReadFile(s.metaPath); err == nil {
-		_ = json.Unmarshal(b, &meta) // corrupt meta -> zero value (v0)
-	}
 	s.mu.Lock()
-	s.cur = Constitution{Markdown: string(md), Version: meta.Version, UpdatedAt: meta.UpdatedAt}
+	s.cur = Constitution{Markdown: string(md), Version: 0}
 	s.mu.Unlock()
 }
 
@@ -111,20 +125,26 @@ func (s *ConstitutionService) setAt(markdown string, now time.Time) (Constitutio
 	return next, nil
 }
 
-// persist writes the markdown and meta sidecar atomically (temp file + rename),
-// so a crash mid-write never leaves a torn constitution file.
+// persist writes the human-readable markdown mirror first, then commits by
+// atomically writing the authoritative meta (which carries markdown+version
+// together). Each file is written atomically (temp+rename); because meta is
+// self-contained and is the commit point, a crash between the two renames is
+// harmless — load reads meta and sees the pre-Set state, matching the in-memory
+// "cur unchanged on failure" contract.
 func (s *ConstitutionService) persist(c Constitution) error {
 	if err := os.MkdirAll(filepath.Dir(s.mdPath), 0o700); err != nil {
 		return err
 	}
+	// Mirror (best-effort human/git artifact) — written before the commit so a
+	// crash after it but before meta leaves meta (and thus the loaded state) old.
 	if err := atomicWriteFile(s.mdPath, []byte(c.Markdown), 0o600); err != nil {
 		return err
 	}
-	meta, err := json.Marshal(constMeta{Version: c.Version, UpdatedAt: c.UpdatedAt})
+	meta, err := json.Marshal(constMeta{Version: c.Version, UpdatedAt: c.UpdatedAt, Markdown: c.Markdown})
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(s.metaPath, meta, 0o600)
+	return atomicWriteFile(s.metaPath, meta, 0o600) // commit point
 }
 
 // atomicWriteFile writes data to a temp file in the same directory then renames

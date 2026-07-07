@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -97,7 +98,11 @@ func buildAssembledPrompt(in assemblyInput) string {
 	if len(in.Prior) > 0 {
 		b.WriteString("Earlier-step summaries:\n")
 		for _, p := range in.Prior {
-			fmt.Fprintf(&b, "  step %d (%s): %s\n", p.Idx+1, p.Status, p.Line)
+			line := p.Line
+			if line == "" {
+				line = "(no output captured)"
+			}
+			fmt.Fprintf(&b, "  step %d (%s): %s\n", p.Idx+1, p.Status, line)
 		}
 	}
 
@@ -119,19 +124,40 @@ func buildAssembledPrompt(in assemblyInput) string {
 	return b.String()
 }
 
+// ansiCSI matches ANSI/VT100 control sequences; the runlog tail is raw terminal
+// output (escapes preserved by the streamer), so they are stripped before a line
+// is injected into the assembled prompt.
+var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
 // oneLineSummary derives the FR-004 one-line summary from a step's retained
-// runlog tail: the last non-blank line, truncated to summaryMaxChars.
+// runlog tail: the last non-blank line, ANSI-stripped, cleaned of control bytes,
+// and truncated to summaryMaxChars RUNES (never splitting a multi-byte rune).
 func oneLineSummary(tail string) string {
 	last := ""
 	for line := range strings.Lines(tail) {
-		if t := strings.TrimSpace(line); t != "" {
+		if t := strings.TrimSpace(cleanLine(line)); t != "" {
 			last = t
 		}
 	}
-	if len(last) > summaryMaxChars {
-		last = last[:summaryMaxChars]
+	if r := []rune(last); len(r) > summaryMaxChars {
+		last = string(r[:summaryMaxChars])
 	}
 	return last
+}
+
+// cleanLine removes ANSI escape sequences and remaining control characters (keeps
+// tab as a space) so a summary line is printable text.
+func cleanLine(s string) string {
+	s = ansiCSI.ReplaceAllString(s, "")
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1 // drop other control chars
+		}
+		return r
+	}, s)
 }
 
 // resolvePrompt turns a StepProfile.PromptRef + mode into the user-turn prompt.

@@ -92,6 +92,26 @@ func TestConstitution_CorruptMetaFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestConstitution_TornWrite_MetaIsAuthoritative(t *testing.T) {
+	dir := t.TempDir()
+	s := NewConstitutionService(dir, nil)
+	if _, err := s.Set("# v1 content"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash BETWEEN the two file writes: the markdown mirror got the
+	// new content but the authoritative meta was not updated (still v1). On the
+	// next start, load must read the self-contained meta — never pairing the
+	// torn markdown with a stale version.
+	if err := os.WriteFile(filepath.Join(dir, "constitution.md"), []byte("# torn newer content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s2 := NewConstitutionService(dir, nil)
+	md, v := s2.Snapshot()
+	if v != 1 || md != "# v1 content" {
+		t.Fatalf("torn write leaked: md=%q v=%d, want the meta's v1 content", md, v)
+	}
+}
+
 func TestConstitution_ConcurrentSnapshotNoTorn(t *testing.T) {
 	// -race: hammer Snapshot while Set runs. Each Snapshot must be internally
 	// consistent (never a panic / torn read).

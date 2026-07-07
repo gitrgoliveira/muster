@@ -54,6 +54,15 @@ func TestMemories_Forget_NotFoundDetected(t *testing.T) {
 	}
 }
 
+func TestMemories_Forget_ValueContainingSentinelSucceeds(t *testing.T) {
+	// A successful delete whose VALUE mentions the not-found sentinel must not be
+	// misreported as not-found (detection anchors on the "Forgot" prefix).
+	cli, _ := newCLI(t, `echo 'Forgot [k]: a value mentioning No memory with key'`)
+	if err := cli.Forget(context.Background(), "k"); err != nil {
+		t.Fatalf("forget = %v, want nil", err)
+	}
+}
+
 func TestMemories_ArgSeparatorGuardsInjection(t *testing.T) {
 	// The fake records its argv so we can assert the `--` separator precedes a
 	// value that starts with '-' (no flag injection).

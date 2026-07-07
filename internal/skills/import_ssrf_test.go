@@ -1,11 +1,32 @@
 package skills
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 )
+
+func TestBlockInternalIP_DialGuard(t *testing.T) {
+	// The dial-time guard (closes DNS rebinding) blocks internal/metadata/
+	// unspecified addresses regardless of scheme; loopback + public are allowed.
+	blocked := []string{
+		"169.254.169.254", "10.0.0.1", "172.16.0.1", "192.168.1.1",
+		"100.64.1.1", // CGNAT (RFC 6598)
+		"0.0.0.0", "::", "fe80::1",
+	}
+	for _, s := range blocked {
+		if blockInternalIP(net.ParseIP(s)) == nil {
+			t.Errorf("blockInternalIP(%s) = nil, want blocked", s)
+		}
+	}
+	for _, s := range []string{"127.0.0.1", "::1", "93.184.216.34", "8.8.8.8"} {
+		if err := blockInternalIP(net.ParseIP(s)); err != nil {
+			t.Errorf("blockInternalIP(%s) = %v, want allowed", s, err)
+		}
+	}
+}
 
 func TestValidateFetchURL_BlocksUnsafe(t *testing.T) {
 	// Literal IPs / schemes keep this test offline (no DNS).
@@ -17,6 +38,8 @@ func TestValidateFetchURL_BlocksUnsafe(t *testing.T) {
 		"https://169.254.169.254/x",     // metadata over https
 		"https://10.0.0.1/x",            // private range
 		"https://192.168.1.1/x",         // private range
+		"https://100.64.1.1/x",          // CGNAT (RFC 6598)
+		"https://0.0.0.0/x",             // unspecified
 	}
 	for _, raw := range blocked {
 		u := mustParse(t, raw)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"syscall"
 	"time"
 )
 
@@ -18,15 +19,41 @@ const (
 // metadataIP is the cloud instance-metadata address — a classic SSRF target.
 var metadataIP = net.ParseIP("169.254.169.254")
 
+// cgnatNet is the RFC 6598 carrier-grade-NAT range (100.64.0.0/10), used inside
+// many cloud/k8s networks (some clouds host metadata here) — not covered by
+// net.IP.IsPrivate.
+var cgnatNet = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
 // ErrImportBlocked is returned when a fetch URL fails the scheme/SSRF policy.
 var ErrImportBlocked = errors.New("skill import: URL blocked by fetch policy")
 
-// newImportClient builds the bounded HTTP client used for skill imports. Every
-// hop (including redirects) is re-validated against the fetch policy so a
-// redirect cannot smuggle a request to a disallowed scheme/host.
+// newImportClient builds the bounded HTTP client used for skill imports. Two
+// layers guard against SSRF:
+//   - CheckRedirect re-validates each hop's URL (cheap early reject).
+//   - a dial-time Control hook re-checks the ACTUAL connected IP, which closes
+//     the DNS-rebinding TOCTOU: validateFetchURL resolves+checks names up front,
+//     but the transport re-resolves at dial time, so a rebinding DNS answer
+//     could otherwise reach an internal/metadata host. Control runs on the real
+//     address the dialer connects to, so validation and connection see the same
+//     IP.
 func newImportClient() *http.Client {
-	return &http.Client{
+	dialer := &net.Dialer{
 		Timeout: importTimeout,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return ErrImportBlocked
+			}
+			return blockInternalIP(ip)
+		},
+	}
+	return &http.Client{
+		Timeout:   importTimeout,
+		Transport: &http.Transport{DialContext: dialer.DialContext},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("skill import: too many redirects")
@@ -34,6 +61,26 @@ func newImportClient() *http.Client {
 			return validateFetchURL(req.URL)
 		},
 	}
+}
+
+// blockInternalIP is the scheme-independent dial-time guard: it rejects any
+// internal/metadata/unspecified address regardless of the URL scheme (the
+// scheme-aware rules — e.g. http only to loopback — are enforced pre-dial by
+// validateFetchURL). Loopback and public addresses are allowed here.
+func blockInternalIP(ip net.IP) error {
+	switch {
+	case ip.Equal(metadataIP):
+		return fmt.Errorf("%w: metadata address", ErrImportBlocked)
+	case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
+		return fmt.Errorf("%w: link-local address", ErrImportBlocked)
+	case ip.IsUnspecified():
+		return fmt.Errorf("%w: unspecified address", ErrImportBlocked)
+	case ip.IsLoopback():
+		return nil
+	case ip.IsPrivate() || cgnatNet.Contains(ip):
+		return fmt.Errorf("%w: private address", ErrImportBlocked)
+	}
+	return nil
 }
 
 // validateFetchURL enforces the scheme allowlist and SSRF policy: https is
@@ -75,11 +122,13 @@ func checkIP(ip net.IP, scheme string) error {
 		return fmt.Errorf("%w: metadata address", ErrImportBlocked)
 	case ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast():
 		return fmt.Errorf("%w: link-local address", ErrImportBlocked)
+	case ip.IsUnspecified():
+		return fmt.Errorf("%w: unspecified address", ErrImportBlocked)
 	case ip.IsLoopback():
 		return nil // dev carve-out: loopback is allowed for http and https
 	case scheme == "http":
 		return fmt.Errorf("%w: http is allowed only for loopback", ErrImportBlocked)
-	case ip.IsPrivate():
+	case ip.IsPrivate() || cgnatNet.Contains(ip):
 		return fmt.Errorf("%w: private address", ErrImportBlocked)
 	}
 	return nil
