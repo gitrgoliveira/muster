@@ -22,6 +22,13 @@ type SkillProvider interface {
 	Resolve(ids []string) (resolved []skills.Skill, unresolved []string)
 }
 
+// PrimedMemoriesProvider returns the memory snapshot primed for a bead (via
+// POST /memories/prime), folded into the bead's next assembled prompt. Empty
+// when nothing was primed. Implemented by the M6 memories service.
+type PrimedMemoriesProvider interface {
+	PrimedMemories(beadID string) map[string]string
+}
+
 // constitutionSnapshot reads the constitution provider nil-safely: a nil
 // provider (fresh install / not wired) yields the empty default at version 0.
 func (o *Orchestrator) constitutionSnapshot() (string, int) {

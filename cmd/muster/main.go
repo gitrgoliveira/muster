@@ -381,6 +381,14 @@ func main() {
 		skillProvider = reg
 	}
 
+	// Memories facade over bd (nil-safe: a nil bd store yields typed
+	// BD_UNAVAILABLE errors, never a false empty-list success).
+	var memStore services.MemoryStore
+	if cli != nil {
+		memStore = cli
+	}
+	memoriesSvc := services.NewMemoriesService(memStore, musterDir)
+
 	orc := orchestrator.New(orchestrator.Config{
 		Adapters:         reg,
 		Transport:        transport,
@@ -395,6 +403,7 @@ func main() {
 		Constitution:     constitutionSvc,
 		Skills:           skillProvider,
 		ClaudeConfigPath: claudeConfigPath,
+		PrimedMemories:   memoriesSvc,
 	})
 
 	var svcCLI services.CLIRunner
@@ -480,6 +489,7 @@ func main() {
 	handler := api.NewRouter(svc, hub, UI, statusCfg, api.M6Services{
 		Constitution: constitutionSvc,
 		Skills:       skillSvc,
+		Memories:     memoriesSvc,
 	})
 
 	// Signal context — shared by the embedded-mode watcher below and by the

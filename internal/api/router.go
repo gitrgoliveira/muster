@@ -8,6 +8,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/api/beads"
 	"github.com/gitrgoliveira/muster/internal/api/constitution"
 	"github.com/gitrgoliveira/muster/internal/api/health"
+	"github.com/gitrgoliveira/muster/internal/api/memories"
 	"github.com/gitrgoliveira/muster/internal/api/middleware"
 	"github.com/gitrgoliveira/muster/internal/api/render"
 	skillsapi "github.com/gitrgoliveira/muster/internal/api/skills"
@@ -24,6 +25,7 @@ import (
 type M6Services struct {
 	Constitution *services.ConstitutionService
 	Skills       *services.SkillService
+	Memories     *services.MemoriesService
 }
 
 // NewRouter constructs the application's HTTP handler.
@@ -100,6 +102,13 @@ func NewRouter(
 		r.Get("/api/v1/skills/categories", sh.Categories)
 		r.With(middleware.BodyLimit).Post("/api/v1/skills", sh.Import)
 		r.Delete("/api/v1/skills/{id}", sh.Delete)
+	}
+	if m6.Memories != nil {
+		mh := memories.NewHandlers(m6.Memories)
+		r.Get("/api/v1/memories", mh.List)
+		r.With(middleware.BodyLimit).Post("/api/v1/memories", mh.Upsert)
+		r.Delete("/api/v1/memories/{key}", mh.Delete)
+		r.With(middleware.BodyLimit).Post("/api/v1/memories/prime", mh.Prime)
 	}
 
 	// Build the SPA file server.

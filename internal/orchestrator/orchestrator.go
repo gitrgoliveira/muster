@@ -218,6 +218,9 @@ type Orchestrator struct {
 	// claudeConfigPath overrides the location of the claude CLI config used for
 	// best-effort MCP verification (default ~/.claude.json). Empty = default.
 	claudeConfigPath string
+
+	// primedMemoriesProvider supplies per-bead primed memory snapshots (nil-safe).
+	primedMemoriesProvider PrimedMemoriesProvider
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -274,6 +277,10 @@ type Config struct {
 	// ClaudeConfigPath overrides the claude CLI config path used for best-effort
 	// MCP verification (default ~/.claude.json). Empty = default.
 	ClaudeConfigPath string
+
+	// PrimedMemories is the optional, nil-safe provider of per-bead primed
+	// memory snapshots folded into the assembled prompt (M6 US5).
+	PrimedMemories PrimedMemoriesProvider
 
 	// RunRetention bounds how long a finished run's entry stays in the
 	// in-memory registry (o.runs) after completion, so a long-lived server
@@ -360,25 +367,26 @@ func New(cfg Config) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		runs:             make(map[string]*Run),
-		sched:            newScheduler(schedCap),
-		adapters:         cfg.Adapters,
-		transport:        transport,
-		repoMap:          cfg.RepoMap,
-		worktreesDir:     cfg.WorktreesDir,
-		backend:          backend,
-		defaultVCS:       defaultVCS,
-		vcsAvailable:     avail,
-		defaultPermMode:  cfg.DefaultPermMode,
-		publish:          cfg.Publish,
-		runTimeout:       cfg.RunTimeout,
-		runRetention:     runRetention,
-		onComplete:       cfg.OnComplete,
-		defaultChain:     cfg.DefaultChain,
-		quotaHomeDir:     cfg.QuotaHomeDir,
-		constitution:     cfg.Constitution,
-		skills:           cfg.Skills,
-		claudeConfigPath: cfg.ClaudeConfigPath,
+		runs:                   make(map[string]*Run),
+		sched:                  newScheduler(schedCap),
+		adapters:               cfg.Adapters,
+		transport:              transport,
+		repoMap:                cfg.RepoMap,
+		worktreesDir:           cfg.WorktreesDir,
+		backend:                backend,
+		defaultVCS:             defaultVCS,
+		vcsAvailable:           avail,
+		defaultPermMode:        cfg.DefaultPermMode,
+		publish:                cfg.Publish,
+		runTimeout:             cfg.RunTimeout,
+		runRetention:           runRetention,
+		onComplete:             cfg.OnComplete,
+		defaultChain:           cfg.DefaultChain,
+		quotaHomeDir:           cfg.QuotaHomeDir,
+		constitution:           cfg.Constitution,
+		skills:                 cfg.Skills,
+		claudeConfigPath:       cfg.ClaudeConfigPath,
+		primedMemoriesProvider: cfg.PrimedMemories,
 	}
 }
 

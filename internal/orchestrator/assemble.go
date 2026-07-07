@@ -27,7 +27,14 @@ type assemblyInput struct {
 	Title         string
 	Desc          string
 	Prior         []priorStepSummary // ordered by step index, ascending
+	Primed        []primedKV         // primed memories, ordered by key
 	StepPrompt    string             // the resolved user-turn (already includes any synthesized-stage prefix)
+}
+
+// primedKV is one primed memory in the assembled prompt.
+type primedKV struct {
+	Key   string
+	Value string
 }
 
 // priorStepSummary is one earlier step's one-line summary for the assembled
@@ -91,6 +98,14 @@ func buildAssembledPrompt(in assemblyInput) string {
 		b.WriteString("Earlier-step summaries:\n")
 		for _, p := range in.Prior {
 			fmt.Fprintf(&b, "  step %d (%s): %s\n", p.Idx+1, p.Status, p.Line)
+		}
+	}
+
+	// Primed memories (present only if /memories/prime ran for this bead).
+	if len(in.Primed) > 0 {
+		b.WriteString("Primed memories:\n")
+		for _, m := range in.Primed {
+			fmt.Fprintf(&b, "  %s: %s\n", m.Key, m.Value)
 		}
 	}
 
@@ -198,8 +213,27 @@ func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.M
 		Title:         req.BeadTitle,
 		Desc:          req.BeadDesc,
 		Prior:         o.priorSummaries(run, stepIdx),
+		Primed:        o.primedMemories(req.BeadID),
 		StepPrompt:    o.resolvePrompt(promptRef, mode),
 	})
+}
+
+// primedMemories reads the primed snapshot for a bead nil-safely, returning it
+// as a key-sorted slice for deterministic assembly (SC-001).
+func (o *Orchestrator) primedMemories(beadID string) []primedKV {
+	if o.primedMemoriesProvider == nil {
+		return nil
+	}
+	m := o.primedMemoriesProvider.PrimedMemories(beadID)
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]primedKV, 0, len(m))
+	for k, v := range m {
+		out = append(out, primedKV{Key: k, Value: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
 }
 
 // recordStepTail stores a finished step's bounded runlog tail (called by the
