@@ -49,7 +49,7 @@ The resolved, de-duplicated set of skills applied to one step's assembly.
 
 - `loadout = dedup(Bead.Skills ∪ Step.Skills)` (FR-018, handoff §6.2).
 - **`Bead.Skills`**: from reserved `skill:<id>` `bd` labels, parsed in the store/service layer (research §3). `core.Bead.Skills` (`internal/core/bead.go:20`) — already exists, previously always empty.
-- **`Step.Skills`**: per-dispatch override (`core.Step.Skills`, `internal/core/step.go:6`), carried on `DispatchRequest` (new optional `Skills []string`). Takes precedence / unions on top.
+- **`Step.Skills`**: per-dispatch set (`core.Step.Skills`, `internal/core/step.go:6`), carried on `DispatchRequest` (new optional `Skills []string`). **Additive union** with the bead-level set — never a replacement (`["skill:a"]` bead + `["b"]` step ⇒ `["a","b"]`, not `["b"]`).
 - Each resolved ID → looked up in the registry. **Unresolvable ID** ⇒ skipped + runlog warning (FR-020), never a silent drop, never a blocked dispatch.
 
 ---
@@ -122,7 +122,7 @@ Lives on `Run` (guarded by the existing run mutex), lifetime = the run. Reconstr
 | `Value` | `string` | The insight. |
 
 - Persisted & searched entirely via `bd remember/recall/forget/memories` (FR-023/026). Muster holds **no** independent copy. Exact `bd` flag/JSON shapes pinned by a spike + fake-`bd` test before the wrapper is written (research §8).
-- `PrimedMemories` (per-bead snapshot from `/memories/prime`) is disposable run state folded into that bead's next `AssembledPrompt`.
+- `PrimedMemories` (per-bead snapshot from `/memories/prime`) is **persisted** to `<musterDir>/primed/<beadID>.json` (survives restart; disposable/reconstructable, not authoritative issue state) and folded into that bead's next `AssembledPrompt`.
 
 ---
 

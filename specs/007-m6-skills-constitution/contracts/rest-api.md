@@ -70,6 +70,7 @@ Body: `{ "beadID": string }`
 |---|---|---|
 | `SKILL_READONLY` | 403 | delete/modify a built-in skill |
 | `SKILL_ID_CONFLICT` | 409 | import id collides a built-in |
+| `SKILL_INVALID_ID` | 400 | skill id fails validation (empty, separators, `.`/`..` traversal) |
 | `BD_UNAVAILABLE` | 500/502 | `bd` invocation failed on a `/memories*` route |
 
 (Added to `internal/api/render/errors.go`; existing codes unchanged.)

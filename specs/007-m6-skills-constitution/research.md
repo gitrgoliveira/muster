@@ -65,7 +65,7 @@ Three premises in the spec/clarifications did **not** survive contact with the c
 ## 2. `defaultPromptFor(mode, specSkill)` (FR-002, §7 below is the table)
 
 - **Decision**: a package-level `map[core.Mode]string` in `internal/orchestrator/assemble.go` (or `prompts.go`), covering the 6 core modes (`internal/adapter/claude/enums.go:76-82`: plan/agent/build/review/apply/yolo — exact set to confirm at impl). `specSkill` (a spec-authoring skill hint) is optional; when unset the plain per-mode default is used.
-- **Rationale**: handoff §9 says *"`defaultPromptFor` returns the same text the UI shows in the step editor — the backend and UI share the table"* (`spec.md:815`). The concrete per-mode strings are seeded from handoff §9/§6.1; the UI table (`cmd/muster/ui/…`) is the cross-reference.
+- **Rationale**: handoff §9 says *"`defaultPromptFor` returns the same text the UI shows in the step editor — the backend and UI share the table"* (`spec.md:815`), but **no shared Go table exists today** (`cmd/muster/ui/` is an embedded static web asset, not shared Go code). So the authoritative source for the per-mode strings is **`prototype/handoff/spec.md §9/§6.1`**, transcribed into a Go table (`internal/orchestrator/prompts.go`) — see tasks T015. It is not "found in the UI" at implementation time.
 - **Note**: only `plan` and `agent`/`default` modes are actually launchable today (`modeSupported`, `orchestrator.go:822`; adapter `Modes()`, `claude.go:131-146`). `build`/`review`/`apply`/`yolo` exist as enums but are rejected at dispatch. The table covers all modes for forward-compat; assembly only ever runs for supported modes.
 
 ---
@@ -164,6 +164,6 @@ Two candidate read mechanisms:
 
 - Exact `--muster-dir`/`MUSTER_DIR` flag name and default (§7) — cosmetic, pinned at impl.
 - Exact built-in skill catalog contents (§4) — seed data, spec requires only "non-empty".
-- Exact per-mode `defaultPromptFor` strings (§2) — sourced from the UI step-editor table at impl.
+- Exact per-mode `defaultPromptFor` strings (§2) — transcribed from `prototype/handoff/spec.md §9/§6.1` into `internal/orchestrator/prompts.go` (tasks T015); there is no shared UI Go table to source them from.
 - `runlog.warning` vs additive `Frame.Kind` field (§5) — both additive; pick at impl for minimal surface.
 - `bd` memory flag shapes (§8) — pinned by a spike against the real `bd` before writing the wrapper.
