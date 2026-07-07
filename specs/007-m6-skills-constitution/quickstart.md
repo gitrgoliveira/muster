@@ -45,10 +45,13 @@ curl -s -X DELETE localhost:7766/api/v1/skills/<builtin-id>    # 403 SKILL_READO
 ## 3. Skill selection via `bd` labels (US4 · option b)
 
 ```bash
-# tag the bead with a reserved skill: label using the authoritative writer
-bd -C /path/to/.beads label add <beadID> skill:repo-grep skill:run-tests
-# muster parses skill:* labels at dispatch → core.Bead.Skills = [repo-grep, run-tests]
-# a per-dispatch Step.Skills override unions on top (precedence)
+# tag the bead with reserved skill: labels using the authoritative writer.
+# NOTE: `bd label add [issue-id...] [label]` takes ONE label (the last arg), so
+# add each separately:
+bd -C /path/to/.beads label add <beadID> skill:repo-grep
+bd -C /path/to/.beads label add <beadID> skill:run-tests
+# muster reads them via `bd label list <id> --json` at dispatch → Bead.Skills =
+# [repo-grep, run-tests]; a per-dispatch Step.Skills set unions on top (additive).
 ```
 
 ## 4. Assembly replaces the placeholder (US1 · SC-001) — byte-verifiable

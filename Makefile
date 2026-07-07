@@ -37,6 +37,10 @@ cover-check: cover
 	    thresholds["github.com/gitrgoliveira/muster/internal/worktree"] = 85; \
 	    thresholds["github.com/gitrgoliveira/muster/internal/wt"] = 85; \
 	    thresholds["github.com/gitrgoliveira/muster/internal/orchestrator"] = 80; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/skills"] = 80; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/api/constitution"] = 85; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/api/skills"] = 85; \
+	    thresholds["github.com/gitrgoliveira/muster/internal/api/memories"] = 70; \
 	    fail = 0; \
 	  } \
 	  /total:/ { \
