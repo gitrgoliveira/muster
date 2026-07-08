@@ -86,6 +86,16 @@ func TestMemories_Forget_NotFoundOnStdoutWithNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestMemories_Forget_UnrecognizedSuccessOutputIsError(t *testing.T) {
+	// Exit 0 but output is neither a "Forgot" confirmation nor the not-found
+	// sentinel — must NOT report a false success (which would become a bogus 204).
+	cli, _ := newCLI(t, `echo 'huh, something changed'`)
+	err := cli.Forget(context.Background(), "k")
+	if err == nil || errors.Is(err, bdshell.ErrMemoryNotFound) {
+		t.Fatalf("forget (unrecognized exit-0 output) = %v, want a non-nil non-NotFound error", err)
+	}
+}
+
 func TestMemories_Forget_NonZeroExitWithoutSentinelIsError(t *testing.T) {
 	// A genuine failure (non-zero exit, no not-found sentinel) must surface as an
 	// error, not be swallowed as not-found.

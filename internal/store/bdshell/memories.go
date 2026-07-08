@@ -108,7 +108,10 @@ func (c *CLI) Forget(ctx context.Context, key string) error {
 	if strings.Contains(res.Stdout, "No memory with key") || strings.Contains(res.Stderr, "No memory with key") {
 		return ErrMemoryNotFound
 	}
-	return nil
+	// Exit 0 but neither a "Forgot" confirmation nor the not-found sentinel — a bd
+	// behaviour change or partial failure. Surface it rather than reporting a
+	// false success (which would become a bogus 204 at the API layer).
+	return fmt.Errorf("bd forget: unrecognized output, treating delete as unconfirmed: %q", strings.TrimSpace(res.Stdout))
 }
 
 // Memories lists (optionally filtered by query) all memories as key→value,
