@@ -50,8 +50,9 @@ curl -s -X DELETE localhost:7766/api/v1/skills/<builtin-id>    # 403 SKILL_READO
 # add each separately:
 bd -C /path/to/.beads label add <beadID> skill:repo-grep
 bd -C /path/to/.beads label add <beadID> skill:run-tests
-# muster reads them via `bd label list <id> --json` at dispatch → Bead.Skills =
+# muster reads them via `bd label list --json -- <id>` at dispatch → Bead.Skills =
 # [repo-grep, run-tests]; a per-dispatch Step.Skills set unions on top (additive).
+# (The `--` keeps the id positional so an id starting with `-` can't be read as a flag.)
 ```
 
 ## 4. Assembly replaces the placeholder (US1 · SC-001) — byte-verifiable

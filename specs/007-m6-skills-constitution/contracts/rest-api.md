@@ -23,7 +23,7 @@ Body: `{ "markdown": string }`
 ## Skills (US3)
 
 ### `GET /api/v1/skills`
-→ `200` `{ "skills": [ Skill ] }` where `Skill = {id,name,desc,category,icon,promptStub,mcpServers[]}`.
+→ `200` `{ "skills": [ Skill ] }` where `Skill = {id,name,desc,category,icon,promptStub,mcpServers[],builtIn}`. `builtIn` is `true` for embedded read-only built-ins (clients use it to disable delete UI — deleting one returns `403 SKILL_READONLY`).
 - Always includes the full built-in catalog even with zero imports (AS1, SC-003).
 
 ### `GET /api/v1/skills/categories`

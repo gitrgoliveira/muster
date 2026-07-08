@@ -106,6 +106,10 @@ type DispatchInput struct {
 	// http-endpoints.md "chain" field). Nil/empty means the M2 single-step
 	// default (or the orchestrator's configured default chain, if any).
 	Chain []ChainStepInput
+	// Skills is the optional per-dispatch step-level skill override (FR-018),
+	// unioned additively on top of the bead-level skill:<id> labels. Nil/empty
+	// means the loadout is the bead-level set alone.
+	Skills []string
 }
 
 // ChainStepInput is a wire-agnostic mirror of orchestrator.StepProfile.
@@ -159,13 +163,15 @@ type labelReader interface {
 
 // resolveBeadSkills computes the effective skill loadout for a dispatch: the
 // bead's reserved skill:<id> labels (read via bd, best-effort) unioned with any
-// skills already on the bead, de-duplicated. A label-read failure is
-// non-blocking — it yields no label-derived skills rather than failing dispatch.
-func (svc *BeadService) resolveBeadSkills(ctx context.Context, id string, bead *core.Bead) []string {
+// skills already on the bead AND the per-dispatch step-level override, all
+// de-duplicated (FR-018: bead.Skills ∪ step.Skills, additive). A label-read
+// failure is non-blocking — it yields no label-derived skills rather than
+// failing dispatch. Ordering is irrelevant: assembly re-sorts the resolved set.
+func (svc *BeadService) resolveBeadSkills(ctx context.Context, id string, bead *core.Bead, override []string) []string {
 	var ids []string
 	seen := map[string]bool{}
 	add := func(s string) {
-		if !seen[s] {
+		if s != "" && !seen[s] {
 			seen[s] = true
 			ids = append(ids, s)
 		}
@@ -182,10 +188,12 @@ func (svc *BeadService) resolveBeadSkills(ctx context.Context, id string, bead *
 	}
 	if bead != nil {
 		for _, s := range bead.Skills {
-			if s != "" {
-				add(s)
-			}
+			add(s)
 		}
+	}
+	// Per-dispatch step-level override, unioned on top (never subtractive).
+	for _, s := range override {
+		add(s)
 	}
 	return ids
 }
@@ -677,7 +685,7 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			Mode:           input.Mode,
 			PermissionMode: input.PermissionMode,
 			Chain:          input.Chain,
-			Skills:         svc.resolveBeadSkills(ctx, id, bead),
+			Skills:         svc.resolveBeadSkills(ctx, id, bead, input.Skills),
 		}
 		orchResult, orchErr := svc.orchestrator.Dispatch(ctx, req)
 		if orchErr != nil {

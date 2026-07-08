@@ -42,7 +42,7 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `POST` | `/api/v1/beads` | Create a bead (requires `bd`) |
 | `PATCH` | `/api/v1/beads/{id}` | Update a bead (requires `bd`) |
 | `POST` | `/api/v1/beads/{id}/move` | Move to column (requires `bd`) |
-| `POST` | `/api/v1/beads/{id}/dispatch` | Run a CLI agent on the bead — body `{agent, mode, permissionMode}` (M2) |
+| `POST` | `/api/v1/beads/{id}/dispatch` | Run a CLI agent on the bead — body `{agent, mode, permissionMode}` (M2); optional `chain[]` step override (M4); optional `skills[]` per-dispatch skill override unioned onto the bead's `skill:<id>` labels (M6) |
 | `GET` | `/api/v1/beads/{id}/steps/{idx}/attach` | tmux attach command + pane for a running step (M2; `idx=0`) |
 | `POST` | `/api/v1/beads/{id}/steps/{idx}/send` | Forward keystrokes to the live agent pane (M2; `idx=0`) |
 | `GET` | `/api/v1/beads/{id}/worktree` | Change summary for the bead's worktree — file list with `kind` (added/modified/deleted/renamed/copied), VCS name, and clean flag (M3) |

@@ -54,7 +54,7 @@ func TestResolveBeadSkills_UnionNotOverride(t *testing.T) {
 	svc := &BeadService{cli: fakeLabelCLI{labels: []string{"skill:a", "area:core"}}}
 	bead := &core.Bead{Skills: []string{"b", "a"}} // step/bead-level already carries b (and a again)
 
-	got := svc.resolveBeadSkills(context.Background(), "b-1", bead)
+	got := svc.resolveBeadSkills(context.Background(), "b-1", bead, nil)
 	// Union of label-derived {a} and bead {b,a}, de-duplicated => [a, b].
 	if len(got) != 2 {
 		t.Fatalf("resolveBeadSkills = %v, want union [a b]", got)
@@ -65,5 +65,22 @@ func TestResolveBeadSkills_UnionNotOverride(t *testing.T) {
 	}
 	if !has["a"] || !has["b"] {
 		t.Fatalf("resolveBeadSkills = %v, want both a and b (additive union)", got)
+	}
+}
+
+func TestResolveBeadSkills_PerDispatchOverrideUnioned(t *testing.T) {
+	// FR-018: the per-dispatch step-level override is unioned additively on top
+	// of the bead-level (label-derived) set, de-duplicated — never subtractive.
+	svc := &BeadService{cli: fakeLabelCLI{labels: []string{"skill:a"}}}
+	bead := &core.Bead{Skills: []string{"b"}}
+
+	got := svc.resolveBeadSkills(context.Background(), "b-1", bead, []string{"c", "a"})
+	has := map[string]bool{}
+	for _, s := range got {
+		has[s] = true
+	}
+	// label {a} ∪ bead {b} ∪ override {c,a} = {a,b,c}, deduped.
+	if len(got) != 3 || !has["a"] || !has["b"] || !has["c"] {
+		t.Fatalf("resolveBeadSkills = %v, want union {a,b,c}", got)
 	}
 }
