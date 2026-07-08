@@ -30,6 +30,20 @@ func TestMemories_Remember_ReturnsKey(t *testing.T) {
 	}
 }
 
+func TestMemories_Remember_EmptyKeyIsError(t *testing.T) {
+	// bd omits the derived key AND the caller gave none — a keyless memory is
+	// unusable (ambiguous recall/delete), so Remember must fail rather than
+	// return an empty key.
+	cli, _ := newCLI(t, `echo '{"action":"remembered"}'`)
+	if _, err := cli.Remember(context.Background(), "", "some value"); err == nil {
+		t.Fatal("Remember with no derived key and no caller key = nil error, want error")
+	}
+	// But an explicit caller key still round-trips even if bd omits it.
+	if key, err := cli.Remember(context.Background(), "my-key", "v"); err != nil || key != "my-key" {
+		t.Fatalf("Remember with caller key = %q err=%v, want my-key", key, err)
+	}
+}
+
 func TestMemories_List_FiltersSchemaVersion(t *testing.T) {
 	cli, _ := newCLI(t, memoriesFake)
 	m, err := cli.Memories(context.Background(), "")

@@ -95,7 +95,7 @@ func TestMemories_NilStoreUnavailable(t *testing.T) {
 	}
 }
 
-func TestMemories_PrimePersistsAndReadsBack(t *testing.T) {
+func TestMemories_PrimePersistsAndIsConsumedOnce(t *testing.T) {
 	store := newFakeMemStore()
 	store.m["k1"] = "v1"
 	store.m["k2"] = "v2"
@@ -107,13 +107,19 @@ func TestMemories_PrimePersistsAndReadsBack(t *testing.T) {
 		t.Fatalf("prime = %d err=%v", n, err)
 	}
 
-	// A fresh service over the same dir (a restart) still reads the snapshot.
+	// A fresh service over the same dir (a restart) still reads the snapshot —
+	// priming survives a restart between prime and the next dispatch (FR-024).
 	svc2 := NewMemoriesService(store, dir)
-	primed := svc2.PrimedMemories("muster-ep0")
+	primed := svc2.ConsumePrimedMemories("muster-ep0")
 	if primed["k1"] != "v1" || primed["k2"] != "v2" {
 		t.Fatalf("primed snapshot did not survive restart: %v", primed)
 	}
-	if svc2.PrimedMemories("never-primed") != nil {
+	// One-shot: consuming clears the snapshot, so a subsequent dispatch of the
+	// same bead sees nothing unless it is primed again.
+	if again := svc2.ConsumePrimedMemories("muster-ep0"); again != nil {
+		t.Fatalf("primed snapshot not cleared after consume: %v", again)
+	}
+	if svc2.ConsumePrimedMemories("never-primed") != nil {
 		t.Fatal("un-primed bead should return nil")
 	}
 }

@@ -114,6 +114,14 @@ type Run struct {
 	// the streamer records the tail on EOF; finishRun records the status.
 	stepSummaries map[int]*stepSummary
 
+	// primed is the per-bead primed-memory snapshot, consumed once at the run's
+	// first assembly and cached for the run's lifetime so every step of the SAME
+	// dispatch sees the same set. Consuming it clears the on-disk snapshot, so a
+	// later dispatch of the bead does not re-inject it (FR-024 one-shot "next
+	// dispatch"). primedLoaded guards against re-consuming. Guarded by o.mu.
+	primed       []primedKV
+	primedLoaded bool
+
 	// pendingAdvance is true while an Advance/LoopBack is in progress for this
 	// run. When true, finishRun skips eviction and instead relaunches the run at
 	// pendingTargetIdx (see below) under the same beadID key. Mutable under o.mu.

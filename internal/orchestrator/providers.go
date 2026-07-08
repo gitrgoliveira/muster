@@ -23,10 +23,13 @@ type SkillProvider interface {
 }
 
 // PrimedMemoriesProvider returns the memory snapshot primed for a bead (via
-// POST /memories/prime), folded into the bead's next assembled prompt. Empty
-// when nothing was primed. Implemented by the M6 memories service.
+// POST /memories/prime), folded into the bead's next assembled prompt. Priming
+// is ONE-SHOT: Consume both reads and clears the snapshot, so it feeds exactly
+// the bead's next dispatch and is not re-injected into later dispatches (FR-024
+// "next dispatch"). Empty when nothing was primed. Implemented by the M6
+// memories service.
 type PrimedMemoriesProvider interface {
-	PrimedMemories(beadID string) map[string]string
+	ConsumePrimedMemories(beadID string) map[string]string
 }
 
 // constitutionSnapshot reads the constitution provider nil-safely: a nil

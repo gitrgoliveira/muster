@@ -239,18 +239,32 @@ func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.M
 		Title:         req.BeadTitle,
 		Desc:          req.BeadDesc,
 		Prior:         o.priorSummaries(run, stepIdx),
-		Primed:        o.primedMemories(req.BeadID),
+		Primed:        o.primedMemories(run, req.BeadID),
 		StepPrompt:    o.resolvePrompt(promptRef, mode),
 	})
 }
 
-// primedMemories reads the primed snapshot for a bead nil-safely, returning it
-// as a key-sorted slice for deterministic assembly (SC-001).
-func (o *Orchestrator) primedMemories(beadID string) []primedKV {
+// primedMemories returns the bead's primed snapshot as a key-sorted slice for
+// deterministic assembly (SC-001), nil-safely. It is ONE-SHOT per run: the
+// snapshot is consumed (read + cleared) on the run's first assembly and cached
+// on the run, so every step of THIS dispatch sees the same set while a later
+// dispatch of the bead sees nothing unless re-primed (FR-024 "next dispatch").
+// Guarded by o.mu (mutates run.primed/primedLoaded).
+func (o *Orchestrator) primedMemories(run *Run, beadID string) []primedKV {
 	if o.primedMemoriesProvider == nil {
 		return nil
 	}
-	m := o.primedMemoriesProvider.PrimedMemories(beadID)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	// With a run, consume once and cache so every step of this dispatch sees the
+	// same set. Without a run (degenerate/single-shot assembly), consume directly.
+	if run != nil && run.primedLoaded {
+		return run.primed
+	}
+	if run != nil {
+		run.primedLoaded = true
+	}
+	m := o.primedMemoriesProvider.ConsumePrimedMemories(beadID)
 	if len(m) == 0 {
 		return nil
 	}
@@ -259,6 +273,9 @@ func (o *Orchestrator) primedMemories(beadID string) []primedKV {
 		out = append(out, primedKV{Key: k, Value: v})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	if run != nil {
+		run.primed = out
+	}
 	return out
 }
 

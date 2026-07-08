@@ -100,7 +100,8 @@ func (s *MemoriesService) Delete(ctx context.Context, key string) error {
 
 // Prime snapshots the current memory set for a bead so its NEXT dispatch's
 // assembled prompt includes them. The snapshot is persisted (survives restart)
-// under <musterDir>/primed/<beadID>.json. Returns the number of memories primed.
+// under <musterDir>/primed/<beadID>.json and is consumed one-shot by that
+// dispatch (see ConsumePrimedMemories). Returns the number of memories primed.
 func (s *MemoriesService) Prime(ctx context.Context, beadID string) (int, error) {
 	if s.store == nil {
 		return 0, &ServiceError{Code: CodeBDUnavailable, Message: "bd is not available"}
@@ -125,21 +126,30 @@ func (s *MemoriesService) Prime(ctx context.Context, beadID string) (int, error)
 	return len(m), nil
 }
 
-// PrimedMemories implements the orchestrator's provider: it returns the primed
-// snapshot for a bead (empty if none / unreadable). beadID is validated so it
-// cannot escape primedDir.
-func (s *MemoriesService) PrimedMemories(beadID string) map[string]string {
+// ConsumePrimedMemories implements the orchestrator's provider: it returns the
+// primed snapshot for a bead AND clears it, giving priming one-shot semantics —
+// the snapshot feeds the bead's next dispatch, then is gone (FR-024). beadID is
+// validated so it cannot escape primedDir. Returns nil (never an error) when
+// nothing is primed or the snapshot is unreadable; consuming/assembly must not
+// fail on a missing or corrupt snapshot.
+func (s *MemoriesService) ConsumePrimedMemories(beadID string) map[string]string {
 	if !core.ValidBeadID(beadID) {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(s.primedDir, beadID+".json"))
+	path := filepath.Join(s.primedDir, beadID+".json")
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
 	var m map[string]string
 	if err := json.Unmarshal(data, &m); err != nil {
+		// A corrupt snapshot is unusable — clear it so it can't wedge future reads.
+		_ = os.Remove(path)
 		return nil
 	}
+	// One-shot: this dispatch consumes the snapshot; a later dispatch of the bead
+	// sees nothing unless it is primed again.
+	_ = os.Remove(path)
 	return m
 }
 

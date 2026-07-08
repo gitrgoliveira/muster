@@ -32,6 +32,7 @@ package bdshell
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -62,6 +63,12 @@ func (c *CLI) Remember(ctx context.Context, key, value string) (string, error) {
 	}
 	if res.Key == "" {
 		res.Key = key
+	}
+	// A memory with no key is unusable — subsequent recall/delete would be
+	// ambiguous. If bd omitted the derived key and the caller gave none, fail
+	// loudly rather than surfacing an empty-keyed memory.
+	if res.Key == "" {
+		return "", fmt.Errorf("bd remember returned no key for the memory")
 	}
 	return res.Key, nil
 }
