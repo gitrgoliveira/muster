@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/skills"
@@ -305,6 +306,25 @@ func (o *Orchestrator) consumePrimed(beadID string) []primedKV {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
+}
+
+// tailRecordWait bounds how long a step transition waits for the just-finished
+// step's runlog tail to be recorded before relaunching the next step. The
+// streamer normally records it within milliseconds of pane EOF; the bound just
+// prevents a wedged streamer from stalling the transition indefinitely.
+const tailRecordWait = 2 * time.Second
+
+// waitTailRecorded blocks until done is closed (the step's tail has been
+// recorded) or bound elapses, whichever comes first. A nil channel returns
+// immediately (nothing to wait for).
+func waitTailRecorded(done <-chan struct{}, bound time.Duration) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(bound):
+	}
 }
 
 // recordStepTail stores a finished step's bounded runlog tail (called by the

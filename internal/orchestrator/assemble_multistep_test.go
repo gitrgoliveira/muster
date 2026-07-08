@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 )
@@ -123,5 +124,27 @@ func TestAssemblePrompt_Step1IncludesStep0Summary(t *testing.T) {
 	}
 	if !strings.Contains(got, "step 1 (done): plan produced 3 tasks") {
 		t.Errorf("step 1 prompt should include step 0 summary:\n%s", got)
+	}
+}
+
+func TestWaitTailRecorded(t *testing.T) {
+	// A closed channel (tail already recorded) returns promptly.
+	closed := make(chan struct{})
+	close(closed)
+	start := time.Now()
+	waitTailRecorded(closed, time.Second)
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("closed channel should return promptly, took %v", elapsed)
+	}
+
+	// A nil channel returns immediately (nothing to wait for).
+	waitTailRecorded(nil, time.Second)
+
+	// An open channel (wedged streamer) returns after the bound, never blocks.
+	open := make(chan struct{})
+	start = time.Now()
+	waitTailRecorded(open, 60*time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+		t.Fatalf("open channel should wait ~bound, returned after %v", elapsed)
 	}
 }

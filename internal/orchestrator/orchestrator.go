@@ -125,6 +125,16 @@ type Run struct {
 	primed       []primedKV
 	primedLoaded bool
 
+	// tailDone is closed once the CURRENT step's runlog tail has been recorded
+	// (streamer EOF → recordStepTail). finishRun waits on it (bounded) before a
+	// step transition, so the next step's assembled prompt reliably includes this
+	// step's earlier-step summary (FR-004) instead of racing the async streamer
+	// and rendering "(no output captured)". Set per step at doLaunch — an open
+	// channel when the step has a pane pipe (closed in the streamer's onDone), or
+	// a pre-closed channel when it has none. nil before the first launch. Guarded
+	// by o.mu; a channel is a reference, so GetRun's snapshot copy is safe.
+	tailDone chan struct{}
+
 	// pendingAdvance is true while an Advance/LoopBack is in progress for this
 	// run. When true, finishRun skips eviction and instead relaunches the run at
 	// pendingTargetIdx (see below) under the same beadID key. Mutable under o.mu.
@@ -991,8 +1001,12 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 		// concurrent GetRun — which snapshots the whole struct under RLock —
 		// would otherwise race this write. watchRun (started below) reads
 		// run.pipe only after this point, so its later read is ordered safely.
+		// tailDone closes once this step's tail is recorded (streamer onDone),
+		// so a step transition can wait for it before assembling the next step.
+		tailDone := make(chan struct{})
 		o.mu.Lock()
 		run.pipe = pipeReader // closed in finishRun (frees the FIFO/temp dir)
+		run.tailDone = tailDone
 		o.mu.Unlock()
 		// Capture the run + stepIdx so the streamer can record this step's tail
 		// for M6 earlier-step summaries (FR-004) when the pane hits EOF.
@@ -1003,9 +1017,18 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 			publish: o.publish,
 			onDone: func(tail string) {
 				o.recordStepTail(capturedRun, capturedStep, tail)
+				close(tailDone)
 			},
 		}
 		go streamer.stream(pipeReader)
+	} else {
+		// No pane pipe → no tail will ever be recorded; a pre-closed channel lets
+		// a step transition proceed without waiting.
+		closed := make(chan struct{})
+		close(closed)
+		o.mu.Lock()
+		run.tailDone = closed
+		o.mu.Unlock()
 	}
 
 	go o.watchRun(runCtx, run)
@@ -1183,6 +1206,9 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// snapshot it here rather than reading run.StepIdx unlocked below
 	// (tri-review 2 HIGH — data race on the tmux.session.closed frame).
 	stepIdx := run.StepIdx
+	// tailDone for the step that just finished; a step transition waits on it so
+	// the next step's assembly includes this step's summary (FR-004).
+	tailDone := run.tailDone
 	o.mu.RUnlock()
 
 	// M6: record this step's terminal status so the NEXT step's assembly can
@@ -1267,6 +1293,12 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// doLaunch once the next watcher is up), so the bead reads as in-flight to
 	// any concurrent Advance (rejected) or Dispatch (joins) throughout.
 	if pending {
+		// Wait (bounded) for the just-finished step's tail to be recorded before
+		// relaunching, so the next step's assembled prompt includes this step's
+		// summary rather than racing the async streamer (FR-004). pipe.Close above
+		// triggered the streamer's EOF; tailDone closes once recordStepTail ran.
+		// The bound keeps a wedged streamer from stalling the transition.
+		waitTailRecorded(tailDone, tailRecordWait)
 		go o.relaunchNextStep(run)
 		return
 	}
