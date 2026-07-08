@@ -260,21 +260,41 @@ func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.M
 // snapshot is consumed (read + cleared) on the run's first assembly and cached
 // on the run, so every step of THIS dispatch sees the same set while a later
 // dispatch of the bead sees nothing unless re-primed (FR-024 "next dispatch").
-// Guarded by o.mu (mutates run.primed/primedLoaded).
+// The filesystem consume runs OUTSIDE o.mu (o.mu is taken only for the tiny
+// check-and-store), so slow disk I/O never blocks dispatch scheduling or
+// run-state transitions. Steps of a run assemble sequentially, so the consume
+// happens exactly once per run.
 func (o *Orchestrator) primedMemories(run *Run, beadID string) []primedKV {
 	if o.primedMemoriesProvider == nil {
 		return nil
 	}
+	// Without a run (degenerate/single-shot assembly), consume directly.
+	if run == nil {
+		return o.consumePrimed(beadID)
+	}
+	// Fast path: already consumed for this run.
+	o.mu.RLock()
+	loaded, cached := run.primedLoaded, run.primed
+	o.mu.RUnlock()
+	if loaded {
+		return cached
+	}
+	// Consume (read + clear the snapshot file) with NO lock held.
+	kv := o.consumePrimed(beadID)
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	// With a run, consume once and cache so every step of this dispatch sees the
-	// same set. Without a run (degenerate/single-shot assembly), consume directly.
-	if run != nil && run.primedLoaded {
-		return run.primed
+	if run.primedLoaded {
+		return run.primed // a concurrent assembly already stored the set
 	}
-	if run != nil {
-		run.primedLoaded = true
-	}
+	run.primedLoaded = true
+	run.primed = kv
+	return kv
+}
+
+// consumePrimed reads-and-clears the bead's primed snapshot via the provider
+// (filesystem I/O; no lock held) and returns it key-sorted. nil when nothing is
+// primed.
+func (o *Orchestrator) consumePrimed(beadID string) []primedKV {
 	m := o.primedMemoriesProvider.ConsumePrimedMemories(beadID)
 	if len(m) == 0 {
 		return nil
@@ -284,9 +304,6 @@ func (o *Orchestrator) primedMemories(run *Run, beadID string) []primedKV {
 		out = append(out, primedKV{Key: k, Value: v})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-	if run != nil {
-		run.primed = out
-	}
 	return out
 }
 

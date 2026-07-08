@@ -17,7 +17,7 @@ From handoff §3.3 (`prototype/handoff/spec.md:240-256`).
 | `Desc` | `string` | One-line description. |
 | `Category` | `string` | `spec｜code｜web｜doc｜design｜pm｜infra` (open set; `GET /skills/categories` returns the distinct present set). |
 | `Icon` | `string` | Single glyph (UI). |
-| `PromptStub` | `string` | System-prompt fragment merged into assembly when the skill loads (one short paragraph; markdown body of the skill file). May be empty (edge case: empty stub ⇒ skill still listed by name, contributes no text). |
+| `PromptStub` | `string` | The skill's markdown body (one short paragraph). Its **first non-blank line** is rendered in the assembled prompt's "Skills loaded" section next to the skill name (the full body is not injected). May be empty (edge case: empty stub ⇒ skill still listed by name, contributes no text). |
 | `MCPServers` | `[]string` | Names the agent must already have configured. Best-effort verified, never spawned/managed by muster. |
 
 **Source & mutability**

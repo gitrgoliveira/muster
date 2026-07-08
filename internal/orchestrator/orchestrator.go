@@ -118,7 +118,10 @@ type Run struct {
 	// first assembly and cached for the run's lifetime so every step of the SAME
 	// dispatch sees the same set. Consuming it clears the on-disk snapshot, so a
 	// later dispatch of the bead does not re-inject it (FR-024 one-shot "next
-	// dispatch"). primedLoaded guards against re-consuming. Guarded by o.mu.
+	// dispatch"). primedLoaded guards against re-consuming. Both are read/written
+	// only under o.mu, BUT the filesystem consume itself runs OUTSIDE o.mu (see
+	// primedMemories) so slow disk I/O never blocks dispatch scheduling. Steps of
+	// a run assemble sequentially, so the consume happens exactly once.
 	primed       []primedKV
 	primedLoaded bool
 

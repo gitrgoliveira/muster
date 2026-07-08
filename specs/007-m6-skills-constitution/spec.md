@@ -206,7 +206,7 @@ An operator (or a client) can list, search, create/update, and delete persistent
 
 - **Constitution**: `{Markdown string, UpdatedAt time.Time, Version int}` — a single versioned document, stored at `.muster/constitution.md`, merged as the header of every assembled prompt (handoff §3.4).
 - **Skill**: `{ID, Name, Desc, Category, Icon, PromptStub, MCPServers []string}` (handoff §3.3) — either built-in (embedded, read-only) or imported (persisted under `.muster/skills/`, mutable via CRUD).
-- **Skill loadout**: the resolved, de-duplicated set of skills applicable to one step's assembly — `bead.Skills ∪ step.Skills`, each contributing its `PromptStub` and any `MCPServers` names to the assembled prompt.
+- **Skill loadout**: the resolved, de-duplicated set of skills applicable to one step's assembly — `bead.Skills ∪ step.Skills`. Each contributes the first line of its `PromptStub` to the prompt's "Skills loaded" section; its `MCPServers` names feed best-effort verification (a `runlog.warning` when missing), not the rendered prompt.
 - **Assembled prompt**: the full string written to a step's `.muster-prompt-<stepIdx>.txt` — constitution + step/provider framing + skill loadout + bead ticket + earlier-step summaries + resolved step prompt (handoff §9). Replaces the M2/M4 `buildPrompt` output.
 - **Memory**: `{Key string, Value string}` — persisted and searched entirely through `bd`'s existing `remember`/`recall`/`forget`/`memories` commands; muster holds no independent copy.
 - **PromptRef resolution**: the (until-M6) inert `StepProfile.PromptRef` string, now resolved into either a stored explicit override or `defaultPromptFor(mode, ...)` — the concrete mechanism this milestone builds to close the M4 L2/T043 gap.

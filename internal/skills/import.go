@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -102,11 +103,19 @@ func validateFetchURL(u *url.URL) error {
 	if ip := net.ParseIP(host); ip != nil {
 		ips = []net.IP{ip}
 	} else {
-		resolved, err := net.LookupIP(host)
+		// Bound the pre-dial DNS lookup: it runs on a user-supplied host BEFORE
+		// the http.Client timeout applies, so a slow/hung resolver would
+		// otherwise tie up the handler goroutine far longer than importTimeout.
+		ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
+		defer cancel()
+		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil {
 			return fmt.Errorf("%w: cannot resolve %q: %v", ErrImportBlocked, host, err)
 		}
-		ips = resolved
+		ips = make([]net.IP, len(addrs))
+		for i, a := range addrs {
+			ips[i] = a.IP
+		}
 	}
 	for _, ip := range ips {
 		if err := checkIP(ip, u.Scheme); err != nil {
