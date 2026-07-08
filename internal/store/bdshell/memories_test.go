@@ -77,6 +77,39 @@ func TestMemories_Forget_ValueContainingSentinelSucceeds(t *testing.T) {
 	}
 }
 
+func TestMemories_Forget_NotFoundOnStdoutWithNonZeroExit(t *testing.T) {
+	// bd exits non-zero but prints the sentinel to STDOUT (not stderr) — Forget
+	// must still map it to ErrMemoryNotFound (error path checks both streams).
+	cli, _ := newCLI(t, `echo 'No memory with key "missing"'; exit 1`)
+	if err := cli.Forget(context.Background(), "missing"); !errors.Is(err, bdshell.ErrMemoryNotFound) {
+		t.Fatalf("forget (non-zero exit, sentinel on stdout) = %v, want ErrMemoryNotFound", err)
+	}
+}
+
+func TestMemories_Forget_NonZeroExitWithoutSentinelIsError(t *testing.T) {
+	// A genuine failure (non-zero exit, no not-found sentinel) must surface as an
+	// error, not be swallowed as not-found.
+	cli, _ := newCLI(t, `echo 'boom' 1>&2; exit 1`)
+	err := cli.Forget(context.Background(), "k")
+	if err == nil || errors.Is(err, bdshell.ErrMemoryNotFound) {
+		t.Fatalf("forget (real failure) = %v, want a non-nil non-NotFound error", err)
+	}
+}
+
+func TestMemories_List_NonStringValueIsError(t *testing.T) {
+	// A non-string value (other than the schema_version meta) is unexpected bd
+	// output and must be surfaced as a typed error, not silently dropped.
+	cli, _ := newCLI(t, `echo '{"m1":"v1","weird":123}'`)
+	if _, err := cli.Memories(context.Background(), ""); err == nil {
+		t.Fatal("Memories with a non-string value = nil error, want error")
+	}
+	// The known schema_version int meta is still filtered without error.
+	cli2, _ := newCLI(t, `echo '{"m1":"v1","schema_version":1}'`)
+	if m, err := cli2.Memories(context.Background(), ""); err != nil || len(m) != 1 || m["m1"] != "v1" {
+		t.Fatalf("Memories = %v err=%v, want {m1:v1}", m, err)
+	}
+}
+
 func TestMemories_ArgSeparatorGuardsInjection(t *testing.T) {
 	// The fake records its argv so we can assert the `--` separator precedes a
 	// value that starts with '-' (no flag injection).

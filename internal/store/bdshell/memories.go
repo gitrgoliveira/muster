@@ -89,8 +89,12 @@ func (c *CLI) Recall(ctx context.Context, key string) (string, error) {
 func (c *CLI) Forget(ctx context.Context, key string) error {
 	res, err := c.Run(ctx, "forget", "--", key)
 	if err != nil {
-		var ce *CLIError
-		if errors.As(err, &ce) && strings.Contains(ce.Stderr, "No memory with key") {
+		// bd may print the not-found sentinel to stdout OR stderr, with a zero or
+		// non-zero exit. On the error path res still carries both streams (Run
+		// returns res even on failure), so check both rather than only the
+		// CLIError's stderr — otherwise a non-zero exit that printed the sentinel
+		// to stdout would surface as a raw error instead of ErrMemoryNotFound.
+		if strings.Contains(res.Stdout, "No memory with key") || strings.Contains(res.Stderr, "No memory with key") {
 			return ErrMemoryNotFound
 		}
 		return err
@@ -123,9 +127,13 @@ func (c *CLI) Memories(ctx context.Context, query string) (map[string]string, er
 		if k == memoriesMetaKey {
 			continue
 		}
-		if s, ok := v.(string); ok {
-			out[k] = s
+		s, ok := v.(string)
+		if !ok {
+			// Unexpected/changed bd output — surface it as a typed error rather
+			// than silently dropping the entry and returning a partial success.
+			return nil, fmt.Errorf("bd memories: unexpected non-string value for key %q (got %T)", k, v)
 		}
+		out[k] = s
 	}
 	return out, nil
 }
