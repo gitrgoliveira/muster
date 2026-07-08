@@ -220,10 +220,21 @@ func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.M
 
 	stepCount := 1
 	promptRef := ""
+	// The effective per-step mode drives both the step header and the default
+	// step prompt. In a multi-step chain the run's adapter mode is constant
+	// (e.g. agent), but each stage carries its own label (plan → build → …); a
+	// StepProfile.Name that names a valid core.Mode is that stage, so use it
+	// rather than the constant run mode. A non-mode label (or single-step run)
+	// falls back to the passed-in mode.
+	effectiveMode := mode
 	if run != nil && run.Chain != nil {
 		stepCount = len(*run.Chain)
 		if stepIdx >= 0 && stepIdx < len(*run.Chain) {
-			promptRef = (*run.Chain)[stepIdx].PromptRef
+			step := (*run.Chain)[stepIdx]
+			promptRef = step.PromptRef
+			if m := core.Mode(step.Name); m.Valid() {
+				effectiveMode = m
+			}
 		}
 	}
 
@@ -232,7 +243,7 @@ func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.M
 		ConstVersion:  ver,
 		StepIdx:       stepIdx,
 		StepCount:     stepCount,
-		Mode:          mode,
+		Mode:          effectiveMode,
 		Provider:      string(req.Agent),
 		Skills:        resolved,
 		BeadID:        req.BeadID,
@@ -240,7 +251,7 @@ func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.M
 		Desc:          req.BeadDesc,
 		Prior:         o.priorSummaries(run, stepIdx),
 		Primed:        o.primedMemories(run, req.BeadID),
-		StepPrompt:    o.resolvePrompt(promptRef, mode),
+		StepPrompt:    o.resolvePrompt(promptRef, effectiveMode),
 	})
 }
 

@@ -24,26 +24,20 @@ type frontMatter struct {
 // must pass ValidateID. builtIn marks the result read-only.
 func ParseSkill(data []byte, builtIn bool) (Skill, error) {
 	s := string(data)
-	if !strings.HasPrefix(s, "---") {
-		return Skill{}, fmt.Errorf("skill: missing YAML front-matter (expected leading '---')")
+	// The opening fence must be a standalone `---` line (LF or CRLF), not a
+	// prefix like `----` or `---not-a-fence`.
+	rest, ok := strings.CutPrefix(s, "---\n")
+	if !ok {
+		rest, ok = strings.CutPrefix(s, "---\r\n")
 	}
-	// Strip the opening fence line.
-	rest := strings.TrimPrefix(s, "---")
-	rest = strings.TrimPrefix(rest, "\r")
-	rest = strings.TrimPrefix(rest, "\n")
-
-	// Find the closing fence at the start of a line.
-	end := strings.Index(rest, "\n---")
-	if end < 0 {
-		return Skill{}, fmt.Errorf("skill: unterminated front-matter (missing closing '---')")
+	if !ok {
+		return Skill{}, fmt.Errorf("skill: missing YAML front-matter (expected a leading '---' line)")
 	}
-	front := rest[:end]
-	body := rest[end+len("\n---"):]
-	// Drop the remainder of the closing-fence line, then one separating newline.
-	if nl := strings.IndexByte(body, '\n'); nl >= 0 {
-		body = body[nl+1:]
-	} else {
-		body = ""
+	// The closing fence must likewise be a standalone `---` line, so a `---`
+	// inside a YAML scalar or the body is not mistaken for the terminator.
+	front, body, ok := splitAtClosingFence(rest)
+	if !ok {
+		return Skill{}, fmt.Errorf("skill: unterminated front-matter (missing closing '---' line)")
 	}
 
 	var fm frontMatter
@@ -66,6 +60,30 @@ func ParseSkill(data []byte, builtIn bool) (Skill, error) {
 		MCPServers: fm.MCPServers,
 		BuiltIn:    builtIn,
 	}, nil
+}
+
+// splitAtClosingFence scans rest line by line for the first standalone `---`
+// line (LF or CRLF, EOF-safe) and returns the front-matter before it and the
+// body after it. A line like `----` or `---not-a-fence` is NOT a fence. ok is
+// false when no closing fence line exists.
+func splitAtClosingFence(rest string) (front, body string, ok bool) {
+	for pos := 0; pos <= len(rest); {
+		nl := strings.IndexByte(rest[pos:], '\n')
+		line := rest[pos:]
+		lineEnd := len(rest) // index just past this line (past its '\n', or EOF)
+		if nl >= 0 {
+			line = rest[pos : pos+nl]
+			lineEnd = pos + nl + 1
+		}
+		if strings.TrimSuffix(line, "\r") == "---" {
+			return rest[:pos], rest[lineEnd:], true
+		}
+		if nl < 0 {
+			break // last line, no fence
+		}
+		pos = lineEnd
+	}
+	return "", "", false
 }
 
 // formatSkill serializes a skill back to the on-disk front-matter + body form

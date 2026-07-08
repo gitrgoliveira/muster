@@ -101,7 +101,7 @@ An operator can list the full skill registry (built-in + imported), see it group
 
 ### User Story 4 - Skill loadout resolves into the assembled prompt, with best-effort MCP verification (Priority: P2)
 
-A bead or step's selected skills actually show up in the assembled prompt (`PromptStub` text + a note of any MCP servers the skill expects), and if a skill names an MCP server the agent's own config doesn't have, muster emits a non-blocking warning rather than failing or silently omitting.
+A bead or step's selected skills actually show up in the assembled prompt (a "Skills loaded" section listing each skill's name and the first line of its `PromptStub`), and any MCP servers a skill expects are verified against the agent's own config — if one is missing, muster emits a non-blocking `runlog.warning` rather than failing or silently omitting. (The MCP-server list is a verification input, not part of the rendered prompt.)
 
 **Why this priority**: This is where the skill registry (US3) actually connects to assembly (US1) — without it, US3 is a CRUD feature with no effect on dispatch. It's P2 rather than P1 because assembly and the constitution are meaningful and shippable without skill resolution (a bead with no skills selected still gets a correct, useful prompt).
 

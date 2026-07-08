@@ -66,6 +66,47 @@ func TestBuildAssembledPrompt_RendersEarlierSummaries(t *testing.T) {
 	}
 }
 
+func TestAssemblePrompt_PerStepModeFromChainName(t *testing.T) {
+	// The run's adapter mode is constant (agent), but each chain stage carries
+	// its own mode-name. Assembly must render EACH step with its stage's header
+	// and default prompt, not the constant run mode.
+	o := &Orchestrator{}
+	chain := StepChain{{Name: "plan"}, {Name: "build"}}
+	run := &Run{Chain: &chain}
+	req := DispatchRequest{BeadID: "b-1", BeadTitle: "T", BeadDesc: "D", Agent: core.AgentID("claude")}
+
+	// Step 0 named "plan" — even though the run mode passed in is agent.
+	step0 := o.assemblePrompt(run, req, core.ModeAgent, 0, nil)
+	if !strings.Contains(step0, "# Step 1 of 2: plan mode") {
+		t.Errorf("step 0 header should be plan mode:\n%s", step0)
+	}
+	if !strings.Contains(step0, defaultPromptFor(core.ModePlan)) {
+		t.Errorf("step 0 prompt should be the plan default:\n%s", step0)
+	}
+
+	// Step 1 named "build" — header + prompt must be build, not agent.
+	step1 := o.assemblePrompt(run, req, core.ModeAgent, 1, nil)
+	if !strings.Contains(step1, "# Step 2 of 2: build mode") {
+		t.Errorf("step 1 header should be build mode:\n%s", step1)
+	}
+	if !strings.Contains(step1, defaultPromptFor(core.ModeBuild)) {
+		t.Errorf("step 1 prompt should be the build default:\n%s", step1)
+	}
+}
+
+func TestAssemblePrompt_NonModeChainNameFallsBackToRunMode(t *testing.T) {
+	// A stage label that is NOT a core.Mode (e.g. "cleanup") falls back to the
+	// passed-in run mode rather than producing a bogus header.
+	o := &Orchestrator{}
+	chain := StepChain{{Name: "cleanup"}}
+	run := &Run{Chain: &chain}
+	req := DispatchRequest{BeadID: "b-1", BeadTitle: "T", BeadDesc: "D", Agent: core.AgentID("claude")}
+	got := o.assemblePrompt(run, req, core.ModeAgent, 0, nil)
+	if !strings.Contains(got, "# Step 1 of 1: agent mode") {
+		t.Errorf("non-mode chain name should fall back to run mode:\n%s", got)
+	}
+}
+
 func TestAssemblePrompt_Step1IncludesStep0Summary(t *testing.T) {
 	// End-to-end through the method (nil-safe providers), with a 2-step chain.
 	o := &Orchestrator{}

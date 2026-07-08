@@ -38,16 +38,40 @@ func TestParseSkill_Valid(t *testing.T) {
 
 func TestParseSkill_Errors(t *testing.T) {
 	cases := map[string]string{
-		"no front-matter": "just a body",
-		"unterminated":    "---\nid: x\nname: X\n",
-		"missing name":    "---\nid: x\n---\nbody",
-		"invalid id":      "---\nid: ../evil\nname: X\n---\nbody",
-		"empty id":        "---\nname: X\n---\nbody",
+		"no front-matter":    "just a body",
+		"unterminated":       "---\nid: x\nname: X\n",
+		"missing name":       "---\nid: x\n---\nbody",
+		"invalid id":         "---\nid: ../evil\nname: X\n---\nbody",
+		"empty id":           "---\nname: X\n---\nbody",
+		"overlong open":      "----\nid: x\nname: X\n---\nbody",           // `----`, not a fence
+		"non-fence open":     "---not-a-fence\nid: x\nname: X\nbody",      // `---x`, not a standalone fence
+		"only non-fence end": "---\nid: x\nname: X\n---not-a-fence\nbody", // closer is `---x`, not standalone
 	}
 	for name, data := range cases {
 		if _, err := ParseSkill([]byte(data), false); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+func TestParseSkill_FenceRobustness(t *testing.T) {
+	// A body line that merely starts with `---` must not be mistaken for the
+	// closing fence, and the front-matter must terminate at the FIRST standalone
+	// `---` line only.
+	src := "---\nid: x\nname: X\n---\nbody line\n---not-a-fence\nmore body\n"
+	s, err := ParseSkill([]byte(src), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PromptStub != "body line\n---not-a-fence\nmore body" {
+		t.Fatalf("body wrong (fence over-matched?): %q", s.PromptStub)
+	}
+
+	// CRLF opening + closing fences parse identically.
+	crlf := "---\r\nid: y\r\nname: Y\r\n---\r\nhello\r\n"
+	s2, err := ParseSkill([]byte(crlf), false)
+	if err != nil || s2.ID != "y" || s2.Name != "Y" {
+		t.Fatalf("CRLF parse failed: %+v err=%v", s2, err)
 	}
 }
 
