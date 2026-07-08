@@ -50,6 +50,20 @@ const (
 	// transition/admission was ACCEPTED and launch was starting) should use this
 	// event to learn that the launch ultimately failed.
 	EventRunFailed EventType = "run.failed"
+
+	// M6 additions (additive; M0–M5 events unchanged — Principle V).
+	// EventConstitutionChanged is emitted after a successful PUT /api/v1/constitution;
+	// it carries the new monotonic Version. The next dispatch (not any running step)
+	// picks up the new constitution.
+	EventConstitutionChanged EventType = "constitution.changed"
+
+	// EventRunlogWarning is a non-blocking warning tied to a bead/step — e.g. an
+	// unresolvable skill id or an MCP server named by a skill that is absent from
+	// the agent's own config. Unlike runlog.line, which is deliberately dropped at
+	// INGRESS under backpressure, a warning is not dropped at ingress. (The WS hub
+	// may still drop ANY frame to an individual slow client during fan-out — see
+	// internal/ws/hub.go; this event only avoids the runlog.line ingress drop.)
+	EventRunlogWarning EventType = "runlog.warning"
 )
 
 // Frame is the server-to-client event envelope. Each event type populates a
@@ -110,8 +124,14 @@ type Frame struct {
 	Quota *QuotaPayload `json:"quota,omitempty"`
 
 	// run.failed — human-readable reason the launch failed (err.Error()).
-	// Non-empty only on run.failed frames; omitted on all other frame types.
+	// runlog.warning also reuses Reason for the warning message.
+	// Non-empty only on those frames; omitted on all other frame types.
 	Reason string `json:"reason,omitempty"`
+
+	// M6: constitution.changed — the new monotonic constitution version.
+	// *int (pointer) so version 0 is not dropped by omitempty; nil on all other
+	// frame types (same rationale as StepIdx/*int above).
+	Version *int `json:"version,omitempty"`
 }
 
 // QuotaPayload is the run.quota event body.

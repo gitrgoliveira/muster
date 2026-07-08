@@ -21,6 +21,16 @@ const (
 	// CodeAttachUnavailable: the attach/send (tmux session) feature isn't
 	// available in this configuration — distinct from BD_CLI_MISSING.
 	CodeAttachUnavailable = "ATTACH_UNAVAILABLE"
+
+	// M6 additions (additive; no existing code changed).
+	// CodeSkillReadonly: attempt to delete/modify a read-only built-in skill.
+	CodeSkillReadonly = "SKILL_READONLY"
+	// CodeSkillIDConflict: import id collides with a built-in skill id.
+	CodeSkillIDConflict = "SKILL_ID_CONFLICT"
+	// CodeSkillInvalidID: skill id fails validation (empty, path separators, traversal).
+	CodeSkillInvalidID = "SKILL_INVALID_ID"
+	// CodeBDUnavailable: an underlying bd invocation failed on a /memories* route.
+	CodeBDUnavailable = "BD_UNAVAILABLE"
 )
 
 // ErrorResponse is the top-level JSON envelope returned for all error responses.
@@ -67,6 +77,14 @@ func httpStatusForCode(code string) int {
 		return http.StatusMethodNotAllowed
 	case CodeAttachUnavailable:
 		return http.StatusNotImplemented
+	case CodeSkillInvalidID:
+		return http.StatusBadRequest
+	case CodeSkillReadonly:
+		return http.StatusForbidden
+	case CodeSkillIDConflict:
+		return http.StatusConflict
+	case CodeBDUnavailable:
+		return http.StatusBadGateway
 	default:
 		return http.StatusInternalServerError
 	}

@@ -327,6 +327,7 @@ func (h *Handlers) Dispatch(w http.ResponseWriter, r *http.Request) {
 		Mode:           req.Mode,
 		PermissionMode: req.PermissionMode,
 		Chain:          chain,
+		Skills:         req.Skills,
 	}
 
 	result, err := h.svc.Dispatch(r.Context(), id, input)

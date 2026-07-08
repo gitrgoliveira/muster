@@ -30,6 +30,8 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `--default-permission-mode` | `MUSTER_DEFAULT_PERMISSION_MODE` | — | Fallback claude autonomy (`default`/`acceptEdits`/`dontAsk`/`bypassPermissions`/`auto`) applied to **agent-mode** dispatches that omit `permissionMode`. `plan` is **not** valid here — it's implicit for plan-mode dispatches and rejected at startup as a default. muster never defaults autonomy silently (M2). |
 | `--default-vcs` | `MUSTER_DEFAULT_VCS` | `git` | VCS backend for per-bead worktrees: `git` or `jj`. `jj` requires `jj` ≥ 0.42 on PATH and a source repo that is already a jj workspace; plain git repos with `--default-vcs=jj` return an error at dispatch time (M3). |
 | `--max-concurrent-dispatches` | `MUSTER_MAX_CONCURRENT_DISPATCHES` | `4` | Maximum concurrently *active* agent runs (M4). Further dispatches are accepted and **queued FIFO**, then admitted automatically as slots free. Must be a positive integer (`≤0` fails fast at startup). Adjustable at runtime via `PUT /api/v1/orchestrator/capacity` — lowering it drains rather than kills running agents. (The push remote for `POST /beads/{id}/worktree/push` is a per-request `{"remote":"…"}` body field, default `origin`, not a flag.) |
+| `--muster-dir` | `MUSTER_DIR` | `~/.muster` | Directory for muster's own operating config (M6): the constitution (`constitution.md`), imported skills (`skills/*.md`), and primed-memory snapshots (`primed/*.json`). Local files only — never Dolt, never through `bd`. |
+| `--claude-config-path` | `MUSTER_CLAUDE_CONFIG` | `~/.claude.json` | Path to the `claude` CLI config, read (only) for best-effort MCP-server verification (M6). A named MCP server absent from this config yields a non-blocking `runlog.warning`; muster never spawns or manages MCP servers. |
 
 ## API
 
@@ -40,14 +42,19 @@ See [`specs/002-m1-beads-backed/quickstart.md`](specs/002-m1-beads-backed/quicks
 | `POST` | `/api/v1/beads` | Create a bead (requires `bd`) |
 | `PATCH` | `/api/v1/beads/{id}` | Update a bead (requires `bd`) |
 | `POST` | `/api/v1/beads/{id}/move` | Move to column (requires `bd`) |
-| `POST` | `/api/v1/beads/{id}/dispatch` | Run a CLI agent on the bead — body `{agent, mode, permissionMode}` (M2) |
+| `POST` | `/api/v1/beads/{id}/dispatch` | Run a CLI agent on the bead — body `{agent, mode, permissionMode}` (M2); optional `chain[]` step override (M4); optional `skills[]` per-dispatch skill override unioned onto the bead's `skill:<id>` labels (M6) |
 | `GET` | `/api/v1/beads/{id}/steps/{idx}/attach` | tmux attach command + pane for a running step (M2; `idx=0`) |
 | `POST` | `/api/v1/beads/{id}/steps/{idx}/send` | Forward keystrokes to the live agent pane (M2; `idx=0`) |
 | `GET` | `/api/v1/beads/{id}/worktree` | Change summary for the bead's worktree — file list with `kind` (added/modified/deleted/renamed/copied), VCS name, and clean flag (M3) |
 | `GET` | `/api/v1/beads/{id}/diff` | Git-format unified diff of all worktree changes; optional `?path=` to scope to a single file (M3) |
 | `POST` | `/api/v1/beads/{id}/comments` | Add comment (requires `bd`) |
 | `GET` | `/api/v1/orchestrator/status` | Backend health, config, tmux + adapter availability |
-| `GET` | `/api/v1/stream` | WebSocket event stream (`bead.*`, `runlog.line`, `tmux.session.*`) |
+| `GET`/`PUT` | `/api/v1/constitution` | Read/replace the versioned constitution merged into every dispatched prompt (M6). `PUT {markdown}` bumps the version and emits `constitution.changed`. |
+| `GET` | `/api/v1/skills` · `/api/v1/skills/categories` | List the skill registry (embedded built-ins + imported) / its categories (M6) |
+| `POST`/`DELETE` | `/api/v1/skills` · `/api/v1/skills/{id}` | Import a skill from a URL `{url}` / delete an imported skill (built-ins are read-only → `SKILL_READONLY`) (M6) |
+| `GET`/`POST`/`DELETE` | `/api/v1/memories` · `/api/v1/memories/{key}` | List (`?q=`)/upsert `{key?,value}`/delete memories — a thin facade over `bd remember/forget/memories` (M6) |
+| `POST` | `/api/v1/memories/prime` | Snapshot current memories into a bead's next dispatch `{beadID}` (M6) |
+| `GET` | `/api/v1/stream` | WebSocket event stream (`bead.*`, `runlog.line`, `tmux.session.*`; M6 adds `constitution.changed`, `runlog.warning`) |
 
 ## Build & test
 

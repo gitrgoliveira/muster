@@ -105,5 +105,5 @@ api (thin HTTP/WS handlers)  →  services  →  store + core
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan at:
-specs/005-m4-dispatcher/plan.md
+specs/007-m6-skills-constitution/plan.md
 <!-- SPECKIT END -->

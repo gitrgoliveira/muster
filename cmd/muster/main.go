@@ -22,6 +22,7 @@ import (
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/orchestrator"
 	"github.com/gitrgoliveira/muster/internal/services"
+	"github.com/gitrgoliveira/muster/internal/skills"
 	"github.com/gitrgoliveira/muster/internal/store"
 	"github.com/gitrgoliveira/muster/internal/store/bdshell"
 	"github.com/gitrgoliveira/muster/internal/store/dolt"
@@ -106,6 +107,8 @@ func main() {
 	var repoFlagList repoFlags
 	fs.Var(&repoFlagList, "repo", "repeatable: map bead-ID prefix to repo path (e.g. mp=/path/to/repo)")
 	worktreesDirFlag := fs.String("worktrees-dir", "", "directory for per-bead git worktrees (default: ~/.muster/worktrees)")
+	musterDirFlag := fs.String("muster-dir", "", "directory for muster's own config: constitution, imported skills, primed memories (default: ~/.muster; env MUSTER_DIR)")
+	claudeConfigFlag := fs.String("claude-config-path", "", "path to the claude CLI config for best-effort MCP verification (default: ~/.claude.json; env MUSTER_CLAUDE_CONFIG)")
 	// --run-timeout defaults from MUSTER_RUN_TIMEOUT when the flag is not given
 	// (parity with the other M2 flags, and with FR-017's documented env
 	// fallback). An unparseable env value is warned about and ignored rather
@@ -201,6 +204,18 @@ func main() {
 	}
 	if worktreesDir == "" {
 		worktreesDir = config.DefaultWorktreesDir()
+	}
+
+	// Resolve muster's own operating-config directory (constitution, imported
+	// skills, primed memories). The M6 services that use it are constructed
+	// below, once the WS hub exists.
+	musterDir := config.ResolveMusterDir(*musterDirFlag)
+
+	// claude MCP-config path for best-effort verification: flag > env > default
+	// (the orchestrator resolves an empty value to ~/.claude.json).
+	claudeConfigPath := *claudeConfigFlag
+	if claudeConfigPath == "" {
+		claudeConfigPath = os.Getenv("MUSTER_CLAUDE_CONFIG")
 	}
 
 	// Validate default permission mode if set.
@@ -352,17 +367,43 @@ func main() {
 	// Build orchestrator. config.RepoMap and orchestrator.RepoMap share the
 	// identical underlying type (map[string]string), so this is a plain type
 	// conversion (no copy).
+	// M6 services (constructed here, once the hub exists). The constitution and
+	// skill registry are wired both as orchestrator assembly providers and as
+	// router dependencies. A failed skill-registry load is non-fatal — skills
+	// routes are simply not registered and assembly resolves an empty loadout.
+	constitutionSvc := services.NewConstitutionService(musterDir, hub.Broadcast)
+	var skillSvc *services.SkillService
+	var skillProvider orchestrator.SkillProvider
+	if reg, err := skills.NewRegistry(musterDir); err != nil {
+		slog.Warn("skill registry failed to load; skills disabled for this run", "err", err)
+	} else {
+		skillSvc = services.NewSkillService(reg)
+		skillProvider = reg
+	}
+
+	// Memories facade over bd (nil-safe: a nil bd store yields typed
+	// BD_UNAVAILABLE errors, never a false empty-list success).
+	var memStore services.MemoryStore
+	if cli != nil {
+		memStore = cli
+	}
+	memoriesSvc := services.NewMemoriesService(memStore, musterDir)
+
 	orc := orchestrator.New(orchestrator.Config{
-		Adapters:        reg,
-		Transport:       transport,
-		RepoMap:         orchestrator.RepoMap(repoMap),
-		WorktreesDir:    worktreesDir,
-		DefaultVCS:      wt.VCS(defaultVCS),
-		DefaultPermMode: defaultPermMode,
-		Publish:         func(f ws.Frame) { hub.Broadcast(f) },
-		RunTimeout:      *runTimeoutFlag,
-		OnComplete:      onComplete,
-		MaxConcurrent:   maxConcurrent, // M4 US1: capacity-gated FIFO scheduler
+		Adapters:         reg,
+		Transport:        transport,
+		RepoMap:          orchestrator.RepoMap(repoMap),
+		WorktreesDir:     worktreesDir,
+		DefaultVCS:       wt.VCS(defaultVCS),
+		DefaultPermMode:  defaultPermMode,
+		Publish:          func(f ws.Frame) { hub.Broadcast(f) },
+		RunTimeout:       *runTimeoutFlag,
+		OnComplete:       onComplete,
+		MaxConcurrent:    maxConcurrent, // M4 US1: capacity-gated FIFO scheduler
+		Constitution:     constitutionSvc,
+		Skills:           skillProvider,
+		ClaudeConfigPath: claudeConfigPath,
+		PrimedMemories:   memoriesSvc,
 	})
 
 	var svcCLI services.CLIRunner
@@ -445,7 +486,11 @@ func main() {
 		RunLister: &orchestratorRunListerAdapter{orc: orc},
 	}
 
-	handler := api.NewRouter(svc, hub, UI, statusCfg)
+	handler := api.NewRouter(svc, hub, UI, statusCfg, api.M6Services{
+		Constitution: constitutionSvc,
+		Skills:       skillSvc,
+		Memories:     memoriesSvc,
+	})
 
 	// Signal context — shared by the embedded-mode watcher below and by the
 	// graceful-shutdown wait at the end of main.

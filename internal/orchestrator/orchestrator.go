@@ -97,10 +97,43 @@ type Run struct {
 	// a per-bead pointer through the chain.
 	Chain *StepChain
 
+	// Skills is the effective skill loadout, preserved on the run so every step
+	// (including advance/loop-back relaunches) assembles the same loadout (M6
+	// US4). Immutable after Dispatch populates it.
+	Skills []string
+
 	// Quota holds the token/cost usage captured at run end. Known=false until
 	// US5 wires the on-disk quota reader; runs before US5 leave it zero.
 	// Mutable under o.mu (set in finishRun once the session exits).
 	Quota QuotaUsage
+
+	// stepSummaries retains a bounded tail of each finished step's pane output
+	// plus its terminal status, so M6 assembly can include earlier-step
+	// summaries in the next step's prompt (FR-004). Disposable/reconstructable
+	// per Principle II — lives only for the run's lifetime. Guarded by o.mu:
+	// the streamer records the tail on EOF; finishRun records the status.
+	stepSummaries map[int]*stepSummary
+
+	// primed is the per-bead primed-memory snapshot, consumed once at the run's
+	// first assembly and cached for the run's lifetime so every step of the SAME
+	// dispatch sees the same set. Consuming it clears the on-disk snapshot, so a
+	// later dispatch of the bead does not re-inject it (FR-024 one-shot "next
+	// dispatch"). primedLoaded guards against re-consuming. Both are read/written
+	// only under o.mu, BUT the filesystem consume itself runs OUTSIDE o.mu (see
+	// primedMemories) so slow disk I/O never blocks dispatch scheduling. Steps of
+	// a run assemble sequentially, so the consume happens exactly once.
+	primed       []primedKV
+	primedLoaded bool
+
+	// tailDone is closed once the CURRENT step's runlog tail has been recorded
+	// (streamer EOF → recordStepTail). finishRun waits on it (bounded) before a
+	// step transition, so the next step's assembled prompt reliably includes this
+	// step's earlier-step summary (FR-004) instead of racing the async streamer
+	// and rendering "(no output captured)". Set per step at doLaunch — an open
+	// channel when the step has a pane pipe (closed in the streamer's onDone), or
+	// a pre-closed channel when it has none. nil before the first launch. Guarded
+	// by o.mu; a channel is a reference, so GetRun's snapshot copy is safe.
+	tailDone chan struct{}
 
 	// pendingAdvance is true while an Advance/LoopBack is in progress for this
 	// run. When true, finishRun skips eviction and instead relaunches the run at
@@ -130,6 +163,12 @@ type DispatchRequest struct {
 	// (M2 behaviour) if no default chain is set. Per-step PermissionMode is
 	// never silently defaulted (FR-012a).
 	Chain *StepChain
+
+	// Skills is the effective, de-duplicated skill loadout for this dispatch
+	// (M6 US4): the union of the bead's skill:<id> labels and any step-level
+	// override, resolved into "Skills loaded" in the assembled prompt. Unknown
+	// ids warn, never block (FR-020).
+	Skills []string
 }
 
 // DispatchResult is the return value of Orchestrator.Dispatch.
@@ -191,6 +230,18 @@ type Orchestrator struct {
 	// per-session JSONL transcripts. Empty string means os.UserHomeDir() is
 	// called at run end. Overridable via Config.QuotaHomeDir for testing (T063).
 	quotaHomeDir string
+
+	// constitution and skills are the M6 prompt-assembly providers (nil-safe).
+	// Set at construction from Config; read by assemblePrompt.
+	constitution ConstitutionProvider
+	skills       SkillProvider
+
+	// claudeConfigPath overrides the location of the claude CLI config used for
+	// best-effort MCP verification (default ~/.claude.json). Empty = default.
+	claudeConfigPath string
+
+	// primedMemoriesProvider supplies per-bead primed memory snapshots (nil-safe).
+	primedMemoriesProvider PrimedMemoriesProvider
 }
 
 // RepoMap maps bead-ID prefixes to absolute repo paths.
@@ -236,6 +287,21 @@ type Config struct {
 	DefaultPermMode core.PermissionMode
 	Publish         Publisher
 	RunTimeout      time.Duration // 0 = no timeout (FR-017: opt-in only)
+
+	// Constitution and Skills are the M6 prompt-assembly providers. Both are
+	// optional and nil-safe: a nil Constitution yields an empty/v0 header, a nil
+	// Skills yields an empty loadout. Wired in main.go from the constitution
+	// service and skill registry so assemblePrompt can merge them.
+	Constitution ConstitutionProvider
+	Skills       SkillProvider
+
+	// ClaudeConfigPath overrides the claude CLI config path used for best-effort
+	// MCP verification (default ~/.claude.json). Empty = default.
+	ClaudeConfigPath string
+
+	// PrimedMemories is the optional, nil-safe provider of per-bead primed
+	// memory snapshots folded into the assembled prompt (M6 US5).
+	PrimedMemories PrimedMemoriesProvider
 
 	// RunRetention bounds how long a finished run's entry stays in the
 	// in-memory registry (o.runs) after completion, so a long-lived server
@@ -322,22 +388,26 @@ func New(cfg Config) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		runs:            make(map[string]*Run),
-		sched:           newScheduler(schedCap),
-		adapters:        cfg.Adapters,
-		transport:       transport,
-		repoMap:         cfg.RepoMap,
-		worktreesDir:    cfg.WorktreesDir,
-		backend:         backend,
-		defaultVCS:      defaultVCS,
-		vcsAvailable:    avail,
-		defaultPermMode: cfg.DefaultPermMode,
-		publish:         cfg.Publish,
-		runTimeout:      cfg.RunTimeout,
-		runRetention:    runRetention,
-		onComplete:      cfg.OnComplete,
-		defaultChain:    cfg.DefaultChain,
-		quotaHomeDir:    cfg.QuotaHomeDir,
+		runs:                   make(map[string]*Run),
+		sched:                  newScheduler(schedCap),
+		adapters:               cfg.Adapters,
+		transport:              transport,
+		repoMap:                cfg.RepoMap,
+		worktreesDir:           cfg.WorktreesDir,
+		backend:                backend,
+		defaultVCS:             defaultVCS,
+		vcsAvailable:           avail,
+		defaultPermMode:        cfg.DefaultPermMode,
+		publish:                cfg.Publish,
+		runTimeout:             cfg.RunTimeout,
+		runRetention:           runRetention,
+		onComplete:             cfg.OnComplete,
+		defaultChain:           cfg.DefaultChain,
+		quotaHomeDir:           cfg.QuotaHomeDir,
+		constitution:           cfg.Constitution,
+		skills:                 cfg.Skills,
+		claudeConfigPath:       cfg.ClaudeConfigPath,
+		primedMemoriesProvider: cfg.PrimedMemories,
 	}
 }
 
@@ -713,6 +783,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, req DispatchRequest) (Dispa
 		State:          core.StepPending,
 		StartedAt:      time.Now(),
 		Chain:          resolvedChain,
+		Skills:         req.Skills,
 	}
 	// admitOrEnqueue returns the 0-based FIFO position when queued, so Dispatch
 	// need not reach into scheduler internals (tri-review 4).
@@ -858,7 +929,14 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 	// step 1 does not overwrite step 0's file. For step 0 this is
 	// ".muster-prompt-0.txt" — M2 byte-for-byte identical.
 	promptPath := filepath.Join(wtPath, promptFileNameForStep(stepIdx))
-	prompt := buildPrompt(req.BeadTitle, req.BeadDesc)
+	// M6: the full assembled prompt (constitution + step/provider framing + skill
+	// loadout + bead ticket + earlier-step summaries + resolved step prompt)
+	// replaces the M2 two-line buildPrompt. All launch paths (step 0, queued
+	// admission, advance, loop-back) funnel through doLaunch, so this single call
+	// covers the whole chain. skillIDs is nil until US4 threads bead.Skills ∪
+	// step.Skills. run.Skills is used (not req.Skills) so advance/loop-back
+	// relaunches assemble the same loadout.
+	prompt := o.assemblePrompt(run, req, req.Mode, stepIdx, run.Skills)
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt: %w", err)
 	}
@@ -923,15 +1001,34 @@ func (o *Orchestrator) doLaunch(ctx context.Context, run *Run, req DispatchReque
 		// concurrent GetRun — which snapshots the whole struct under RLock —
 		// would otherwise race this write. watchRun (started below) reads
 		// run.pipe only after this point, so its later read is ordered safely.
+		// tailDone closes once this step's tail is recorded (streamer onDone),
+		// so a step transition can wait for it before assembling the next step.
+		tailDone := make(chan struct{})
 		o.mu.Lock()
 		run.pipe = pipeReader // closed in finishRun (frees the FIFO/temp dir)
+		run.tailDone = tailDone
 		o.mu.Unlock()
+		// Capture the run + stepIdx so the streamer can record this step's tail
+		// for M6 earlier-step summaries (FR-004) when the pane hits EOF.
+		capturedRun, capturedStep := run, stepIdx
 		streamer := &runlogStreamer{
 			beadID:  req.BeadID,
 			stepIdx: stepIdx,
 			publish: o.publish,
+			onDone: func(tail string) {
+				o.recordStepTail(capturedRun, capturedStep, tail)
+				close(tailDone)
+			},
 		}
 		go streamer.stream(pipeReader)
+	} else {
+		// No pane pipe → no tail will ever be recorded; a pre-closed channel lets
+		// a step transition proceed without waiting.
+		closed := make(chan struct{})
+		close(closed)
+		o.mu.Lock()
+		run.tailDone = closed
+		o.mu.Unlock()
 	}
 
 	go o.watchRun(runCtx, run)
@@ -1109,7 +1206,16 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// snapshot it here rather than reading run.StepIdx unlocked below
 	// (tri-review 2 HIGH — data race on the tmux.session.closed frame).
 	stepIdx := run.StepIdx
+	// tailDone for the step that just finished; a step transition waits on it so
+	// the next step's assembly includes this step's summary (FR-004).
+	tailDone := run.tailDone
 	o.mu.RUnlock()
+
+	// M6: record this step's terminal status so the NEXT step's assembly can
+	// include an earlier-step summary (FR-004). The streamer records the tail on
+	// pane EOF; this records done/failed. Safe during a step transition — it is
+	// internal run state, not client-observable.
+	o.recordStepStatus(run, stepIdx, state)
 
 	// Kill the tmux session (remain-on-exit keeps it alive; we must clean up).
 	// Log a failure: a non-"session gone" error means the session may persist,
@@ -1187,6 +1293,12 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// doLaunch once the next watcher is up), so the bead reads as in-flight to
 	// any concurrent Advance (rejected) or Dispatch (joins) throughout.
 	if pending {
+		// Wait (bounded) for the just-finished step's tail to be recorded before
+		// relaunching, so the next step's assembled prompt includes this step's
+		// summary rather than racing the async streamer (FR-004). pipe.Close above
+		// triggered the streamer's EOF; tailDone closes once recordStepTail ran.
+		// The bound keeps a wedged streamer from stalling the transition.
+		waitTailRecorded(tailDone, tailRecordWait)
 		go o.relaunchNextStep(run)
 		return
 	}
@@ -1247,13 +1359,4 @@ func (o *Orchestrator) finishRun(run *Run, exitCode int, success bool) {
 	// run from the registry after the retention window so a long-lived server
 	// doesn't accumulate an entry per bead ever dispatched.
 	o.scheduleRunEviction(run)
-}
-
-// buildPrompt assembles the bead title and description into a prompt string.
-func buildPrompt(title, desc string) string {
-	prompt := "# " + title + "\n\n"
-	if desc != "" {
-		prompt += desc + "\n"
-	}
-	return prompt
 }

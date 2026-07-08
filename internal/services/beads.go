@@ -106,6 +106,10 @@ type DispatchInput struct {
 	// http-endpoints.md "chain" field). Nil/empty means the M2 single-step
 	// default (or the orchestrator's configured default chain, if any).
 	Chain []ChainStepInput
+	// Skills is the optional per-dispatch step-level skill override (FR-018),
+	// unioned additively on top of the bead-level skill:<id> labels. Nil/empty
+	// means the loadout is the bead-level set alone.
+	Skills []string
 }
 
 // ChainStepInput is a wire-agnostic mirror of orchestrator.StepProfile.
@@ -150,6 +154,50 @@ type OrchestratorDispatcher interface {
 	Dispatch(ctx context.Context, req OrchestratorDispatchRequest) (OrchestratorDispatchResult, error)
 }
 
+// labelReader is the optional capability (satisfied by *bdshell.CLI) to read a
+// bead's labels. It is intentionally NOT part of CLIRunner, so existing fakes
+// are unaffected; a CLI without it simply yields no label-derived skills.
+type labelReader interface {
+	Labels(ctx context.Context, id string) ([]string, error)
+}
+
+// resolveBeadSkills computes the effective skill loadout for a dispatch: the
+// bead's reserved skill:<id> labels (read via bd, best-effort) unioned with any
+// skills already on the bead AND the per-dispatch step-level override, all
+// de-duplicated (FR-018: bead.Skills ∪ step.Skills, additive). A label-read
+// failure is non-blocking — it yields no label-derived skills rather than
+// failing dispatch. Ordering is irrelevant: assembly re-sorts the resolved set.
+func (svc *BeadService) resolveBeadSkills(ctx context.Context, id string, bead *core.Bead, override []string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			ids = append(ids, s)
+		}
+	}
+	if lr, ok := svc.cli.(labelReader); ok {
+		if labels, err := lr.Labels(ctx, id); err == nil {
+			// A bare/malformed skill id (e.g. from a "skill:" label) is kept so
+			// assembly warns on it (FR-020) rather than dropping it silently.
+			skillIDs, _ := SplitSkillLabels(labels)
+			for _, s := range skillIDs {
+				add(s)
+			}
+		}
+	}
+	if bead != nil {
+		for _, s := range bead.Skills {
+			add(s)
+		}
+	}
+	// Per-dispatch step-level override, unioned on top (never subtractive).
+	for _, s := range override {
+		add(s)
+	}
+	return ids
+}
+
 // OrchestratorDispatchRequest is the input for OrchestratorDispatcher.Dispatch.
 // Mirrors orchestrator.DispatchRequest; defined here to avoid an import cycle.
 type OrchestratorDispatchRequest struct {
@@ -162,6 +210,11 @@ type OrchestratorDispatchRequest struct {
 	// Chain mirrors orchestrator.DispatchRequest.Chain (via ChainStepInput /
 	// orchestrator.StepProfile); nil/empty means no per-dispatch override.
 	Chain []ChainStepInput
+
+	// Skills mirrors orchestrator.DispatchRequest.Skills — the effective skill
+	// loadout for this dispatch (from the bead's skill:<id> labels ∪ any
+	// step-level selection). Unknown ids warn at assembly, never block (M6 US4).
+	Skills []string
 }
 
 // OrchestratorDispatchResult is the service-layer mirror of
@@ -632,6 +685,7 @@ func (svc *BeadService) Dispatch(ctx context.Context, id string, input DispatchI
 			Mode:           input.Mode,
 			PermissionMode: input.PermissionMode,
 			Chain:          input.Chain,
+			Skills:         svc.resolveBeadSkills(ctx, id, bead, input.Skills),
 		}
 		orchResult, orchErr := svc.orchestrator.Dispatch(ctx, req)
 		if orchErr != nil {

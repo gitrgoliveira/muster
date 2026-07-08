@@ -35,7 +35,7 @@ func newRouterTestServer(t *testing.T) *httptest.Server {
 	hub := ws.NewHub("0.9.1")
 	go hub.Run()
 
-	handler := api.NewRouter(svc, hub, uiFS, health.StatusConfig{BeadsVersion: "0.9.1", SchemaVersion: 1})
+	handler := api.NewRouter(svc, hub, uiFS, health.StatusConfig{BeadsVersion: "0.9.1", SchemaVersion: 1}, api.M6Services{})
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

@@ -1,11 +1,30 @@
 package services
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gitrgoliveira/muster/internal/core"
 	"github.com/gitrgoliveira/muster/internal/store"
 )
+
+// skillLabelPrefix marks a bead label that selects a skill (M6 US4, option b).
+const skillLabelPrefix = "skill:"
+
+// SplitSkillLabels partitions a bead's labels into skill ids (from the reserved
+// `skill:<id>` prefix, stripped) and the remaining plain labels. It does not
+// validate the ids — an empty or malformed id is returned as-is so the assembly
+// layer can warn on it (never a silent drop, FR-020).
+func SplitSkillLabels(labels []string) (skillIDs, plain []string) {
+	for _, l := range labels {
+		if id, ok := strings.CutPrefix(l, skillLabelPrefix); ok {
+			skillIDs = append(skillIDs, id)
+		} else {
+			plain = append(plain, l)
+		}
+	}
+	return skillIDs, plain
+}
 
 // IssueToBead converts a store.Issue to a core.Bead.
 func IssueToBead(issue *store.Issue, repo string) core.Bead {
@@ -17,17 +36,18 @@ func IssueToBead(issue *store.Issue, repo string) core.Bead {
 	}
 
 	bead := core.Bead{
-		ID:         issue.ID,
-		Title:      issue.Title,
-		Desc:       issue.Description,
-		Column:     col,
-		Priority:   core.Priority(issue.Priority),
-		Type:       issueTypeToBeadType(issue.IssueType),
-		Ready:      issue.DependencyCount == 0 && issue.Status == "open",
-		Repo:       repo,
-		Assignee:   core.AgentID(assigneeStr),
-		Labels:     []string{},
-		Skills:     []string{},
+		ID:       issue.ID,
+		Title:    issue.Title,
+		Desc:     issue.Description,
+		Column:   col,
+		Priority: core.Priority(issue.Priority),
+		Type:     issueTypeToBeadType(issue.IssueType),
+		Ready:    issue.DependencyCount == 0 && issue.Status == "open",
+		Repo:     repo,
+		Assignee: core.AgentID(assigneeStr),
+		Labels:   []string{},
+		Skills:   []string{},
+		// (Labels/Skills split below from issue.Labels when present.)
 		Steps:      []core.Step{},
 		SubBeads:   []core.SubBead{},
 		Gates:      []core.Gate{},
@@ -38,6 +58,16 @@ func IssueToBead(issue *store.Issue, repo string) core.Bead {
 		Blocks:     []string{},
 		BlockedBy:  []string{},
 		Comments:   issue.CommentCount,
+	}
+
+	if len(issue.Labels) > 0 {
+		skillIDs, plain := SplitSkillLabels(issue.Labels)
+		if len(plain) > 0 {
+			bead.Labels = plain
+		}
+		if len(skillIDs) > 0 {
+			bead.Skills = skillIDs
+		}
 	}
 
 	bead.CreatedAt = issue.CreatedAt.UTC().Format(time.RFC3339)

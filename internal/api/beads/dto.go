@@ -47,6 +47,10 @@ type DispatchRequest struct {
 	// http-endpoints.md: "Request body unchanged, plus optional additive
 	// field `chain`"). Omitted/empty means the M2 single-step default.
 	Chain []ChainStepRequest `json:"chain,omitempty"`
+	// Skills is the optional per-dispatch step-level skill override (FR-018):
+	// unioned additively on top of the bead's skill:<id> labels, never
+	// subtractive. Omitted/empty means the loadout is the bead-level set alone.
+	Skills []string `json:"skills,omitempty"`
 }
 
 // ChainStepRequest is the wire shape of a single step in DispatchRequest.Chain.

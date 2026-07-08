@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/base64"
 	"io"
+	"strings"
 	"sync/atomic"
 
 	"github.com/gitrgoliveira/muster/internal/ws"
@@ -11,6 +12,43 @@ import (
 // intPtr returns a pointer to i. Used for ws.Frame.StepIdx (*int) so the valid
 // M2 value 0 is serialized rather than dropped by omitempty.
 func intPtr(i int) *int { return &i }
+
+// maxTailBytes / maxTailLines bound the per-step runlog tail retained for M6
+// earlier-step summaries (FR-004). The tail is disposable run state, not a
+// durable runlog store.
+const (
+	maxTailBytes = 8 * 1024
+	maxTailLines = 100
+)
+
+// tailBuffer keeps the last ~maxTailBytes of a stream, trimmed to the last
+// maxTailLines on read. Not safe for concurrent use — a single streamer
+// goroutine owns it.
+type tailBuffer struct {
+	b []byte
+}
+
+func (t *tailBuffer) append(p []byte) {
+	t.b = append(t.b, p...)
+	// Trim generously (only when well over the cap) to avoid reslicing on every
+	// chunk; String() applies the exact cap.
+	if len(t.b) > 2*maxTailBytes {
+		t.b = append([]byte(nil), t.b[len(t.b)-maxTailBytes:]...)
+	}
+}
+
+func (t *tailBuffer) String() string {
+	b := t.b
+	if len(b) > maxTailBytes {
+		b = b[len(b)-maxTailBytes:]
+	}
+	s := string(b)
+	// Keep only the last maxTailLines.
+	if lines := strings.Split(s, "\n"); len(lines) > maxTailLines {
+		s = strings.Join(lines[len(lines)-maxTailLines:], "\n")
+	}
+	return s
+}
 
 // runlogStreamer reads raw bytes from a pane pipe and fans them to the WS hub
 // as sequential runlog.line frames.
@@ -22,6 +60,12 @@ type runlogStreamer struct {
 	stepIdx int
 	seq     atomic.Uint64 // monotonic counter per (bead, step) run
 	publish Publisher
+
+	// tail retains the bounded end of this step's output; onDone (if set) is
+	// called with it on EOF so the orchestrator can store it for M6 earlier-step
+	// summaries (FR-004).
+	tail   tailBuffer
+	onDone func(tail string)
 }
 
 // stream reads from r until EOF or error, publishing each read as a runlog.line frame.
@@ -31,6 +75,7 @@ func (s *runlogStreamer) stream(r io.Reader) {
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
+			s.tail.append(buf[:n]) // retain bounded tail for FR-004 summaries
 			seq := s.seq.Add(1)
 			if s.publish != nil {
 				// Hot path (high-volume pane output) — avoid per-chunk allocations:
@@ -55,5 +100,8 @@ func (s *runlogStreamer) stream(r io.Reader) {
 		if err != nil {
 			break
 		}
+	}
+	if s.onDone != nil {
+		s.onDone(s.tail.String())
 	}
 }
