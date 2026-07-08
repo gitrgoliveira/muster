@@ -16,6 +16,13 @@ var (
 	ErrIDConflict = errors.New("skill id collides with a built-in")
 	// ErrNotFound: no such skill.
 	ErrNotFound = errors.New("skill not found")
+	// ErrInvalidID: a skill id failed ValidateID (empty, traversal, bad chars).
+	// A client-facing 400 (SKILL_INVALID_ID), never a server fault.
+	ErrInvalidID = errors.New("skill id is invalid")
+	// ErrPersist: a filesystem persistence failure (mkdir/write/rename/remove).
+	// An internal 500 — distinct from a bad request so the service does not
+	// misclassify a server fault as a client error or leak raw error text.
+	ErrPersist = errors.New("skill store persistence failure")
 )
 
 // fileStore persists imported skills as one markdown file per id under dir. It
@@ -95,15 +102,15 @@ func (s *fileStore) put(sk Skill) error {
 	}
 	data, err := formatSkill(sk)
 	if err != nil {
-		return err
+		return errors.Join(ErrPersist, err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return err
+		return errors.Join(ErrPersist, err)
 	}
 	if err := atomicWriteFile(s.pathFor(sk.ID), data, 0o600); err != nil {
-		return err
+		return errors.Join(ErrPersist, err)
 	}
 	s.m[sk.ID] = sk
 	return nil
@@ -119,7 +126,7 @@ func (s *fileStore) delete(id string) error {
 		return ErrNotFound
 	}
 	if err := os.Remove(s.pathFor(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return errors.Join(ErrPersist, err)
 	}
 	delete(s.m, id)
 	return nil

@@ -148,6 +148,14 @@ func fetchSkill(client *http.Client, rawURL string) (Skill, error) {
 	if client == nil {
 		client = newImportClient()
 	}
+	// Fetching a user-supplied URL is the feature (skill import). The SSRF risk is
+	// mitigated in depth and does not rely on this call site trusting the input:
+	// validateFetchURL (above) enforces the scheme allowlist and rejects
+	// metadata/link-local/private/CGNAT/unspecified hosts pre-dial; the client's
+	// dial-time Control hook (blockInternalIP) re-checks the ACTUAL connected IP,
+	// closing the DNS-rebinding TOCTOU; CheckRedirect re-validates every hop. A
+	// CodeQL "uncontrolled data in network request" alert here is expected and
+	// accepted given these layered guards.
 	resp, err := client.Get(u.String())
 	if err != nil {
 		return Skill{}, fmt.Errorf("skill import: fetch failed: %w", err)

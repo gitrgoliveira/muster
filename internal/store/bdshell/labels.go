@@ -9,21 +9,24 @@ package bdshell
 // label read MUST use the dedicated label command, not show-enrichment (this is
 // exactly the review's F4 concern, now confirmed):
 //
-//	bd label list <id> --json     -> a JSON ARRAY of strings, e.g. ["skill:repo-grep"];
-//	                                 `[]` when the bead has no labels.
+//	bd label list --json -- <id>  -> a JSON ARRAY of strings, e.g. ["skill:repo-grep"];
+//	                                 `[]` when the bead has no labels. The `--`
+//	                                 separator makes the id a positional arg, so an
+//	                                 id starting with `-` can't be read as a flag.
 //	bd label add <id> <label>     -> `✓ Added label '<label>' to <id>`   (write; muster reads only)
 //	bd label remove <id> <label>  -> `✓ Removed label '<label>' from <id>`
 //
-// The read verb `Labels(ctx, id) ([]string, error)` runs `bd label list <id>
-// --json` via the exec pattern and unmarshals the string array. IssueToBead then
+// The read verb `Labels(ctx, id) ([]string, error)` runs `bd label list --json
+// -- <id>` via the exec pattern and unmarshals the string array. IssueToBead then
 // splits `skill:<id>` entries (each id passing skills.ValidateID) into
 // core.Bead.Skills and the rest into core.Bead.Labels. A dispatch-time read (not
 // per List row) avoids an N+1 on the beads list.
 
 import "context"
 
-// Labels reads a bead's labels via `bd label list <id> --json`, which returns a
-// JSON array of label strings ([] when none).
+// Labels reads a bead's labels via `bd label list --json -- <id>`, which returns
+// a JSON array of label strings ([] when none). The `--` separator keeps the id
+// positional so an id beginning with `-` is never parsed as a flag.
 func (c *CLI) Labels(ctx context.Context, id string) ([]string, error) {
 	var labels []string
 	if err := c.RunJSON(ctx, &labels, "label", "list", "--json", "--", id); err != nil {

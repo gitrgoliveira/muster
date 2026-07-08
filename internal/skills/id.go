@@ -28,17 +28,17 @@ var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 func ValidateID(id string) error {
 	switch {
 	case id == "":
-		return fmt.Errorf("skill id is empty")
+		return fmt.Errorf("skill id is empty: %w", ErrInvalidID)
 	case len(id) > maxIDLen:
-		return fmt.Errorf("skill id %q exceeds %d chars", id, maxIDLen)
+		return fmt.Errorf("skill id %q exceeds %d chars: %w", id, maxIDLen, ErrInvalidID)
 	case id == "." || id == "..":
-		return fmt.Errorf("skill id %q is a path traversal", id)
+		return fmt.Errorf("skill id %q is a path traversal: %w", id, ErrInvalidID)
 	case strings.Contains(id, ".."):
-		return fmt.Errorf("skill id %q contains '..'", id)
+		return fmt.Errorf("skill id %q contains '..': %w", id, ErrInvalidID)
 	case strings.ContainsAny(id, `/\`):
-		return fmt.Errorf("skill id %q contains a path separator", id)
+		return fmt.Errorf("skill id %q contains a path separator: %w", id, ErrInvalidID)
 	case !idPattern.MatchString(id):
-		return fmt.Errorf("skill id %q must match %s", id, idPattern.String())
+		return fmt.Errorf("skill id %q must match %s: %w", id, idPattern.String(), ErrInvalidID)
 	}
 	return nil
 }

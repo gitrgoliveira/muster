@@ -22,8 +22,11 @@ type Issue struct {
 	CommentCount    int        `json:"comment_count"`
 	Notes           string     `json:"notes,omitempty"`
 
-	// Labels are the bead's labels (M6). Not populated by the M1 read backends
-	// (Dolt/JSONL do not read the labels table); it is filled at dispatch time
-	// from `bd label list` so skill:<id> labels can be surfaced into the bead.
+	// Labels are the bead's labels (M6). The M1 read backends (Dolt/JSONL) leave
+	// this empty — they do not read the labels table. The dispatch path reads
+	// labels separately via the bdshell `Labels` verb (`bd label list --json --
+	// <id>`) and folds skill:<id> entries into core.Bead.Skills, so it does not
+	// depend on this field being populated. Higher layers may optionally enrich
+	// it, but nothing in muster currently does.
 	Labels []string `json:"labels,omitempty"`
 }

@@ -1,6 +1,9 @@
 package skills
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestValidateID(t *testing.T) {
 	valid := []string{"repo-grep", "run-tests", "speckit", "a", "a.b", "a_b-1", "beads-memory"}
@@ -26,8 +29,15 @@ func TestValidateID(t *testing.T) {
 		"skill:x",     // colon (the prefix must already be stripped)
 	}
 	for _, id := range invalid {
-		if err := ValidateID(id); err == nil {
+		err := ValidateID(id)
+		if err == nil {
 			t.Errorf("ValidateID(%q) = nil, want error", id)
+			continue
+		}
+		// Every validation failure must wrap the ErrInvalidID sentinel so the
+		// service can map it to SKILL_INVALID_ID (400) rather than a 500.
+		if !errors.Is(err, ErrInvalidID) {
+			t.Errorf("ValidateID(%q) = %v, want errors.Is ErrInvalidID", id, err)
 		}
 	}
 }

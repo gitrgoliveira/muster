@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -76,6 +78,28 @@ func TestRegistry_ImportAndDeleteRoundTrip(t *testing.T) {
 	}
 	if _, ok := r.Get("custom-skill"); ok {
 		t.Fatal("skill present after delete")
+	}
+}
+
+func TestRegistry_ImportPersistFailureIsErrPersist(t *testing.T) {
+	// A valid fetch whose persistence fails (the skills dir can't be created)
+	// must surface ErrPersist — an internal 500 — not be collapsed into the
+	// generic 400 fetch/parse bucket.
+	base := t.TempDir()
+	musterDir := filepath.Join(base, "x")
+	r, err := NewRegistry(musterDir) // skills dir absent at construction → ok
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Turn musterDir into a regular file so store.put's MkdirAll(<musterDir>/skills)
+	// fails deterministically (no reliance on perms, which root would ignore).
+	if err := os.WriteFile(musterDir, []byte("blocker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := skillServer("---\nid: custom-skill\nname: Custom\n---\nstub")
+	defer srv.Close()
+	if _, err := r.ImportFromURL(srv.URL); !errors.Is(err, ErrPersist) {
+		t.Fatalf("import with un-creatable store dir = %v, want ErrPersist", err)
 	}
 }
 
