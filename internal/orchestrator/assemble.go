@@ -212,9 +212,16 @@ func (o *Orchestrator) assemblePrompt(run *Run, req DispatchRequest, mode core.M
 	md, ver := o.constitutionSnapshot()
 	resolved, unresolved := o.resolveSkills(skillIDs)
 	// FR-020: an unresolvable skill id is skipped with a visible warning, never a
-	// silent drop and never a blocked dispatch.
+	// silent drop and never a blocked dispatch. Resolve returns an id as
+	// unresolved either because it failed validation (empty from a bare `skill:`
+	// label, traversal, malformed) or because no such skill exists — distinguish
+	// the two so the warning is diagnosable.
 	for _, id := range unresolved {
-		o.warn(req.BeadID, stepIdx, fmt.Sprintf("skill %q not found; skipped", id))
+		reason := "not found"
+		if err := skills.ValidateID(id); err != nil {
+			reason = "invalid"
+		}
+		o.warn(req.BeadID, stepIdx, fmt.Sprintf("skill %q %s; skipped", id, reason))
 	}
 	// FR-021: best-effort, non-blocking MCP-server verification.
 	o.verifyMCPServers(req.BeadID, stepIdx, resolved)

@@ -59,8 +59,10 @@ const (
 
 	// EventRunlogWarning is a non-blocking warning tied to a bead/step — e.g. an
 	// unresolvable skill id or an MCP server named by a skill that is absent from
-	// the agent's own config. Distinct from runlog.line (which is best-effort
-	// dropped under backpressure) so a warning is never silently lost.
+	// the agent's own config. Unlike runlog.line, which is deliberately dropped at
+	// INGRESS under backpressure, a warning is not dropped at ingress. (The WS hub
+	// may still drop ANY frame to an individual slow client during fan-out — see
+	// internal/ws/hub.go; this event only avoids the runlog.line ingress drop.)
 	EventRunlogWarning EventType = "runlog.warning"
 )
 
